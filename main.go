@@ -13,6 +13,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/wighawag/tooljail/internal/cli"
@@ -37,9 +39,16 @@ func run(args []string) int {
 		return 1
 	}
 
+	// SIGINT (Ctrl-C) / SIGTERM cancels the context that flows into the jail, so
+	// the jail's deferred Teardown runs and leaves NO residue (the teardown
+	// invariant's signal path). Teardown itself uses a fresh context, so it
+	// completes even though this one is cancelled.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	switch cmd.Name {
 	case "verify":
-		return runVerify(cmd)
+		return runVerify(ctx, cmd)
 	default:
 		// `run` wiring (the jail CLI integration) is a separate task; report
 		// honestly with a non-zero exit instead of pretending to have run.
@@ -50,9 +59,10 @@ func run(args []string) int {
 
 // runVerify runs the leak-test against the configured proxy and exits per the
 // report (non-zero on any failed assertion, so CI can gate on it, story 8). The
-// per-assertion pass/fail summary goes to stderr.
-func runVerify(cmd *cli.Command) int {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+// per-assertion pass/fail summary goes to stderr. The passed ctx is
+// SIGINT-cancellable so a Ctrl-C during verify tears the jail down cleanly.
+func runVerify(ctx context.Context, cmd *cli.Command) int {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	rep := verify.RunCommandVerify(ctx, cmd.Proxy)
 	fmt.Fprint(os.Stderr, rep.String())

@@ -34,9 +34,17 @@ func Run(ctx context.Context, r Runner, cfg Config) (Result, error) {
 		cfg.RunID = fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 
-	// Teardown is deferred immediately after the sidecar is created so any later
-	// failure still cleans up. teardown is idempotent + best-effort.
-	defer teardown(cfg, r)
+	// Teardown is deferred immediately so any later failure (or a cancelled ctx)
+	// still cleans up. Teardown uses a FRESH context (not the run ctx) so it runs
+	// to completion even when the run was cancelled by SIGINT. It is idempotent +
+	// best-effort + aggregates errors.
+	defer func() {
+		tdCtx, tdCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer tdCancel()
+		if err := Teardown(tdCtx, r, cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "tooljail: teardown: %v\n", err)
+		}
+	}()
 
 	// 1. sidecar
 	if _, err := r.Run(ctx, "podman", cfg.SidecarRunArgs()...); err != nil {
@@ -198,15 +206,33 @@ func checkReachback(ctx context.Context, r Runner, cfg Config) error {
 	return err
 }
 
-// teardown removes the sidecar + tool containers (the nft/netns die with the
-// sidecar netns). Best-effort + idempotent: a failure on one resource still
-// attempts the rest. Errors go to stderr but do not panic.
-func teardown(cfg Config, r Runner) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+// Teardown removes EVERY run-attributable resource the jail created: the tool
+// container and the sidecar container. The netns and the nft ruleset are
+// lifecycle-bound to the sidecar container (they live in its network namespace),
+// so removing the sidecar destroys them too; once no tooljail-run-<id>-*
+// container remains, no netns/nft for the run remains either.
+//
+// It is the single teardown entry point wired to ALL exit paths (normal, error,
+// and ctx-cancel/SIGINT, via Run's deferred call on a fresh context). It is:
+//
+//   - idempotent: removing an already-gone container is not an error (podman rm
+//     -f -i ignores a missing container), so a second call is a clean no-op;
+//   - best-effort-complete: a failure removing one resource still attempts the
+//     rest; and
+//   - error-surfacing: any genuine removal failure is aggregated and returned
+//     (no silent partial teardown).
+func Teardown(ctx context.Context, r Runner, cfg Config) error {
+	var errs []error
+	// Order: tool first (it shares/depends on the sidecar netns), then sidecar
+	// (which takes the netns + nft with it). -i (ignore) makes a missing container
+	// a no-op, which is what gives idempotency.
 	for _, name := range []string{cfg.toolName(), cfg.sidecarName()} {
-		if _, err := r.Run(ctx, "podman", "rm", "-f", name); err != nil {
-			fmt.Fprintf(os.Stderr, "tooljail: teardown: removing %s: %v\n", name, err)
+		if out, err := r.Run(ctx, "podman", "rm", "-f", "-i", name); err != nil {
+			errs = append(errs, fmt.Errorf("removing %s: %w: %s", name, err, out))
 		}
 	}
+	if len(errs) > 0 {
+		return fmt.Errorf("jail teardown left residue: %w", errors.Join(errs...))
+	}
+	return nil
 }
