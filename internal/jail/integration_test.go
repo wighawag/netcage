@@ -184,6 +184,38 @@ func TestJail_TeardownLeavesNoResidue(t *testing.T) {
 	}
 }
 
+// TestJail_PropagatesToolExitCode backs the `tooljail run` exit-code contract:
+// a wrapped tool that exits non-zero has that exit code surfaced in
+// Result.ToolExit (not swallowed, not reported as a jail error), so the CLI can
+// propagate it as tooljail's own exit code.
+func TestJail_PropagatesToolExitCode(t *testing.T) {
+	requirePodman(t)
+
+	fx := socks5hfixture.New(socks5hfixture.Options{ExitIP: "127.0.0.2"})
+	if err := fx.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("fixture start: %v", err)
+	}
+	defer fx.Close()
+	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
+
+	cfg := jail.Config{
+		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
+		ProxyOnHostLoopback: true,
+		Image:               "docker.io/library/alpine:latest",
+		ToolArgv:            []string{"sh", "-c", "exit 42"},
+		RunID:               "exitcode" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", ""),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	res, err := jail.Run(ctx, jail.ExecRunner{}, cfg)
+	if err != nil {
+		t.Fatalf("jail.Run returned a jail error for a tool that merely exited non-zero: %v", err)
+	}
+	if res.ToolExit != 42 {
+		t.Fatalf("ToolExit = %d, want 42 (the wrapped tool's exit code must propagate)", res.ToolExit)
+	}
+}
+
 func extractIP(s string) string {
 	for _, line := range strings.FieldsFunc(s, func(r rune) bool { return r == '\n' || r == ' ' }) {
 		if net.ParseIP(strings.TrimSpace(line)) != nil {

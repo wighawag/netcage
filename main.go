@@ -2,11 +2,10 @@
 // egress forced through a SOCKS5h proxy, fail-closed, so the wrapped tool
 // cannot leak the real IP or DNS.
 //
-// This entry point currently wires the CLI surface (parse + socks5h contract +
-// fail-loud startup preflight). The jail itself (tun2socks sidecar, nft, pasta
-// reachback) and the verify leak-test are built by the work/tasks/ tasks; until
-// those land, run/verify parse and preflight, then report that the jail is not
-// yet wired rather than silently no-op.
+// This entry point wires the CLI surface (parse + socks5h contract + fail-loud
+// startup preflight) to the jail engine: `run` stands up the forced-egress jail
+// and runs the wrapped tool through it; `verify` runs the leak-test. SIGINT
+// cancels the run so the jail tears down with no residue.
 package main
 
 import (
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/wighawag/tooljail/internal/cli"
+	"github.com/wighawag/tooljail/internal/jail"
 	"github.com/wighawag/tooljail/internal/verify"
 )
 
@@ -50,11 +50,32 @@ func run(args []string) int {
 	case "verify":
 		return runVerify(ctx, cmd)
 	default:
-		// `run` wiring (the jail CLI integration) is a separate task; report
-		// honestly with a non-zero exit instead of pretending to have run.
-		fmt.Fprintf(os.Stderr, "tooljail: run: proxy %s reachable; `run` CLI wiring not yet implemented (see work/tasks/)\n", cmd.Proxy.Address())
-		return 3
+		return runRun(ctx, cmd)
 	}
+}
+
+// runRun stands up the jail and runs the wrapped tool, propagating the tool's
+// exit code as tooljail's own. A jail SETUP failure (sidecar/nft/reachback)
+// exits non-zero with a clear message; a tool that ran but exited non-zero
+// passes that exit code through (the wrapped tool's result is the run's result).
+// SIGINT cancels ctx, so the jail's deferred Teardown leaves no residue.
+func runRun(ctx context.Context, cmd *cli.Command) int {
+	cfg := jail.Config{
+		Proxy:               cmd.Proxy,
+		ProxyOnHostLoopback: cmd.ProxyOnHostLoopback(),
+		Image:               cmd.Image,
+		ToolArgv:            cmd.ToolArgv,
+		Mounts:              cmd.Mounts,
+	}
+	res, err := jail.Run(ctx, jail.ExecRunner{}, cfg)
+	if res.ToolStdout != "" {
+		fmt.Println(res.ToolStdout)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "tooljail: run: %v\n", err)
+		return 1
+	}
+	return res.ToolExit
 }
 
 // runVerify runs the leak-test against the configured proxy and exits per the
@@ -70,5 +91,5 @@ func runVerify(ctx context.Context, cmd *cli.Command) int {
 }
 
 const usage = `usage:
-  tooljail run    --proxy socks5h://[user:pass@]host:port --image <image> -- <tool> <args...>
+  tooljail run    --proxy socks5h://[user:pass@]host:port --image <image> [-v host:container[:opts]]... -- <tool> <args...>
   tooljail verify --proxy socks5h://[user:pass@]host:port`

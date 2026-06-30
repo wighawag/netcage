@@ -80,6 +80,44 @@ func TestParse_RunCommand(t *testing.T) {
 	}
 }
 
+func TestParse_RunWithMountsPassThrough(t *testing.T) {
+	cmd, err := cli.Parse([]string{
+		"run",
+		"--proxy", "socks5h://127.0.0.1:9050",
+		"--image", "ffuf",
+		"-v", "/host/out:/out",
+		"--volume", "/host/words:/words:ro",
+		"--", "ffuf", "-w", "/words", "-o", "/out/r.json",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	wantMounts := []string{"/host/out:/out", "/host/words:/words:ro"}
+	if strings.Join(cmd.Mounts, " ") != strings.Join(wantMounts, " ") {
+		t.Fatalf("Mounts = %v, want %v", cmd.Mounts, wantMounts)
+	}
+	wantArgv := []string{"ffuf", "-w", "/words", "-o", "/out/r.json"}
+	if strings.Join(cmd.ToolArgv, " ") != strings.Join(wantArgv, " ") {
+		t.Fatalf("ToolArgv = %v, want %v", cmd.ToolArgv, wantArgv)
+	}
+}
+
+func TestCommand_ProxyOnHostLoopback(t *testing.T) {
+	loopback := []string{"127.0.0.1", "::1", "localhost"}
+	for _, h := range loopback {
+		c := cli.Command{Proxy: cli.ProxyConfig{Host: h, Port: "9050"}}
+		if !c.ProxyOnHostLoopback() {
+			t.Fatalf("%q should be detected as host-loopback", h)
+		}
+	}
+	for _, h := range []string{"bastion.example", "203.0.113.9", "10.0.0.5"} {
+		c := cli.Command{Proxy: cli.ProxyConfig{Host: h, Port: "1080"}}
+		if c.ProxyOnHostLoopback() {
+			t.Fatalf("%q should NOT be host-loopback (remote proxy)", h)
+		}
+	}
+}
+
 func TestParse_VerifyCommand(t *testing.T) {
 	cmd, err := cli.Parse([]string{"verify", "--proxy", "socks5h://127.0.0.1:9050"})
 	if err != nil {

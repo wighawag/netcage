@@ -70,6 +70,19 @@ type Command struct {
 	Proxy    ProxyConfig
 	Image    string   // required for run; unused for verify
 	ToolArgv []string // the post-"--" tool argv (run)
+	Mounts   []string // -v/--volume pass-through values (run)
+}
+
+// ProxyOnHostLoopback reports whether the proxy listens on the host's loopback
+// (the local Tor / ssh -D case), so the jail reaches it via the pasta map with
+// reachback narrowing (ADR-0002). A remote proxy is a normal routable host the
+// sidecar dials directly and needs neither.
+func (c Command) ProxyOnHostLoopback() bool {
+	switch c.Proxy.Host {
+	case "127.0.0.1", "::1", "localhost":
+		return true
+	}
+	return false
 }
 
 // Reachability checks whether a proxy address is reachable at startup. It is an
@@ -125,6 +138,7 @@ func Parse(args []string) (*Command, error) {
 	rest, toolArgv := splitDoubleDash(args[1:])
 
 	var proxyRaw, image string
+	var mounts []string
 	for i := 0; i < len(rest); i++ {
 		a := rest[i]
 		switch {
@@ -144,6 +158,16 @@ func Parse(args []string) (*Command, error) {
 			image = v
 		case strings.HasPrefix(a, "--image="):
 			image = strings.TrimPrefix(a, "--image=")
+		case a == "-v" || a == "--volume":
+			v, ok := next(rest, &i)
+			if !ok {
+				return nil, errors.New("-v/--volume requires a value (host:container[:opts])")
+			}
+			mounts = append(mounts, v)
+		case strings.HasPrefix(a, "--volume="):
+			mounts = append(mounts, strings.TrimPrefix(a, "--volume="))
+		case strings.HasPrefix(a, "-v="):
+			mounts = append(mounts, strings.TrimPrefix(a, "-v="))
 		default:
 			return nil, fmt.Errorf("unknown flag or argument %q", a)
 		}
@@ -157,7 +181,7 @@ func Parse(args []string) (*Command, error) {
 		return nil, err
 	}
 
-	cmd := &Command{Name: name, Proxy: proxy, ToolArgv: toolArgv}
+	cmd := &Command{Name: name, Proxy: proxy, ToolArgv: toolArgv, Mounts: mounts}
 
 	if name == "run" {
 		if image == "" {
