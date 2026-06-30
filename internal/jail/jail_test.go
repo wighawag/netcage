@@ -140,7 +140,7 @@ func TestNftRuleset_DropsUDPExceptLocalDNSAndNarrowsReachback(t *testing.T) {
 	c.ProxyOnHostLoopback = true
 	rs := c.nftRuleset("9050")
 	for _, want := range []string{
-		"udp dport 53 ip daddr 127.0.0.0/8 accept",                  // tool -> local forwarder allowed
+		"meta l4proto udp ip daddr 127.0.0.0/8 accept",              // tool<->forwarder loopback DNS (query + reply)
 		"meta l4proto udp drop",                                     // all other UDP dropped (ADR-0003)
 		"ip daddr " + mappedHostLoopback + " tcp dport 9050 accept", // exactly the proxy port
 		"ip daddr " + mappedHostLoopback + " drop",                  // nothing else on the host

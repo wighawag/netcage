@@ -143,6 +143,9 @@ func startNetnsDNS(ctx context.Context, pid string, cfg Config) (*exec.Cmd, erro
 		"-t", pid, "-n", "-U", "--preserve-credentials",
 		bin, "-listen", "127.0.0.1:53", "-proxy", proxyAddr,
 	}
+	if cfg.DNSUpstream != "" {
+		args = append(args, "-upstream", cfg.DNSUpstream)
+	}
 	if cfg.Proxy.Username != "" {
 		args = append(args, "-user", cfg.Proxy.Username, "-pass", cfg.Proxy.Password)
 	}

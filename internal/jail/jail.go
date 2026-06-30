@@ -52,6 +52,13 @@ type Config struct {
 	// false the proxy is a normal routable host the sidecar dials directly.
 	ProxyOnHostLoopback bool
 
+	// DNSUpstream optionally overrides the DNS resolver the in-netns forwarder
+	// reaches THROUGH the proxy (DNS-over-TCP, addressed by hostname so the proxy
+	// resolves it). Empty uses the forwarder's default public resolver. verify
+	// sets this to a controllable resolver so the proxy-side-resolution assertion
+	// is deterministic against the fixture.
+	DNSUpstream string
+
 	// dnsServer is set by Run once the in-netns forwarder is up (its presence
 	// signals the resolv.conf wiring is active).
 	dnsServer string
@@ -117,16 +124,20 @@ func (c Config) sidecarName() string { return "tooljail-run-" + c.RunID + "-side
 func (c Config) toolName() string    { return "tooljail-run-" + c.RunID + "-tool" }
 
 // nftRuleset is the in-netns ruleset: drop all egress UDP except the local
-// tool->forwarder hop (to the loopback forwarder), and narrow host-loopback
-// reachback to exactly the proxy port. Applied via nsenter into the shared netns.
+// tool<->forwarder loopback hop, and narrow host-loopback reachback to exactly
+// the proxy port. Applied via nsenter into the shared netns.
 func (c Config) nftRuleset(proxyPort string) string {
-	// Allowing UDP to 127.0.0.0/8 keeps the tool->forwarder (loopback) DNS hop
-	// working while every other UDP egress is dropped (ADR-0003).
+	// The tool's DNS query AND the forwarder's reply are BOTH loopback UDP
+	// (127.x<->127.x): the tool sends to 127.0.0.1:53 and the forwarder replies
+	// FROM 127.0.0.1:53 to the tool's EPHEMERAL port. So allowing only `dport 53`
+	// drops the reply (its dport is the ephemeral port) and DNS silently fails
+	// closed. Allow ALL loopback UDP instead: it never egresses the netns, so it
+	// is safe, while every OTHER (egress) UDP is still hard-dropped (ADR-0003).
 	var b strings.Builder
 	b.WriteString("table inet jail {\n  chain out {\n")
 	b.WriteString("    type filter hook output priority 0; policy accept;\n")
-	b.WriteString("    udp dport 53 ip daddr 127.0.0.0/8 accept\n") // tool -> local forwarder
-	b.WriteString("    meta l4proto udp drop\n")                    // every other UDP dropped
+	b.WriteString("    meta l4proto udp ip daddr 127.0.0.0/8 accept\n") // tool<->forwarder loopback DNS (query + reply)
+	b.WriteString("    meta l4proto udp drop\n")                        // every other (egress) UDP dropped
 	if c.ProxyOnHostLoopback {
 		b.WriteString(fmt.Sprintf("    ip daddr %s tcp dport %s accept\n", mappedHostLoopback, proxyPort))
 		b.WriteString(fmt.Sprintf("    ip daddr %s drop\n", mappedHostLoopback))

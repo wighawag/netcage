@@ -10,10 +10,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/wighawag/tooljail/internal/cli"
+	"github.com/wighawag/tooljail/internal/verify"
 )
 
 func main() {
@@ -34,10 +37,26 @@ func run(args []string) int {
 		return 1
 	}
 
-	// The jail and verify wiring are not built yet (see work/tasks/). Report
-	// honestly with a non-zero exit instead of pretending to have run.
-	fmt.Fprintf(os.Stderr, "tooljail: %s: proxy %s reachable; jail wiring not yet implemented (see work/tasks/)\n", cmd.Name, cmd.Proxy.Address())
-	return 3
+	switch cmd.Name {
+	case "verify":
+		return runVerify(cmd)
+	default:
+		// `run` wiring (the jail CLI integration) is a separate task; report
+		// honestly with a non-zero exit instead of pretending to have run.
+		fmt.Fprintf(os.Stderr, "tooljail: run: proxy %s reachable; `run` CLI wiring not yet implemented (see work/tasks/)\n", cmd.Proxy.Address())
+		return 3
+	}
+}
+
+// runVerify runs the leak-test against the configured proxy and exits per the
+// report (non-zero on any failed assertion, so CI can gate on it, story 8). The
+// per-assertion pass/fail summary goes to stderr.
+func runVerify(cmd *cli.Command) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	rep := verify.RunCommandVerify(ctx, cmd.Proxy)
+	fmt.Fprint(os.Stderr, rep.String())
+	return rep.ExitCode()
 }
 
 const usage = `usage:
