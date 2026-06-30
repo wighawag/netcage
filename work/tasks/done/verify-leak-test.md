@@ -41,3 +41,35 @@ This MUTATES THE SYSTEM (it stands up the jail). Run with explicit confirmation,
 > Write the three assertions FIRST (testFirst is ON), each against the `socks5h-test-fixture`: (1) IP-echo through the jail returns the fixture's exit IP; (2) a unique hostname resolves proxy-side (the fixture sees the lookup; the host resolver does not); (3) kill the fixture, run the probe, assert it fails closed with no host egress. Red until verify wires them. Then implement verify to run the probe and report/exit per assertion (non-zero on any failure).
 >
 > "Done" means all three assertions are green against the fixture, verify exits non-zero on any failure (CI-gateable), and the proxy-kill case proves fail-closed (no host egress). Keep it deterministic against the fixture — do NOT depend on real Tor. RECORD non-obvious in-scope decisions (exit-code scheme, how "proxy-side resolution" is observed) per the task-template guidance.
+
+## Done record (2026-06-30)
+
+Built as `internal/verify` (+ `tooljail verify` CLI wiring in `main.go`). All three leak
+assertions are green end-to-end against `internal/socks5hfixture`, podman-gated, leaving no residue.
+
+Non-obvious in-scope decisions:
+
+- **Exit-code scheme:** `Report.ExitCode()` returns 0 iff EVERY assertion passed, else 1. An EMPTY
+  report is NOT a pass (exits 1): "nothing asserted" must never read as green. `tooljail verify`
+  returns this code so CI can gate (story 8). Unit-tested without podman.
+- **How "proxy-side resolution" is observed (assertion #2):** the jail's in-netns DNS forwarder is
+  pointed (via the new `jail.Config.DNSUpstream`) at a controllable DNS-over-TCP resolver addressed
+  BY HOSTNAME (`dns.tooljail.test`), so the fixture resolves that name proxy-side and RECORDS it in
+  `ResolvedHosts()`. The assertion is the conjunction of three facts: (a) the unique name resolved
+  to the proxy-side answer, (b) the fixture saw the upstream name (proof it went through the proxy),
+  and (c) the HOST resolver returns nothing for the fake `.test` TLD (proof it did not leak to the
+  host resolver).
+- **Fail-closed (assertion #3)** kills the fixture BEFORE the probe and asserts a distinctive
+  host-echo marker NEVER appears in the tool output (no fall-back to the host network). A jail-run
+  error with the proxy down counts as no-egress (fail-closed), not a leak.
+- **CLI `verify` vs the fixture leak-test:** the deterministic three-assertion proof IS the
+  fixture-backed test suite (the acceptance gate). `tooljail verify` against a user's REAL proxy
+  cannot know the exit IP or kill the proxy, so it asserts the property it CAN observe without
+  controllable infra: the jail's exit IP DIFFERS from the host's direct exit IP (forced egress
+  active), via a public IP-echo. This network path is deliberately NOT in the test gate.
+
+Found + fixed along the way (recorded as a finding): the jail's nft ruleset dropped the forwarder's
+loopback DNS REPLY (it allowed only `dport 53`, but the reply's dport is the tool's ephemeral port),
+so DNS silently failed closed. Fixed to allow all loopback UDP (provably non-egress) while still
+hard-dropping egress UDP (ADR-0003 intact). See
+`work/notes/findings/spike-jail-dns-nft-loopback-reply.md`.
