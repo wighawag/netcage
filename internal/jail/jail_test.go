@@ -68,6 +68,47 @@ func TestSidecarRunArgs_ForcedEgressShape(t *testing.T) {
 	}
 }
 
+// TestSidecarRunArgs_CloneMainOffAndExcludesProxyRoute pins the two sidecar-env
+// settings the forced-egress spike proved are load-bearing
+// (work/notes/findings/spike-jail-forced-egress-clone-main-and-excluded-route.md):
+//
+//   - CLONE_MAIN=0 so the TUN routing table is exactly `default dev tun0` and
+//     does NOT clone the pasta-copied real-NIC routes (which caused a routing
+//     loop / packet storm).
+//   - TUN_EXCLUDED_ROUTES=<proxy-reachback-addr>/32 so tun2socks's own dialer
+//     reaches the proxy over the real NIC (the pasta map) instead of looping
+//     back through the TUN (which pasta reset). For a host-loopback proxy the
+//     excluded address is the pasta map; for a remote proxy it is the remote
+//     host so the bastion is reached over the real outbound.
+func TestSidecarRunArgs_CloneMainOffAndExcludesProxyRoute(t *testing.T) {
+	t.Run("host-loopback proxy excludes the pasta map address", func(t *testing.T) {
+		c := cfg()
+		c.ProxyOnHostLoopback = true
+		args := strings.Join(c.SidecarRunArgs(), " ")
+		if !strings.Contains(args, "CLONE_MAIN=0") {
+			t.Fatalf("sidecar must set CLONE_MAIN=0 (else the TUN table clones the real NIC and storms); got: %s", args)
+		}
+		if !strings.Contains(args, "TUN_EXCLUDED_ROUTES="+mappedHostLoopback+"/32") {
+			t.Fatalf("host-loopback sidecar must exclude the pasta map %s/32 from the TUN; got: %s", mappedHostLoopback, args)
+		}
+	})
+	t.Run("remote proxy excludes the remote host address", func(t *testing.T) {
+		c := cfg()
+		c.Proxy = cli.ProxyConfig{Host: "203.0.113.9", Port: "1080"}
+		c.ProxyOnHostLoopback = false
+		args := strings.Join(c.SidecarRunArgs(), " ")
+		if !strings.Contains(args, "CLONE_MAIN=0") {
+			t.Fatalf("remote sidecar must set CLONE_MAIN=0; got: %s", args)
+		}
+		if !strings.Contains(args, "TUN_EXCLUDED_ROUTES=203.0.113.9/32") {
+			t.Fatalf("remote sidecar must exclude the bastion 203.0.113.9/32 from the TUN; got: %s", args)
+		}
+		if strings.Contains(args, mappedHostLoopback) {
+			t.Fatalf("remote sidecar must not reference the host-loopback map addr; got: %s", args)
+		}
+	})
+}
+
 func TestSidecarRunArgs_RemoteProxyNoHostLoopbackMap(t *testing.T) {
 	c := cfg()
 	c.Proxy = cli.ProxyConfig{Host: "bastion.example", Port: "1080"}

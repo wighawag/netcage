@@ -51,3 +51,23 @@ The rootless-TUN spike (`spike-rootless-tun-routing`) PROVED a TUN routes packet
 - DNS-over-proxy is TCP not UDP (Tor/Mullvad): `work/notes/findings/dns-through-socks-is-tcp-not-udp.md`.
 - The DNS forwarder mechanism: `work/notes/findings/spike-dns-to-socks-bridge.md`.
 - tun2socks rejects `socks5h://` and uses `socks5://` (its tunneling is remote-resolving by construction): same DNS finding.
+
+---
+
+## RESOLVED 2026-06-30 (this diagnosis was WRONG)
+
+Live re-investigation overturned the "tun2socks gets no packets" diagnosis. tun2socks DID read the
+tool's packets and DID dial the proxy. The end-to-end wall was two fixable sidecar-env issues, NOT
+the shared-netns topology:
+
+1. `CLONE_MAIN=1` (the image default) cloned the real main table (incl. the pasta-copied real NIC
+   default) into the TUN routing table, causing a routing loop / packet storm (tun0 RX ~200 KB/s
+   idle, thousands of sockets). Fix: `CLONE_MAIN=0`.
+2. The proxy reachback address (`169.254.1.1`) routed INTO the TUN, so tun2socks's own dialer looped
+   back through tun0 (source `198.18.0.1`) and pasta reset it. Fix:
+   `TUN_EXCLUDED_ROUTES=169.254.1.1/32` forces the proxy address onto the real NIC (the pasta map).
+
+With both set, a wrapped wget through the Option-A shared-netns jail returned the fixture exit IP
+`127.0.0.2` rc=0 (reproduced twice). **Keep Option A; do NOT pivot to separate-netns.** Full recipe,
+evidence, and a test-harness caveat (a mis-framed SOCKS5 listener that faked a "pasta corrupts
+streams" red herring) are in `work/notes/findings/spike-jail-forced-egress-clone-main-and-excluded-route.md`.

@@ -135,8 +135,26 @@ func (c Config) nftRuleset(proxyPort string) string {
 	return b.String()
 }
 
+// proxyReachbackAddr is the address tun2socks's dialer must reach the proxy at:
+// the pasta map for a host-loopback proxy, else the proxy's real host. It is the
+// address that MUST be excluded from the TUN (TUN_EXCLUDED_ROUTES) so the dialer
+// egresses over the real NIC instead of looping back through tun0.
+func (c Config) proxyReachbackAddr() string {
+	if c.ProxyOnHostLoopback {
+		return mappedHostLoopback
+	}
+	return c.Proxy.Host
+}
+
 // SidecarRunArgs returns the podman args to start the tun2socks sidecar. Exposed
 // for testing the wiring without executing podman.
+//
+// CLONE_MAIN=0 and TUN_EXCLUDED_ROUTES=<proxy-reachback>/32 are load-bearing,
+// not cosmetic: the forced-egress spike proved that with the image default
+// CLONE_MAIN=1 the TUN routing table clones the pasta-copied real-NIC routes and
+// storms, and that without excluding the proxy address from the TUN, tun2socks's
+// own dialer loops back through tun0 and pasta resets it. See
+// work/notes/findings/spike-jail-forced-egress-clone-main-and-excluded-route.md.
 func (c Config) SidecarRunArgs() []string {
 	network := "pasta"
 	if c.ProxyOnHostLoopback {
@@ -146,6 +164,8 @@ func (c Config) SidecarRunArgs() []string {
 		"run", "-d", "--name", c.sidecarName(),
 		"--network", network,
 		"--cap-add", "NET_ADMIN", "--device", "/dev/net/tun",
+		"-e", "CLONE_MAIN=0",
+		"-e", "TUN_EXCLUDED_ROUTES=" + c.proxyReachbackAddr() + "/32",
 		"-e", "PROXY=" + c.sidecarProxyURL(),
 		redirector.RunPathImageReference(),
 	}

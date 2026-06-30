@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -51,9 +52,11 @@ func requirePodman(t *testing.T) {
 	}
 }
 
-// startExitEcho starts a TCP server on host loopback that replies with the
-// client's observed source IP, so a probe through the jail can be checked to
-// exit from the proxy's IP. Returns its port.
+// startExitEcho starts an HTTP server on host loopback that replies with the
+// client's observed source IP in the response body, so a probe through the jail
+// (a plain `wget`) can be checked to exit from the proxy's IP. It speaks HTTP/1.0
+// (not a bare-IP write) so an ordinary HTTP tool can parse the response: the
+// wrapped tool stays proxy-unaware and realistic. Returns its port.
 func startExitEcho(t *testing.T) (port string, stop func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -68,8 +71,13 @@ func startExitEcho(t *testing.T) (port string, stop func()) {
 			}
 			go func(c net.Conn) {
 				defer c.Close()
+				// Drain the request line/headers (best-effort) before replying.
+				_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+				buf := make([]byte, 1024)
+				_, _ = c.Read(buf)
 				host, _, _ := net.SplitHostPort(c.RemoteAddr().String())
-				_, _ = io.WriteString(c, host)
+				_, _ = io.WriteString(c, "HTTP/1.0 200 OK\r\nContent-Length: "+
+					strconv.Itoa(len(host))+"\r\nConnection: close\r\n\r\n"+host)
 			}(c)
 		}
 	}()
@@ -89,17 +97,15 @@ func startExitEcho(t *testing.T) (port string, stop func()) {
 // path, which the fixture allows via AllowIPConnect).
 func TestJail_ForcedEgress_ExitIPIsProxys(t *testing.T) {
 	requirePodman(t)
-	// KNOWN-FAILING integration, skipped to keep the gate green: with the real
-	// xjasonlyu/tun2socks image in the Option-A shared-netns + pasta topology,
-	// tun2socks receives NO packets from the TUN (its logs show zero connection
-	// attempts even for in-subnet targets), so the wrapped tool's egress is not
-	// yet tunnelled. The unit-level wiring (SidecarRunArgs/ToolRunArgs/nftRuleset/
-	// proxy translation) and the DNS forwarder ARE green; this end-to-end step is
-	// the open wall. See work/notes/observations/jail-tun2socks-shared-netns-no-packets.md
-	// (leading hypothesis: the separate-netns topology, not shared-netns, is what
-	// works). Remove this Skip when the topology is fixed; the assertion below is
-	// the ready harness.
-	t.Skip("jail end-to-end forced-egress not yet wired: tun2socks gets no packets in shared-netns+pasta (see observation)")
+	// The end-to-end forced-egress path now works in the Option-A shared-netns +
+	// pasta topology. The wall recorded in
+	// work/notes/observations/jail-tun2socks-shared-netns-no-packets.md was NOT
+	// "tun2socks gets no packets" (it does) but two sidecar-env issues, now wired
+	// in SidecarRunArgs: CLONE_MAIN=0 (so the TUN table does not clone the
+	// pasta-copied real-NIC routes and storm) and TUN_EXCLUDED_ROUTES=<proxy>/32
+	// (so tun2socks's own dialer reaches the proxy over the real NIC instead of
+	// looping back through the TUN, which pasta reset). See
+	// work/notes/findings/spike-jail-forced-egress-clone-main-and-excluded-route.md.
 
 	echoPort, stopEcho := startExitEcho(t)
 	defer stopEcho()
