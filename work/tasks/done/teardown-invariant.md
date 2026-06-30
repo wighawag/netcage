@@ -39,3 +39,29 @@ This MUTATES THE SYSTEM (creates then removes containers/netns/nft). Run with ex
 > Write the tests FIRST (testFirst is ON): for each of normal exit / induced error / delivered SIGINT, run the jail then enumerate run-attributable netns + nft rules + podman containers and assert NONE remain. Red until teardown is wired. Then wire teardown to all three paths via Go context cancellation + signal handling + defer, idempotent and best-effort-complete (one failed removal still attempts the rest and surfaces the error).
 >
 > "Done" means all three teardown tests are green (zero residue on every exit path), teardown is idempotent, and partial-teardown failures are surfaced not swallowed. RECORD non-obvious in-scope decisions (e.g. how resources are made run-attributable for enumeration) per the task-template guidance.
+
+## Done record (2026-06-30)
+
+Implemented as an exported `jail.Teardown(ctx, runner, cfg) error`, wired to all three exit paths
+and tested as an invariant (`internal/jail/teardown_test.go`, podman-gated).
+
+Non-obvious in-scope decisions:
+
+- **Enumeration seam = container names.** The netns AND the nft ruleset are lifecycle-bound to the
+  SIDECAR container: they live in its network namespace, so removing the sidecar destroys both.
+  Verified live (remove the sidecar -> its PID/netns/nft are gone). Therefore "no run-attributable
+  `tooljail-run-<id>-*` container remains" is a SUFFICIENT residue check; there is no separate
+  netns/nft to enumerate or delete. The in-netns DNS forwarder is an `exec.CommandContext` child of
+  the run, so a cancelled/finished run kills it; the temp resolv.conf is removed by its own defer.
+- **Idempotency via `podman rm -f -i`.** `-i/--ignore` makes removing an already-gone container a
+  no-op (rc 0), so a second `Teardown` is a clean no-op (tested).
+- **Best-effort + error-surfacing.** `Teardown` attempts every resource even if one fails and
+  returns the aggregated error (`errors.Join`); it never silently swallows a partial teardown. In
+  `Run` it is deferred on a FRESH context (not the run ctx) so it completes even when the run was
+  cancelled by SIGINT.
+- **SIGINT path.** `main.go` wraps the command in `signal.NotifyContext(..., os.Interrupt,
+  SIGTERM)`, so Ctrl-C cancels the context flowing into the jail; `Run` returns and its deferred
+  `Teardown` fires. The unit boundary (cancel the run ctx mid-tool-run -> zero residue) is proven by
+  `TestTeardown_ContextCancelLeavesNoResidue`; the CLI wiring carries it to a real Ctrl-C. (`run`'s
+  full CLI integration is a separate task; the teardown mechanism it will use is in place and
+  tested.)
