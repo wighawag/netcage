@@ -36,6 +36,19 @@ type Options struct {
 	// to a hostname not in this table is refused (so tests control exactly what
 	// the proxy can resolve).
 	KnownHosts map[string]string
+
+	// AllowIPConnect permits ATYP=ipv4/ipv6 CONNECTs (dialed from ExitIP). It
+	// defaults to FALSE so the fixture rejects IP CONNECTs as a local-resolution
+	// leak in unit tests. The jail's tun2socks path legitimately tunnels by IP
+	// (it captured packets, not a resolver call), so the jail forced-egress-by-IP
+	// integration test sets this true.
+	AllowIPConnect bool
+
+	// RedirectTarget, when set, makes every CONNECT (any host/IP/port) dial THIS
+	// host:port instead, from ExitIP. It lets a test target a routable placeholder
+	// IP (so the jail's TUN captures it) while the fixture connects to a real local
+	// echo. The exit IP the destination observes is still ExitIP.
+	RedirectTarget string
 }
 
 // Fixture is a controllable SOCKS5h proxy. The zero value is not usable; build
@@ -148,22 +161,37 @@ func (f *Fixture) handle(c net.Conn) {
 		return
 	}
 
-	// socks5h: resolve the hostname PROXY-SIDE from the controlled view.
-	f.recordResolved(host)
-	ip, ok := f.opts.KnownHosts[host]
-	if !ok {
-		writeReply(c, repHostUnreachable)
-		return
+	// socks5h: resolve the hostname PROXY-SIDE from the controlled view. An
+	// IP-literal target (allowed only when AllowIPConnect is set, e.g. the jail's
+	// tun2socks path) is dialed directly; it is not a resolver lookup, so it is
+	// not recorded as a resolved host.
+	var ip string
+	if parsed := net.ParseIP(host); parsed != nil {
+		ip = host // IP-literal CONNECT (AllowIPConnect path)
+	} else {
+		f.recordResolved(host)
+		var ok bool
+		ip, ok = f.opts.KnownHosts[host]
+		if !ok {
+			writeReply(c, repHostUnreachable)
+			return
+		}
 	}
 
 	// Dial out FROM the configured exit IP so the destination observes the
-	// proxy's exit IP, not the client's.
+	// proxy's exit IP, not the client's. A RedirectTarget overrides the dial
+	// destination (still from ExitIP), so a test can target a routable placeholder
+	// IP (captured by the jail's TUN) while the fixture reaches a real local echo.
+	dialTarget := net.JoinHostPort(ip, port)
+	if f.opts.RedirectTarget != "" {
+		dialTarget = f.opts.RedirectTarget
+	}
 	var localAddr net.Addr
 	if f.opts.ExitIP != "" {
 		localAddr = &net.TCPAddr{IP: net.ParseIP(f.opts.ExitIP)}
 	}
 	dialer := net.Dialer{LocalAddr: localAddr, Timeout: 5 * time.Second}
-	upstream, err := dialer.Dial("tcp", net.JoinHostPort(ip, port))
+	upstream, err := dialer.Dial("tcp", dialTarget)
 	if err != nil {
 		writeReply(c, repHostUnreachable)
 		return
@@ -228,11 +256,28 @@ func (f *Fixture) readConnectRequest(c net.Conn) (host, port string, err error) 
 			return "", "", err
 		}
 		host = string(name)
-	case atypIPv4, atypIPv6:
-		// An IP-typed request is NOT socks5h; reject it so a leak (local
-		// resolution) cannot pass silently through the fixture.
-		writeReply(c, repAtypNotSupported)
-		return "", "", errors.New("IP address type rejected: socks5h requires a hostname (ATYP=domain)")
+	case atypIPv4:
+		if !f.opts.AllowIPConnect {
+			// An IP-typed request is NOT socks5h; reject it so a leak (local
+			// resolution) cannot pass silently through the fixture.
+			writeReply(c, repAtypNotSupported)
+			return "", "", errors.New("IP address type rejected: socks5h requires a hostname (ATYP=domain)")
+		}
+		ip := make([]byte, 4)
+		if _, err = io.ReadFull(c, ip); err != nil {
+			return "", "", err
+		}
+		host = net.IP(ip).String()
+	case atypIPv6:
+		if !f.opts.AllowIPConnect {
+			writeReply(c, repAtypNotSupported)
+			return "", "", errors.New("IP address type rejected: socks5h requires a hostname (ATYP=domain)")
+		}
+		ip := make([]byte, 16)
+		if _, err = io.ReadFull(c, ip); err != nil {
+			return "", "", err
+		}
+		host = net.IP(ip).String()
 	default:
 		writeReply(c, repAtypNotSupported)
 		return "", "", errors.New("unsupported address type")
