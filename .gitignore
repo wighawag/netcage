@@ -1,2 +1,10 @@
 # compiled binary (matches the module/dir name, produced by `go build ./...`)
 /tooljail
+
+# spike probe build artifacts (the .go sources are tracked; built binaries + scratch logs are not)
+work/tasks/**/probe/**/tun-probe
+work/tasks/**/probe/**/dialer
+work/tasks/**/probe/**/listener
+work/tasks/**/probe/**/forwarder
+work/tasks/**/probe/**/harness
+work/tasks/**/probe/**/*.out
