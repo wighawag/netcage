@@ -85,3 +85,42 @@ End-to-end thin path:
 > diagnostic, a genuine tool non-zero exit still propagates, and the classification decision (plus any
 > residual exit-code ambiguity) is recorded. RECORD non-obvious in-scope decisions per the
 > task-template guidance.
+
+## Decisions
+
+**Runner seam redesign (owned by this task).** `jail.Runner.Run` changed from
+`Run(ctx, name, args...) (stdout string, err error)` (which used `CombinedOutput()`, MERGING stdout
+and stderr) to `Run(ctx, RunSpec) (stdout, stderr string, err error)`. `RunSpec` carries the command
+plus OPTIONAL `Stdout`/`Stderr` `io.Writer` live sinks (a tee). `ExecRunner` now uses separate
+`bytes.Buffer`s (via `io.MultiWriter` when a live sink is set), so stdout and stderr are captured
+separately and never merged. This is the single Runner shape the serialised `stream-tool-output-live`
+task reuses (it only wires the live sinks; it does not re-fork the interface). The internal podman
+call sites (sidecar start, inspect, teardown, reachback) use a terse `runPodman` capture-only helper;
+only the tool-run step needs the separated stderr and (later) the live sinks.
+
+**How a podman/runtime SETUP failure is told apart from a tool's own exit.** Podman writes ITS own
+setup diagnostic to STDERR prefixed with `Error:` (unpullable image, unknown flag), and the OCI
+runtime's exec/not-found failures surface there too (`OCI runtime`, `crun:`, `executable file ... not
+found`, `reading manifest`/`manifest unknown`). Because the tool-run step now captures podman's
+stderr SEPARATELY from the tool's stdout, a setup diagnostic on podman's stderr is an unambiguous
+podman-level failure. `classifyPodmanSetupFailure(code, podmanStderr)` returns a jail setup error
+(wrapping the new sentinel `jail.ErrJailSetup`, carrying podman's diagnostic line) ONLY when the exit
+code is 125/126/127 AND podman's stderr matches one of those setup markers; otherwise the exit code
+flows to `Result.ToolExit` as before. `tooljail run` already exits non-zero (1) with the stderr
+message on any jail error, so a broken image / missing command now exits 1 with podman's diagnostic
+rather than a bogus `exit 125`.
+
+**Residual exit-code ambiguity, and how it is resolved.** A wrapped tool could itself legitimately
+exit 125/126/127. The exit code alone cannot disambiguate, so the classifier requires BOTH the
+code AND a podman/runtime setup diagnostic on podman's own stderr. A bare 125/126/127 with no such
+diagnostic (e.g. a shell that exits 127 because ITS OWN inner subcommand was not found, printing
+`sh: ...: not found` rather than podman's `Error:`) is treated as the tool's exit and propagates to
+`ToolExit`. This deliberately biases toward NOT hiding a setup failure while keeping
+`TestJail_PropagatesToolExitCode` (a genuine `exit 42`) green; the narrow theoretical case (a tool
+that exits 125/126/127 AND prints a line that looks exactly like a podman/runtime setup diagnostic to
+stderr) would be misclassified, which is an acceptable, documented trade-off given the separated-
+stderr signal makes it very unlikely in practice.
+
+Not recorded as an ADR: this is an internal classification heuristic on the tool-run step, cheaply
+reversible and not an architectural/lock-in decision, so it fails the ADR gate (hard-to-reverse +
+surprising + real trade-off with lasting cost). It lives here per the task-template guidance instead.

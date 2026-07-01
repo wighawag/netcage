@@ -10,9 +10,14 @@ import (
 	"time"
 )
 
-// Result is the outcome of a jail run.
+// Result is the outcome of a jail run. ToolStdout / ToolStderr are the wrapped
+// tool's CAPTURED output, kept separate (stderr is never merged into stdout).
+// When Config.ToolStdout / Config.ToolStderr live sinks are set, the same output
+// was ALSO streamed to them as it arrived; the capture here is what the
+// verify/leak-test probes assert on.
 type Result struct {
 	ToolStdout string
+	ToolStderr string
 	ToolExit   int
 }
 
@@ -47,8 +52,8 @@ func Run(ctx context.Context, r Runner, cfg Config) (Result, error) {
 	}()
 
 	// 1. sidecar
-	if _, err := r.Run(ctx, "podman", cfg.SidecarRunArgs()...); err != nil {
-		return Result{}, fmt.Errorf("start tun2socks sidecar: %w", err)
+	if _, serr, err := runPodman(ctx, r, cfg.SidecarRunArgs()...); err != nil {
+		return Result{}, fmt.Errorf("start tun2socks sidecar: %w%s", err, stderrSuffix(serr))
 	}
 
 	pid, err := sidecarPID(ctx, r, cfg)
@@ -98,25 +103,142 @@ func Run(ctx context.Context, r Runner, cfg Config) (Result, error) {
 	}
 
 	// 4. run the tool sharing the sidecar netns, with its resolv.conf pointed at
-	// the forwarder (via --dns) so all name resolution goes proxy-side.
-	out, runErr := r.Run(ctx, "podman", cfg.ToolRunArgs()...)
-	res := Result{ToolStdout: out}
+	// the forwarder (via --dns) so all name resolution goes proxy-side. stdout and
+	// stderr are captured SEPARATELY so a podman/runtime SETUP failure (podman's
+	// own 125/126/127 diagnostic, which podman writes to ITS stderr) is told apart
+	// from the wrapped tool's own non-zero exit.
+	// The live sinks (when set by `tooljail run`) stream the tool's stdout/stderr
+	// to os.Stdout/os.Stderr as they arrive; the returned strings are still
+	// captured for the probes. When nil (verify/leak-test), Run captures only.
+	out, errOut, runErr := r.Run(ctx, RunSpec{
+		Name:   "podman",
+		Args:   cfg.ToolRunArgs(),
+		Stdout: cfg.ToolStdout,
+		Stderr: cfg.ToolStderr,
+	})
+	res := Result{ToolStdout: out, ToolStderr: errOut}
 	if runErr != nil {
 		var ee *exec.ExitError
 		if errors.As(runErr, &ee) {
+			if setupErr := classifyPodmanSetupFailure(ee.ExitCode(), errOut); setupErr != nil {
+				// podman/the runtime never got the tool running (bad image, missing
+				// command, runtime exec failure). Surface it as a jail SETUP error, NOT
+				// as the tool's exit code, so a broken image is not hidden behind a
+				// plausible-looking "tool exited 125".
+				return res, setupErr
+			}
 			res.ToolExit = ee.ExitCode()
 			return res, nil // tool ran but exited non-zero; that is the tool's result
 		}
-		return res, fmt.Errorf("run wrapped tool: %w", runErr)
+		return res, fmt.Errorf("run wrapped tool: %w%s", runErr, stderrSuffix(errOut))
 	}
 	return res, nil
 }
 
+// ErrJailSetup is returned when podman or the OCI runtime never got the wrapped
+// tool running (a bad/unpullable image, a tool command not found in the image, or
+// a runtime exec failure). It is distinct from a wrapped tool that RAN and merely
+// exited non-zero, whose code flows to Result.ToolExit instead.
+var ErrJailSetup = errors.New("the wrapped tool never started: podman/runtime setup failure")
+
+// classifyPodmanSetupFailure decides whether a non-zero podman exit is a
+// podman/runtime SETUP failure (the tool never ran) rather than the wrapped
+// tool's own exit code, and if so returns a jail setup error naming the failure
+// with podman's own diagnostic. It returns nil when the exit should be treated
+// as the tool's result.
+//
+// Signals, in order of strength:
+//
+//   - Podman writes its OWN setup diagnostic to STDERR prefixed with "Error:"
+//     (e.g. an unpullable image, or crun's "executable file ... not found").
+//     Because the tool-run step captures podman's stderr SEPARATELY from the
+//     tool's stdout, an "Error:" line on podman's stderr is an unambiguous
+//     podman-level failure: the tool never produced output, podman did.
+//   - The 125 (podman config/pull) / 126 (runtime could not exec) / 127 (command
+//     not found) convention corroborates it.
+//
+// Residual ambiguity: a wrapped tool could itself exit 125/126/127 AND, in
+// theory, print a line beginning "Error:" to stderr. We resolve it in favour of
+// NOT hiding a setup failure, but ONLY when podman's stderr carries a diagnostic
+// that names a podman/runtime setup fault. A bare 125/126/127 with no such
+// diagnostic on stderr is treated as the tool's own exit (the tool ran). This
+// keeps a genuine tool exit (TestJail_PropagatesToolExitCode) propagating while
+// still catching the broken-image / missing-command cases.
+func classifyPodmanSetupFailure(code int, podmanStderr string) error {
+	switch code {
+	case 125, 126, 127:
+		if diag := podmanSetupDiagnostic(podmanStderr); diag != "" {
+			return fmt.Errorf("%w (podman exit %d): %s", ErrJailSetup, code, diag)
+		}
+	}
+	return nil
+}
+
+// podmanSetupDiagnostic returns the podman/runtime setup diagnostic line from
+// podman's captured stderr, or "" if the stderr does not look like a
+// podman-level setup fault. podman prefixes its own errors with "Error:"; the
+// OCI runtime (crun/runc) failures surface there too ("OCI runtime", "crun:",
+// "executable file ... not found").
+func podmanSetupDiagnostic(stderr string) string {
+	trimmed := strings.TrimSpace(stderr)
+	if trimmed == "" {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+	markers := []string{
+		"error:",         // podman's own error prefix (config/pull, unknown flag)
+		"oci runtime",    // runtime could not exec (126) / not found (127)
+		"crun:", "runc:", // the runtimes' own prefixes
+		"executable file",  // "executable file ... not found in $PATH" (127)
+		"manifest unknown", // image tag/digest not found on pull (125)
+		"reading manifest", // pull/manifest failure (125)
+	}
+	matched := false
+	for _, m := range markers {
+		if strings.Contains(lower, m) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return ""
+	}
+	// Prefer the line that actually carries the fault (the "Error:" line, or a
+	// runtime/manifest diagnostic) over noise like podman's "Trying to pull..."
+	// progress line, so the surfaced message names the real failure.
+	lines := strings.Split(trimmed, "\n")
+	for _, line := range lines {
+		s := strings.TrimSpace(line)
+		ls := strings.ToLower(s)
+		for _, m := range markers {
+			if strings.Contains(ls, m) {
+				return s
+			}
+		}
+	}
+	// Fall back to the first non-empty line.
+	for _, line := range lines {
+		if s := strings.TrimSpace(line); s != "" {
+			return s
+		}
+	}
+	return trimmed
+}
+
+// stderrSuffix formats a captured podman stderr for appending to an error
+// message, or "" when empty, so setup failures carry podman's own diagnostic.
+func stderrSuffix(stderr string) string {
+	if s := strings.TrimSpace(stderr); s != "" {
+		return ": " + s
+	}
+	return ""
+}
+
 // sidecarPID returns the host-side PID of the sidecar container (for nsenter).
 func sidecarPID(ctx context.Context, r Runner, cfg Config) (string, error) {
-	out, err := r.Run(ctx, "podman", "inspect", "--format", "{{.State.Pid}}", cfg.sidecarName())
+	out, serr, err := runPodman(ctx, r, "inspect", "--format", "{{.State.Pid}}", cfg.sidecarName())
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w%s", err, stderrSuffix(serr))
 	}
 	pid := strings.TrimSpace(out)
 	if pid == "" || pid == "0" {
@@ -200,7 +322,7 @@ func dnsHelperPath() (string, error) {
 func checkReachback(ctx context.Context, r Runner, cfg Config) error {
 	// Use a throwaway probe in the shared netns: nc-style TCP connect to the
 	// mapped proxy. We use the sidecar's own netns via a short-lived exec.
-	_, err := r.Run(ctx, "podman", "run", "--rm", "--network", "container:"+cfg.sidecarName(),
+	_, _, err := runPodman(ctx, r, "run", "--rm", "--network", "container:"+cfg.sidecarName(),
 		"docker.io/library/alpine:latest", "sh", "-c",
 		fmt.Sprintf("nc -z -w 3 %s %s", mappedHostLoopback, cfg.Proxy.Port))
 	return err
@@ -227,8 +349,8 @@ func Teardown(ctx context.Context, r Runner, cfg Config) error {
 	// (which takes the netns + nft with it). -i (ignore) makes a missing container
 	// a no-op, which is what gives idempotency.
 	for _, name := range []string{cfg.toolName(), cfg.sidecarName()} {
-		if out, err := r.Run(ctx, "podman", "rm", "-f", "-i", name); err != nil {
-			errs = append(errs, fmt.Errorf("removing %s: %w: %s", name, err, out))
+		if _, serr, err := runPodman(ctx, r, "rm", "-f", "-i", name); err != nil {
+			errs = append(errs, fmt.Errorf("removing %s: %w: %s", name, err, serr))
 		}
 	}
 	if len(errs) > 0 {

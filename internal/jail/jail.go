@@ -21,8 +21,10 @@
 package jail
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os/exec"
@@ -51,6 +53,16 @@ type Config struct {
 	// (local Tor / ssh -D), so the sidecar reaches it via the pasta map. When
 	// false the proxy is a normal routable host the sidecar dials directly.
 	ProxyOnHostLoopback bool
+
+	// ToolStdout and ToolStderr are OPTIONAL live sinks for the wrapped tool's
+	// output. When set, the tool's stdout/stderr are streamed to them AS THEY
+	// ARRIVE (a tee) in addition to being captured into Result.ToolStdout /
+	// Result.ToolStderr. `tooljail run` sets them to os.Stdout/os.Stderr so a
+	// jailed tool feels like running it directly; the verify/leak-test probes leave
+	// them nil (capture-only) since they only assert on the returned output. Kept
+	// separate so the tool's stderr is never merged into the stdout a caller parses.
+	ToolStdout io.Writer
+	ToolStderr io.Writer
 
 	// DNSUpstream optionally overrides the DNS resolver the in-netns forwarder
 	// reaches THROUGH the proxy (DNS-over-TCP, addressed by hostname so the proxy
@@ -85,17 +97,70 @@ func splitHostPort(addr string) (host, port, err string) {
 
 // Runner abstracts command execution so the orchestration is unit-testable
 // without a real podman (the integration test uses the real one).
+//
+// Run keeps the command's stdout SEPARATE from its stderr (it does NOT merge
+// them the way CombinedOutput would). That separation is load-bearing:
+//
+//   - the tool-run step classifies a podman/runtime SETUP failure (podman's own
+//     125/126/127 diagnostic, which podman writes to ITS stderr) apart from the
+//     wrapped tool's own non-zero exit, so a broken image or missing tool
+//     command is not mis-reported as "the tool exited 125"; and
+//   - a caller parsing the tool's real output (the leak-test / verify probes read
+//     Result.ToolStdout) sees only the tool's stdout, never podman's stderr noise.
+//
+// The optional Stdout/Stderr live sinks in RunSpec let a caller TEE the streams
+// to os.Stdout/os.Stderr as they arrive while still capturing them for the
+// return values; when nil, Run captures only. That is the seam the live-output
+// streaming builds on, so there is a single Runner shape, not two.
 type Runner interface {
-	Run(ctx context.Context, name string, args ...string) (stdout string, err error)
+	Run(ctx context.Context, spec RunSpec) (stdout, stderr string, err error)
+}
+
+// RunSpec is one command to run through a Runner. Stdout/Stderr are OPTIONAL live
+// sinks: when set, the runner writes the command's stdout/stderr to them AS THEY
+// ARRIVE (a tee) in addition to capturing them; when nil, the runner only
+// captures. Keeping stdout and stderr as separate sinks preserves the split the
+// tool-exit-vs-podman-failure classification and the capture-for-assertions path
+// both depend on.
+type RunSpec struct {
+	Name   string
+	Args   []string
+	Stdout io.Writer
+	Stderr io.Writer
 }
 
 // ExecRunner runs commands with os/exec.
 type ExecRunner struct{}
 
-// Run executes name with args and returns combined trimmed stdout.
-func (ExecRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+// Run executes the spec's command and returns its trimmed stdout and stderr
+// SEPARATELY (never merged). If spec.Stdout/spec.Stderr are set, the command's
+// streams are also written to them live (a tee) as they arrive; otherwise Run
+// only captures. The returned err is the raw exec error (e.g. *exec.ExitError),
+// so callers can inspect the exit code and classify it against the captured
+// stderr.
+func (ExecRunner) Run(ctx context.Context, spec RunSpec) (string, string, error) {
+	cmd := exec.CommandContext(ctx, spec.Name, spec.Args...)
+	var outBuf, errBuf bytes.Buffer
+	if spec.Stdout != nil {
+		cmd.Stdout = io.MultiWriter(&outBuf, spec.Stdout)
+	} else {
+		cmd.Stdout = &outBuf
+	}
+	if spec.Stderr != nil {
+		cmd.Stderr = io.MultiWriter(&errBuf, spec.Stderr)
+	} else {
+		cmd.Stderr = &errBuf
+	}
+	err := cmd.Run()
+	return strings.TrimSpace(outBuf.String()), strings.TrimSpace(errBuf.String()), err
+}
+
+// runPodman is a convenience for the common capture-only podman invocation used
+// by the orchestration steps (sidecar start, inspect, teardown, reachback). It
+// keeps those call sites terse while the tool-run step, which needs the live
+// sinks and the separated stderr, builds its own RunSpec.
+func runPodman(ctx context.Context, r Runner, args ...string) (stdout, stderr string, err error) {
+	return r.Run(ctx, RunSpec{Name: "podman", Args: args})
 }
 
 // sidecarProxyURL converts the user-facing socks5h:// proxy into the socks5://

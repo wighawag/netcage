@@ -2,6 +2,7 @@ package jail_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -214,6 +216,170 @@ func TestJail_PropagatesToolExitCode(t *testing.T) {
 	if res.ToolExit != 42 {
 		t.Fatalf("ToolExit = %d, want 42 (the wrapped tool's exit code must propagate)", res.ToolExit)
 	}
+}
+
+// TestJail_StreamsToolOutputLiveThroughRun: end-to-end proof (podman-gated) that
+// the wrapped tool's stdout is streamed to Config.ToolStdout AS IT ARRIVES, not
+// buffered until exit, while Result.ToolStdout still captures it for the probes.
+// The tool prints a marker then sleeps; the marker must appear on the live sink
+// while the tool is still running (before jail.Run returns).
+func TestJail_StreamsToolOutputLiveThroughRun(t *testing.T) {
+	requirePodman(t)
+
+	fx := socks5hfixture.New(socks5hfixture.Options{ExitIP: "127.0.0.2"})
+	if err := fx.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("fixture start: %v", err)
+	}
+	defer fx.Close()
+	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
+
+	var live safeBuf
+	const marker = "TOOLJAIL-LIVE-MARKER"
+	cfg := jail.Config{
+		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
+		ProxyOnHostLoopback: true,
+		Image:               "docker.io/library/alpine:latest",
+		// Print the marker immediately, then keep running so we can observe the
+		// marker BEFORE the tool exits.
+		ToolArgv:   []string{"sh", "-c", "echo " + marker + "; sleep 6"},
+		ToolStdout: &live,
+		RunID:      "stream" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", ""),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	type outcome struct {
+		res jail.Result
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := jail.Run(ctx, jail.ExecRunner{}, cfg)
+		done <- outcome{res, err}
+	}()
+
+	// The marker must appear on the live sink while the tool's 6s sleep is still
+	// running (i.e. before Run returns). Poll up to ~4s.
+	deadline := time.Now().Add(4 * time.Second)
+	seen := false
+	for time.Now().Before(deadline) {
+		if strings.Contains(live.String(), marker) {
+			seen = true
+			break
+		}
+		select {
+		case o := <-done:
+			t.Fatalf("jail.Run returned before the marker was observed live (buffered, not streamed): res=%q err=%v", o.res.ToolStdout, o.err)
+		default:
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !seen {
+		t.Fatalf("marker %q not observed on the live sink while the tool was still running; output is buffered, not streamed.\nlive so far: %q", marker, live.String())
+	}
+
+	o := <-done
+	if o.err != nil {
+		t.Fatalf("jail.Run: %v", o.err)
+	}
+	// The capture path the probes rely on must still yield the tool's output.
+	if !strings.Contains(o.res.ToolStdout, marker) {
+		t.Fatalf("Result.ToolStdout lost the tool output (capture-for-assertions broken); got %q", o.res.ToolStdout)
+	}
+}
+
+// TestJail_UnpullableImageIsSetupError_NotToolExit: a run whose image cannot be
+// pulled must return a jail SETUP error (wrapping jail.ErrJailSetup), NOT a
+// Result.ToolExit of 125. This is the core of
+// distinguish-podman-failure-from-tool-exit: a broken image must not be hidden
+// behind a plausible-looking "the tool exited 125".
+//
+// It needs no live proxy: the sidecar starts, but the TOOL container fails to
+// pull, which is the podman-125 path. (The sidecar image is the pinned digest,
+// already present; only the tool image is unpullable.)
+func TestJail_UnpullableImageIsSetupError_NotToolExit(t *testing.T) {
+	requirePodman(t)
+
+	fx := socks5hfixture.New(socks5hfixture.Options{ExitIP: "127.0.0.2"})
+	if err := fx.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("fixture start: %v", err)
+	}
+	defer fx.Close()
+	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
+
+	cfg := jail.Config{
+		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
+		ProxyOnHostLoopback: true,
+		Image:               "docker.io/library/tooljail-nonexistent-image-xyz:doesnotexist",
+		ToolArgv:            []string{"true"},
+		RunID:               "badimg" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", ""),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	res, err := jail.Run(ctx, jail.ExecRunner{}, cfg)
+	if err == nil {
+		t.Fatalf("an unpullable image must be a jail setup ERROR; got nil err, ToolExit=%d", res.ToolExit)
+	}
+	if !errors.Is(err, jail.ErrJailSetup) {
+		t.Fatalf("unpullable image must wrap jail.ErrJailSetup; got %v", err)
+	}
+	if res.ToolExit == 125 {
+		t.Fatalf("unpullable image must NOT be reported as the tool exiting 125; got ToolExit=125")
+	}
+}
+
+// TestJail_CommandNotFoundIsSetupError_NotToolExit: a run whose tool COMMAND is
+// not found in the image (podman/crun 127) must be a setup/exec failure, not
+// silently "tool exited 127".
+func TestJail_CommandNotFoundIsSetupError_NotToolExit(t *testing.T) {
+	requirePodman(t)
+
+	fx := socks5hfixture.New(socks5hfixture.Options{ExitIP: "127.0.0.2"})
+	if err := fx.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("fixture start: %v", err)
+	}
+	defer fx.Close()
+	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
+
+	cfg := jail.Config{
+		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
+		ProxyOnHostLoopback: true,
+		Image:               "docker.io/library/alpine:latest",
+		ToolArgv:            []string{"tooljail-no-such-command-xyz"},
+		RunID:               "badcmd" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", ""),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	res, err := jail.Run(ctx, jail.ExecRunner{}, cfg)
+	if err == nil {
+		t.Fatalf("a command-not-found must be a jail setup/exec ERROR; got nil err, ToolExit=%d", res.ToolExit)
+	}
+	if !errors.Is(err, jail.ErrJailSetup) {
+		t.Fatalf("command-not-found must wrap jail.ErrJailSetup; got %v", err)
+	}
+	if res.ToolExit == 127 {
+		t.Fatalf("command-not-found must NOT be reported as the tool exiting 127; got ToolExit=127")
+	}
+}
+
+// safeBuf is a concurrency-safe buffer so the live-streaming test can read the
+// sink from the test goroutine while jail.Run writes it from another.
+type safeBuf struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *safeBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *safeBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func extractIP(s string) string {

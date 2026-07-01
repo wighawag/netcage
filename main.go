@@ -55,10 +55,17 @@ func run(args []string) int {
 }
 
 // runRun stands up the jail and runs the wrapped tool, propagating the tool's
-// exit code as tooljail's own. A jail SETUP failure (sidecar/nft/reachback)
-// exits non-zero with a clear message; a tool that ran but exited non-zero
-// passes that exit code through (the wrapped tool's result is the run's result).
-// SIGINT cancels ctx, so the jail's deferred Teardown leaves no residue.
+// exit code as tooljail's own. A jail SETUP failure (a bad/unpullable image, a
+// tool command not found, or sidecar/nft/reachback) exits non-zero with a clear
+// message; a tool that ran but exited non-zero passes that exit code through (the
+// wrapped tool's result is the run's result). SIGINT cancels ctx, so the jail's
+// deferred Teardown leaves no residue.
+//
+// The wrapped tool's stdout/stderr are STREAMED LIVE to tooljail's own
+// stdout/stderr (via the Config live sinks) so a jailed tool feels like running
+// it directly, with no wait-until-exit and no unbounded in-memory buffering of
+// the streamed output. The captured Result.ToolStdout is what the verify probes
+// assert on; here it is already on screen, so it is NOT re-printed.
 func runRun(ctx context.Context, cmd *cli.Command) int {
 	cfg := jail.Config{
 		Proxy:               cmd.Proxy,
@@ -66,11 +73,10 @@ func runRun(ctx context.Context, cmd *cli.Command) int {
 		Image:               cmd.Image,
 		ToolArgv:            cmd.ToolArgv,
 		Mounts:              cmd.Mounts,
+		ToolStdout:          os.Stdout,
+		ToolStderr:          os.Stderr,
 	}
 	res, err := jail.Run(ctx, jail.ExecRunner{}, cfg)
-	if res.ToolStdout != "" {
-		fmt.Println(res.ToolStdout)
-	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tooljail: run: %v\n", err)
 		return 1
