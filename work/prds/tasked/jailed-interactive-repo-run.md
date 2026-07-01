@@ -11,9 +11,9 @@ taskedAfter: []
 
 I found a tool I want to try, but it is a REPO, not a prebuilt container image, and I do not fully trust it. To use it I have to build it and install its dependencies first (clone sub-deps, `pip install`, `npm install`, `go build`, `cargo build`), and then run it against a target. I want to do all of this WITHOUT leaking my real IP or DNS.
 
-Two things are missing today:
+Two things are missing today (this Problem Statement is the launch snapshot at authoring time; the CLI grammar it references, `--image X -- tool args`, has since been replaced by the podman-native positional grammar this prd's tasks delivered, `run [flags] <image> [<cmd>...]`):
 
-1. **There is no jailed interactive shell.** tooljail today runs a tool NON-interactively (`tooljail run --image X -- tool args`): it streams output but does not attach a TTY or stdin, so I cannot "shell into the jail" and set the repo up by hand. For an untrusted repo I do not want to run its build scripts naked on my host (a malicious `postinstall`/`setup.py` runs with my host IP), so the setup itself should happen jailed. The only way to do that interactively is a jailed shell, which does not exist.
+1. **There is no jailed interactive shell.** tooljail (at authoring time) runs a tool NON-interactively: it streams output but does not attach a TTY or stdin, so I cannot "shell into the jail" and set the repo up by hand. For an untrusted repo I do not want to run its build scripts naked on my host (a malicious `postinstall`/`setup.py` runs with my host IP), so the setup itself should happen jailed. The only way to do that interactively is a jailed shell, which does not exist.
 
 2. **The CLI is tooljail-specific, so an agent has to learn it.** An LLM agent already knows `podman run` / `docker run` cold. If tooljail's interface mirrors that, an agent can drive it with zero tooljail-specific knowledge. Today it invents its own surface (`--image`, and a required `--proxy`), so the agent must be taught tooljail.
 
@@ -53,7 +53,7 @@ The leak guarantee is NOT weakened by any of this. Interactive and declarative r
 7. As a security-conscious operator, I want tooljail to REJECT (loudly, with a reason) any podman flag that would breach the jail (`--network`, `-p`/`--publish`, `--dns`, `--privileged`, `--cap-add`, `--device`, and the names/lifecycle flags tooljail owns like `--name`/`--rm`), so that an agent reflexively reaching for `--network host` gets a self-correcting error instead of a silent leak.
 8. As an agent, I want to supply the proxy via `TOOLJAIL_PROXY=socks5h://...` in the environment, so that my tooljail command line carries nothing tooljail-specific and is indistinguishable from a `podman run` I already know how to write.
 9. As a security-conscious operator, I want the run to FAIL CLOSED and refuse to start when NEITHER `--proxy` nor `TOOLJAIL_PROXY` is set (or when either is malformed / not `socks5h`), so that a missing proxy can never silently become an unjailed run.
-10. As an operator, I want a sensible DEFAULT dev image (broad, multi-language, pinned) when I do not pass one, so that `tooljail run -it -v <repo>:/work -w /work bash` is useful out of the box; and I want `--image`/positional image to override it.
+10. As an operator, I want a sensible DEFAULT dev image (broad, multi-language, pinned) when I do not pass one, so that `tooljail run -it -v <repo>:/work -w /work bash` is useful out of the box; and I want an explicit positional image to override it.
 11. As an operator, I want the interactive/declarative modes to leave NO residue (container, sidecar, netns, nft, DNS forwarder all torn down on exit or Ctrl-C), exactly as the non-interactive run does today, so that an interactive session is as clean as a wrapped-tool run.
 12. As a CI maintainer, I want `verify` to still prove the leak assertions for the jail that interactive/declarative runs use, so that the added modes cannot regress the leak guarantee (an interactive run must stand up the identical jail topology, same nft, same forced egress).
 

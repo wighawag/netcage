@@ -9,3 +9,14 @@ nuclei -u ...`) and any README still document the old shape. A later doc pass
 should reconcile the parent prd/README prose to the new positional grammar. This
 drift is expected and out of scope for the CLI task; recorded here so it is not
 silently left.
+
+## Resolved 2026-07-01
+
+The doc pass is done. `work/prds/tasked/tooljail.md` (the "One command shape"
+block + story 1) now shows the positional grammar; `work/prds/tasked/jailed-interactive-repo-run.md`
+story 10 dropped the `--image` override phrasing and its Problem Statement is
+marked as a launch snapshot whose old grammar has since been replaced. There is
+no README at the repo root. ADR-0004's `--image` mention is left intact (it is
+decision-context explaining the grammar it operates under, not stale usage). The
+drift signal is discharged; this note can be deleted by a human when convenient
+(git history is the archive).

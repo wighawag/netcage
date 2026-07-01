@@ -16,10 +16,10 @@ There is no general, tool-agnostic way to take an arbitrary tool and guarantee t
 
 `tooljail`, a Go CLI that confines an arbitrary containerized tool inside a network jail whose ONLY route to the outside is a SOCKS5h redirector. The wrapped tool needs zero proxy awareness: the network layer forces every TCP packet and every DNS query into the proxy, and if the proxy is unreachable, traffic is dropped (fail-closed), never leaked to the host network.
 
-One command shape:
+One command shape (podman-native positional grammar: the image is the first positional and the tool command follows it, like `podman run [flags] IMAGE [CMD...]`; the proxy comes from `--proxy` or the `TOOLJAIL_PROXY` env):
 
 ```
-tooljail run --proxy socks5h://[user:pass@]host:port --image <image> -- <tool> <args...>
+tooljail run --proxy socks5h://[user:pass@]host:port <image> <tool> <args...>
 ```
 
 And a first-class proof:
@@ -34,7 +34,7 @@ Built on Podman: a tiny `tun2socks` (gVisor netstack) redirector sidecar (ADR-00
 
 ## User Stories
 
-1. As an operator, I want to run `tooljail run --proxy socks5h://127.0.0.1:9050 --image nuclei -- nuclei -u https://target`, so that nuclei scans entirely through my Tor proxy with no IP or DNS leak.
+1. As an operator, I want to run `tooljail run --proxy socks5h://127.0.0.1:9050 projectdiscovery/nuclei nuclei -u https://target`, so that nuclei scans entirely through my Tor proxy with no IP or DNS leak. (The image is the first positional; a bare name like `nuclei` with no `/`, `:`, `@`, or `.` is read as a command against the default dev image, so name the image explicitly, e.g. `projectdiscovery/nuclei` or `nuclei:latest`.)
 2. As an operator, I want a host-loopback SOCKS5h proxy (local Tor, `ssh -D`) to be reachable from inside the jail, so that I do not have to expose a remote proxy just to use the tool.
 3. As an operator, I want a remote `socks5h://user:pass@bastion:1080` proxy (with auth) to work identically, so that the same wrapper serves both local and remote tunnels.
 4. As a security-conscious user, I want DNS to resolve INSIDE the proxy, so that my local resolver and ISP never see the hostnames I am investigating.
