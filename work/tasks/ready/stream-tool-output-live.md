@@ -1,10 +1,16 @@
 ---
 title: Stream the wrapped tool's stdout/stderr live instead of buffering to the end
 slug: stream-tool-output-live
-prd: tooljail
-blockedBy: [jail-run-forced-egress, run-cli-wiring]
-covers: [11, 12]
+blockedBy: [jail-run-forced-egress, run-cli-wiring, distinguish-podman-failure-from-tool-exit]
+covers: []
 ---
+
+> Chore (no `prd`/`covers`): a usability refinement of the tool-run step, not the delivery of a prd
+> user story. SERIALISED after `distinguish-podman-failure-from-tool-exit`: both change the SAME
+> `internal/jail` Runner + tool-run step, and both need the wrapped tool's stdout separated from
+> podman's own stderr. That task owns the stdout/stderr split; this one builds the live-streaming
+> tee/capture ON TOP of the seam it establishes, so there is one Runner redesign, not two conflicting
+> ones.
 
 ## What to build
 
@@ -52,6 +58,9 @@ End-to-end thin path:
 
 - `jail-run-forced-egress`, `run-cli-wiring` — both landed; this changes how the tool-run step's
   output is delivered, which `run` prints and the probes/verify consume.
+- `distinguish-podman-failure-from-tool-exit` — it owns the `Runner` stdout/stderr-separation
+  redesign this task's live tee/capture builds on; serialised so the two do not fork two conflicting
+  `Runner` redesigns of the same seam.
 
 ## Prompt
 

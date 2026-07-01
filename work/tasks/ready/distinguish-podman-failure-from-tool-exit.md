@@ -1,10 +1,15 @@
 ---
 title: Distinguish a podman/runtime failure from the wrapped tool's own exit code
 slug: distinguish-podman-failure-from-tool-exit
-prd: tooljail
 blockedBy: [jail-run-forced-egress, run-cli-wiring]
-covers: [12]
+covers: []
 ---
+
+> Chore (no `prd`/`covers`): a review-born refinement of the tool-run step, not the delivery of a
+> prd user story. It also OWNS the `internal/jail` Runner redesign that separates the wrapped tool's
+> stdout from podman's own stderr; `stream-tool-output-live` is serialised AFTER this task
+> (`blockedBy` it) and builds its tee/streaming on the separated seam this task establishes, so the
+> two do not fork two conflicting Runner redesigns.
 
 ## What to build
 
