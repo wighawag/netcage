@@ -105,6 +105,14 @@ type Command struct {
 	Env        []string // -e/--env pass-through values, repeatable (run)
 	User       string   // -u/--user pass-through (run)
 	Entrypoint string   // --entrypoint pass-through (run)
+
+	// AllowDirect is the validated split-tunnel LAN allowlist: --allow-direct
+	// values (repeatable) parsed into private-only DirectAllow entries (network +
+	// optional port). EMPTY by default (no flag) == today's strict jail. This
+	// package only PARSES + VALIDATES the allowlist (accepting only RFC1918 /
+	// link-local, rejecting public/hostname/malformed loudly at startup); the
+	// split-tunnel-jail-wiring task consumes it to open the narrow direct path.
+	AllowDirect []DirectAllow // --allow-direct entries, repeatable (run)
 }
 
 // ProxyOnHostLoopback reports whether the proxy listens on the host's loopback
@@ -303,11 +311,28 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 		case strings.HasPrefix(a, "--entrypoint="):
 			cmd.Entrypoint = strings.TrimPrefix(a, "--entrypoint=")
 
+		case a == "--allow-direct":
+			v, ok := next(rest, &i)
+			if !ok {
+				return nil, errors.New("--allow-direct requires a value (an RFC1918/link-local IP or CIDR, optionally with :port)")
+			}
+			entry, aerr := parseAllowDirect(v)
+			if aerr != nil {
+				return nil, aerr
+			}
+			cmd.AllowDirect = append(cmd.AllowDirect, entry)
+		case strings.HasPrefix(a, "--allow-direct="):
+			entry, aerr := parseAllowDirect(strings.TrimPrefix(a, "--allow-direct="))
+			if aerr != nil {
+				return nil, aerr
+			}
+			cmd.AllowDirect = append(cmd.AllowDirect, entry)
+
 		case strings.HasPrefix(a, "-") && a != "-":
 			// An unlisted/unaudited flag: reject by default (fail-closed on the CLI)
 			// so it cannot silently ride through into the tool container. "-" alone
 			// (stdin) is treated as a positional, not a flag.
-			return nil, fmt.Errorf("unknown flag %q: tooljail accepts only a curated allow-list of podman flags (-i, -t, -it, -v/--volume, -w/--workdir, -e/--env, -u/--user, --entrypoint) plus --proxy", a)
+			return nil, fmt.Errorf("unknown flag %q: tooljail accepts only a curated allow-list of podman flags (-i, -t, -it, -v/--volume, -w/--workdir, -e/--env, -u/--user, --entrypoint) plus --proxy and --allow-direct", a)
 
 		default:
 			// The first non-flag positional ends the flags: it is the image, and
