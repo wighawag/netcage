@@ -73,6 +73,7 @@ func runRun(ctx context.Context, cmd *cli.Command) int {
 		Image:               cmd.Image,
 		ToolArgv:            cmd.ToolArgv,
 		Mounts:              cmd.Mounts,
+		Workdir:             cmd.Workdir,
 		ToolStdout:          os.Stdout,
 		ToolStderr:          os.Stderr,
 	}
@@ -97,11 +98,21 @@ func runVerify(ctx context.Context, cmd *cli.Command) int {
 }
 
 const usage = `usage:
-  tooljail run    [flags] <image> [<cmd> <args...>]
+  tooljail run    [flags] [<image>] [<cmd> <args...>]
   tooljail verify [--proxy socks5h://[user:pass@]host:port]
 
 run uses podman-native grammar: the image is the first positional and the tool
 command + args follow it (like ` + "`podman run [flags] IMAGE [CMD...]`" + `).
+
+default dev image: if no positional image is given, a pinned broad dev base
+(buildpack-deps, git + build toolchains) is used, so ` + "`tooljail run -it -v <repo>:/work bash`" + `
+is useful bare. A bare command-shaped first positional (e.g. ` + "`run -it bash`" + `) is
+taken as the COMMAND with the default image; a first positional that looks like an
+image (has /, :, @, or .) is the image. Force a bare-token image with ` + "`run -- alpine sh`" + `.
+
+repo-mount ergonomics: ` + "`-v <repo>`" + ` with no target defaults to ` + "`<repo>:/work`" + `, and
+a mount at /work with no -w defaults the workdir to /work, so a repo is worked in
+without hand-writing -w. An explicit -w overrides.
 
 proxy (required): --proxy socks5h://[user:pass@]host:port, or the TOOLJAIL_PROXY
 env var (flag wins; if neither is set the run refuses, fail-closed). Only
