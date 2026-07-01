@@ -11,9 +11,15 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
+
+// ProxyEnvVar is the environment variable an agent can set instead of passing
+// --proxy, so the tooljail command line carries nothing tooljail-specific and is
+// pure `podman run` vocabulary (prd story 8). Precedence is flag > env > refuse.
+const ProxyEnvVar = "TOOLJAIL_PROXY"
 
 // ProxyConfig is a parsed, validated socks5h proxy endpoint.
 type ProxyConfig struct {
@@ -65,12 +71,31 @@ func ParseProxy(raw string) (ProxyConfig, error) {
 }
 
 // Command is a parsed tooljail invocation.
+//
+// The `run` grammar is podman-native and POSITIONAL: `run [flags] <image>
+// [<cmd> <args...>]`, mirroring `podman run [flags] IMAGE [CMD...]`. The image is
+// the first positional argument and the tool argv is the remaining positionals;
+// there is no --image flag and no `--` tool-argv separator (a standalone `--`
+// before the image is accepted only as an optional end-of-flags marker, a podman
+// nicety). Flags outside the curated allow-list are rejected: jail-breaching
+// flags with an explanatory message, anything else as an unknown flag.
 type Command struct {
 	Name     string // "run" or "verify"
 	Proxy    ProxyConfig
-	Image    string   // required for run; unused for verify
-	ToolArgv []string // the post-"--" tool argv (run)
+	Image    string   // required for run (first positional); unused for verify
+	ToolArgv []string // the tool command + args (positionals after the image)
 	Mounts   []string // -v/--volume pass-through values (run)
+
+	// Interactive / TTY record the -i / -t (and -it/-ti) booleans for the jail
+	// run-mode task to consume. This package only PARSES them; wiring an
+	// interactive TTY through the jail is the separate jailed-interactive-tty task.
+	Interactive bool // -i / --interactive
+	TTY         bool // -t / --tty
+
+	Workdir    string   // -w/--workdir pass-through (run)
+	Env        []string // -e/--env pass-through values, repeatable (run)
+	User       string   // -u/--user pass-through (run)
+	Entrypoint string   // --entrypoint pass-through (run)
 }
 
 // ProxyOnHostLoopback reports whether the proxy listens on the host's loopback
@@ -123,8 +148,34 @@ func (c *Command) PreflightWith(r Reachability) error {
 	return nil
 }
 
-// Parse parses argv (without the program name) into a Command.
+// denyReasons maps each jail-breaching flag to WHY tooljail refuses it. tooljail
+// OWNS the container's network and isolation (it sets `--network
+// container:<sidecar>`, a run-attributable `--name`, `--rm`, and the in-netns DNS
+// forwarder), so honouring a user/agent-supplied one would either collide with
+// what tooljail sets or open a leak path around the forced-egress jail. The
+// message is part of the agent-facing interface: a self-correcting nudge.
+var denyReasons = map[string]string{
+	"--network":    "tooljail owns the container network (it sets --network container:<sidecar> so all egress is forced through the socks5h proxy); overriding it would breach the jail and leak",
+	"-p":           "publishing ports (-p/--publish) would open an inbound path around the jail; tooljail owns the container's networking to keep it leak-proof",
+	"--publish":    "publishing ports (-p/--publish) would open an inbound path around the jail; tooljail owns the container's networking to keep it leak-proof",
+	"--dns":        "tooljail owns DNS (it forces resolution through the socks5h proxy via the in-netns forwarder); a user --dns would leak DNS to a host-reachable resolver, defeating the jail",
+	"--privileged": "a privileged container can escape the network jail and the isolation tooljail depends on; refused to keep the jail leak-proof",
+	"--cap-add":    "added capabilities (e.g. NET_ADMIN) let the tool re-route around the forced-egress jail; tooljail owns the container's capabilities to keep it leak-proof",
+	"--device":     "passing host devices can bypass the network namespace the jail relies on; tooljail owns device access to keep the jail leak-proof",
+	"--name":       "tooljail owns the container --name (it uses a run-attributable name for teardown); a user --name would collide with the jail's lifecycle management",
+	"--rm":         "tooljail owns the container lifecycle (--rm and teardown); a user --rm would collide with the jail's no-residue teardown",
+}
+
+// Parse parses argv (without the program name) into a Command, reading the
+// TOOLJAIL_PROXY fallback from the real process environment.
 func Parse(args []string) (*Command, error) {
+	return ParseWithEnv(args, os.LookupEnv)
+}
+
+// ParseWithEnv is Parse with an injectable environment lookup (os.LookupEnv in
+// production) so the TOOLJAIL_PROXY precedence and env-validation paths are
+// unit-testable without mutating the real process environment.
+func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Command, error) {
 	if len(args) == 0 {
 		return nil, errors.New("no subcommand: expected `run` or `verify`")
 	}
@@ -135,75 +186,167 @@ func Parse(args []string) (*Command, error) {
 		return nil, fmt.Errorf("unknown subcommand %q: expected `run` or `verify`", name)
 	}
 
-	rest, toolArgv := splitDoubleDash(args[1:])
+	rest := args[1:]
+	cmd := &Command{Name: name}
 
-	var proxyRaw, image string
-	var mounts []string
+	var proxyRaw string
+	var proxyFromFlag bool
+	var positionals []string
+	endOfFlags := false
+
 	for i := 0; i < len(rest); i++ {
 		a := rest[i]
+
+		// Once we are past the flags (either a standalone `--` marker or the first
+		// positional image), everything else is positional: the image and the tool
+		// argv. A `-t` here is a tool arg, not tooljail's TTY flag.
+		if endOfFlags {
+			positionals = append(positionals, a)
+			continue
+		}
+		if a == "--" {
+			// Optional explicit end-of-flags marker (a podman nicety). The image and
+			// argv follow it; the marker itself is not a positional.
+			endOfFlags = true
+			continue
+		}
+
+		// A jail-breaching flag: reject loudly, in both --flag and --flag=value forms.
+		if reason, denied := denyFlag(a); denied {
+			flag := denyFlagName(a)
+			return nil, fmt.Errorf("flag %s is not allowed: %s", flag, reason)
+		}
+
 		switch {
 		case a == "--proxy":
 			v, ok := next(rest, &i)
 			if !ok {
 				return nil, errors.New("--proxy requires a value")
 			}
-			proxyRaw = v
+			proxyRaw, proxyFromFlag = v, true
 		case strings.HasPrefix(a, "--proxy="):
-			proxyRaw = strings.TrimPrefix(a, "--proxy=")
-		case a == "--image":
-			v, ok := next(rest, &i)
-			if !ok {
-				return nil, errors.New("--image requires a value")
-			}
-			image = v
-		case strings.HasPrefix(a, "--image="):
-			image = strings.TrimPrefix(a, "--image=")
+			proxyRaw, proxyFromFlag = strings.TrimPrefix(a, "--proxy="), true
+
+		case a == "-i" || a == "--interactive":
+			cmd.Interactive = true
+		case a == "-t" || a == "--tty":
+			cmd.TTY = true
+		case a == "-it" || a == "-ti":
+			cmd.Interactive, cmd.TTY = true, true
+
 		case a == "-v" || a == "--volume":
 			v, ok := next(rest, &i)
 			if !ok {
 				return nil, errors.New("-v/--volume requires a value (host:container[:opts])")
 			}
-			mounts = append(mounts, v)
+			cmd.Mounts = append(cmd.Mounts, v)
 		case strings.HasPrefix(a, "--volume="):
-			mounts = append(mounts, strings.TrimPrefix(a, "--volume="))
+			cmd.Mounts = append(cmd.Mounts, strings.TrimPrefix(a, "--volume="))
 		case strings.HasPrefix(a, "-v="):
-			mounts = append(mounts, strings.TrimPrefix(a, "-v="))
+			cmd.Mounts = append(cmd.Mounts, strings.TrimPrefix(a, "-v="))
+
+		case a == "-w" || a == "--workdir":
+			v, ok := next(rest, &i)
+			if !ok {
+				return nil, errors.New("-w/--workdir requires a value")
+			}
+			cmd.Workdir = v
+		case strings.HasPrefix(a, "--workdir="):
+			cmd.Workdir = strings.TrimPrefix(a, "--workdir=")
+		case strings.HasPrefix(a, "-w="):
+			cmd.Workdir = strings.TrimPrefix(a, "-w=")
+
+		case a == "-e" || a == "--env":
+			v, ok := next(rest, &i)
+			if !ok {
+				return nil, errors.New("-e/--env requires a value (KEY=VALUE)")
+			}
+			cmd.Env = append(cmd.Env, v)
+		case strings.HasPrefix(a, "--env="):
+			cmd.Env = append(cmd.Env, strings.TrimPrefix(a, "--env="))
+		case strings.HasPrefix(a, "-e="):
+			cmd.Env = append(cmd.Env, strings.TrimPrefix(a, "-e="))
+
+		case a == "-u" || a == "--user":
+			v, ok := next(rest, &i)
+			if !ok {
+				return nil, errors.New("-u/--user requires a value")
+			}
+			cmd.User = v
+		case strings.HasPrefix(a, "--user="):
+			cmd.User = strings.TrimPrefix(a, "--user=")
+		case strings.HasPrefix(a, "-u="):
+			cmd.User = strings.TrimPrefix(a, "-u=")
+
+		case a == "--entrypoint":
+			v, ok := next(rest, &i)
+			if !ok {
+				return nil, errors.New("--entrypoint requires a value")
+			}
+			cmd.Entrypoint = v
+		case strings.HasPrefix(a, "--entrypoint="):
+			cmd.Entrypoint = strings.TrimPrefix(a, "--entrypoint=")
+
+		case strings.HasPrefix(a, "-") && a != "-":
+			// An unlisted/unaudited flag: reject by default (fail-closed on the CLI)
+			// so it cannot silently ride through into the tool container. "-" alone
+			// (stdin) is treated as a positional, not a flag.
+			return nil, fmt.Errorf("unknown flag %q: tooljail accepts only a curated allow-list of podman flags (-i, -t, -it, -v/--volume, -w/--workdir, -e/--env, -u/--user, --entrypoint) plus --proxy", a)
+
 		default:
-			return nil, fmt.Errorf("unknown flag or argument %q", a)
+			// The first non-flag positional ends the flags: it is the image, and
+			// everything after it is the tool argv (mirroring podman/docker).
+			endOfFlags = true
+			positionals = append(positionals, a)
 		}
 	}
 
-	if proxyRaw == "" {
-		return nil, errors.New("--proxy is required (socks5h://host:port)")
+	// Proxy resolution: flag > env > refuse. Both paths go through the SAME
+	// socks5h-enforcing ParseProxy (the env path is NOT laxer).
+	if !proxyFromFlag {
+		if v, ok := lookupEnv(ProxyEnvVar); ok && strings.TrimSpace(v) != "" {
+			proxyRaw = v
+		}
+	}
+	if strings.TrimSpace(proxyRaw) == "" {
+		return nil, fmt.Errorf("no proxy: pass --proxy socks5h://host:port or set %s (tooljail refuses to run without a proxy; it fails closed and never leaks to the host network)", ProxyEnvVar)
 	}
 	proxy, err := ParseProxy(proxyRaw)
 	if err != nil {
 		return nil, err
 	}
-
-	cmd := &Command{Name: name, Proxy: proxy, ToolArgv: toolArgv, Mounts: mounts}
+	cmd.Proxy = proxy
 
 	if name == "run" {
-		if image == "" {
-			return nil, errors.New("run requires --image <image>")
+		if len(positionals) == 0 {
+			return nil, errors.New("run requires an image: `tooljail run [flags] <image> [<cmd>...]` (the image is the first positional, like `podman run`)")
 		}
-		cmd.Image = image
-		if len(toolArgv) == 0 {
-			return nil, errors.New("run requires a tool command after `--` (e.g. -- nuclei -u https://target)")
+		cmd.Image = positionals[0]
+		cmd.ToolArgv = positionals[1:]
+		if len(cmd.ToolArgv) == 0 {
+			return nil, errors.New("run requires a tool command after the image (e.g. `tooljail run <image> nuclei -u https://target`)")
 		}
+	} else if len(positionals) > 0 {
+		return nil, fmt.Errorf("verify takes no positional arguments, got %v", positionals)
 	}
+
 	return cmd, nil
 }
 
-// splitDoubleDash splits args at the first standalone "--": everything before is
-// flags, everything after is the tool argv.
-func splitDoubleDash(args []string) (before, after []string) {
-	for i, a := range args {
-		if a == "--" {
-			return args[:i], args[i+1:]
-		}
+// denyFlag reports whether a is a jail-breaching flag (in --flag or --flag=value
+// form) and, if so, the reason it is refused.
+func denyFlag(a string) (reason string, denied bool) {
+	name := denyFlagName(a)
+	r, ok := denyReasons[name]
+	return r, ok
+}
+
+// denyFlagName strips a `=value` suffix so `--network=host` maps to `--network`.
+func denyFlagName(a string) string {
+	if i := strings.IndexByte(a, '='); i >= 0 {
+		return a[:i]
 	}
-	return args, nil
+	return a
 }
 
 // next returns the value following the flag at *i and advances *i past it.
