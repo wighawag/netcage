@@ -97,5 +97,18 @@ func runVerify(ctx context.Context, cmd *cli.Command) int {
 }
 
 const usage = `usage:
-  tooljail run    --proxy socks5h://[user:pass@]host:port --image <image> [-v host:container[:opts]]... -- <tool> <args...>
-  tooljail verify --proxy socks5h://[user:pass@]host:port`
+  tooljail run    [flags] <image> [<cmd> <args...>]
+  tooljail verify [--proxy socks5h://[user:pass@]host:port]
+
+run uses podman-native grammar: the image is the first positional and the tool
+command + args follow it (like ` + "`podman run [flags] IMAGE [CMD...]`" + `).
+
+proxy (required): --proxy socks5h://[user:pass@]host:port, or the TOOLJAIL_PROXY
+env var (flag wins; if neither is set the run refuses, fail-closed). Only
+socks5h:// is accepted (plain socks5:// leaks DNS and is rejected).
+
+allowed run flags: -i, -t, -it/-ti, -v/--volume host:container[:opts],
+-w/--workdir <dir>, -e/--env KEY=VALUE, -u/--user <user>, --entrypoint <path>.
+jail-breaching flags (--network, -p/--publish, --dns, --privileged, --cap-add,
+--device, --name, --rm) are rejected: tooljail owns the network and isolation to
+keep the jail leak-proof. Any other flag is rejected by default.`
