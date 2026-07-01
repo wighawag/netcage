@@ -47,6 +47,7 @@ type Config struct {
 	Image    string
 	ToolArgv []string
 	Mounts   []string // podman -v values, passed through
+	Workdir  string   // podman -w/--workdir; empty leaves the image's own workdir
 	RunID    string   // run-attributable id; containers named tooljail-run-<RunID>-*
 
 	// ProxyOnHostLoopback indicates the proxy listens on the HOST's 127.0.0.1
@@ -266,6 +267,13 @@ func (c Config) ToolRunArgs() []string {
 	}
 	for _, m := range c.Mounts {
 		args = append(args, "-v", m)
+	}
+	// The workdir is where the tool runs inside the container. For the repo-mount
+	// ergonomic the CLI defaults this to /work (the repo mount target) so a repo
+	// dropped in is worked in; an explicit -w overrides it. Empty leaves the
+	// image's own default workdir.
+	if c.Workdir != "" {
+		args = append(args, "-w", c.Workdir)
 	}
 	args = append(args, c.Image)
 	args = append(args, c.ToolArgv...)

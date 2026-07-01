@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/wighawag/tooljail/internal/cli"
+	"github.com/wighawag/tooljail/internal/devimage"
 	"github.com/wighawag/tooljail/internal/jail"
 	"github.com/wighawag/tooljail/internal/socks5hfixture"
 )
@@ -151,6 +152,70 @@ func TestJail_ForcedEgress_ExitIPIsProxys(t *testing.T) {
 	if !strings.Contains(res.ToolStdout, exitIP) {
 		t.Fatalf("tool observed exit IP %q in output; want the fixture's exit IP %q\nfull output: %q",
 			extractIP(res.ToolStdout), exitIP, res.ToolStdout)
+	}
+}
+
+// TestJail_DefaultDevImage_ForcedEgressAndNoResidue is the podman-gated proof for
+// the default-dev-image ergonomic: the PINNED default dev image (the one
+// `tooljail run` injects when no positional image is given) runs THROUGH the jail
+// with its egress FORCED through the proxy (the observed exit IP is the fixture's,
+// not the host's), and the run leaves NO run-attributable residue. It mirrors
+// TestJail_ForcedEgress_ExitIPIsProxys but pins Config.Image to
+// devimage.ImageReference() so the leak guarantee is proven for the image an
+// out-of-the-box `tooljail run -it -v <repo>:/work bash` actually uses.
+//
+// The default dev image (buildpack-deps) is large; the pull can be slow on a cold
+// cache, so the test budget is generous. It is podman-gated (t.Skip without
+// podman) and isolates to throwaway, run-attributable resources.
+func TestJail_DefaultDevImage_ForcedEgressAndNoResidue(t *testing.T) {
+	requirePodman(t)
+
+	echoPort, stopEcho := startExitEcho(t)
+	defer stopEcho()
+
+	const exitIP = "127.0.0.2" // the fixture's known exit IP (loopback alias)
+	const placeholderIP = "198.51.100.10"
+	fx := socks5hfixture.New(socks5hfixture.Options{
+		ExitIP:         exitIP,
+		AllowIPConnect: true,
+		RedirectTarget: "127.0.0.1:" + echoPort,
+	})
+	if err := fx.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("fixture start: %v", err)
+	}
+	defer fx.Close()
+	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
+
+	runID := "defimg" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", "")
+	cfg := jail.Config{
+		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
+		ProxyOnHostLoopback: true,
+		// The default dev image the CLI injects when no positional image is passed.
+		Image: devimage.ImageReference(),
+		// buildpack-deps carries curl; fetch the routable placeholder BY IP so
+		// tun2socks tunnels it to the proxy, which redirects to the echo and dials
+		// from the exit IP. The echo replies with the source IP it observed.
+		ToolArgv: []string{"sh", "-c", "curl -s -m 8 http://" + placeholderIP + ":" + echoPort + " || true"},
+		RunID:    runID,
+	}
+
+	// Generous budget: the default dev image is large and may pull on a cold cache.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+
+	res, err := jail.Run(ctx, jail.ExecRunner{}, cfg)
+	if err != nil {
+		t.Fatalf("jail.Run with the default dev image: %v", err)
+	}
+	if !strings.Contains(res.ToolStdout, exitIP) {
+		t.Fatalf("tool observed exit IP %q; want the fixture's exit IP %q (default image egress not forced through the proxy)\nfull output: %q",
+			extractIP(res.ToolStdout), exitIP, res.ToolStdout)
+	}
+
+	// No run-attributable container for this run should remain (no residue).
+	out, _ := exec.CommandContext(ctx, "podman", "ps", "-a", "--format", "{{.Names}}").CombinedOutput()
+	if strings.Contains(string(out), "tooljail-run-"+runID) {
+		t.Fatalf("run-attributable containers left after the default-dev-image run:\n%s", out)
 	}
 }
 

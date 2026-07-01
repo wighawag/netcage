@@ -135,6 +135,25 @@ func TestToolRunArgs_SharesNetnsAndPassesThrough(t *testing.T) {
 	}
 }
 
+func TestToolRunArgs_SetsWorkdirWhenGiven(t *testing.T) {
+	c := cfg()
+	c.Mounts = []string{"/host/repo:/work"}
+	c.Workdir = "/work"
+	args := strings.Join(c.ToolRunArgs(), " ")
+	if !strings.Contains(args, "-w /work") {
+		t.Fatalf("tool args should set the container workdir with -w /work (repo-mount ergonomic)\ngot: %s", args)
+	}
+}
+
+func TestToolRunArgs_OmitsWorkdirWhenEmpty(t *testing.T) {
+	c := cfg()
+	c.Workdir = ""
+	args := strings.Join(c.ToolRunArgs(), " ")
+	if strings.Contains(args, " -w ") {
+		t.Fatalf("tool args must NOT set -w when no workdir is given (leave the image's own workdir)\ngot: %s", args)
+	}
+}
+
 func TestNftRuleset_DropsUDPExceptLocalDNSAndNarrowsReachback(t *testing.T) {
 	c := cfg()
 	c.ProxyOnHostLoopback = true

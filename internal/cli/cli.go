@@ -14,7 +14,15 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/wighawag/tooljail/internal/devimage"
 )
+
+// DefaultMountTarget is the container path a repo mount defaults to (and the
+// workdir defaults to) when the user does not spell one out, so a repo dropped in
+// with `-v <repo>` (or `-v <repo>:/work`) is worked in without hand-writing -w
+// (prd story 10, repo-mount ergonomics).
+const DefaultMountTarget = "/work"
 
 // ProxyEnvVar is the environment variable an agent can set instead of passing
 // --proxy, so the tooljail command line carries nothing tooljail-specific and is
@@ -193,6 +201,11 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 	var proxyFromFlag bool
 	var positionals []string
 	endOfFlags := false
+	// explicitImageMarker records whether a standalone `--` ended the flags. After
+	// an explicit `--`, the first positional is ALWAYS the image (podman's marker
+	// semantics), which also lets a user force a bare-token image (`run -- alpine
+	// sh`) past the image-vs-command heuristic below.
+	explicitImageMarker := false
 
 	for i := 0; i < len(rest); i++ {
 		a := rest[i]
@@ -206,8 +219,10 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 		}
 		if a == "--" {
 			// Optional explicit end-of-flags marker (a podman nicety). The image and
-			// argv follow it; the marker itself is not a positional.
+			// argv follow it; the marker itself is not a positional. After an explicit
+			// `--`, the first positional is treated as the image unconditionally.
 			endOfFlags = true
+			explicitImageMarker = true
 			continue
 		}
 
@@ -318,19 +333,106 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 	cmd.Proxy = proxy
 
 	if name == "run" {
-		if len(positionals) == 0 {
-			return nil, errors.New("run requires an image: `tooljail run [flags] <image> [<cmd>...]` (the image is the first positional, like `podman run`)")
-		}
-		cmd.Image = positionals[0]
-		cmd.ToolArgv = positionals[1:]
-		if len(cmd.ToolArgv) == 0 {
-			return nil, errors.New("run requires a tool command after the image (e.g. `tooljail run <image> nuclei -u https://target`)")
-		}
+		resolveRunPositionals(cmd, positionals, explicitImageMarker)
+		resolveRepoMountDefaults(cmd)
 	} else if len(positionals) > 0 {
 		return nil, fmt.Errorf("verify takes no positional arguments, got %v", positionals)
 	}
 
 	return cmd, nil
+}
+
+// resolveRunPositionals splits the run positionals into the image and the tool
+// argv, injecting the pinned DEFAULT dev image when no image is present so
+// `tooljail run -it -v <repo>:/work bash` is useful out of the box (prd story
+// 10). The image is the first positional, exactly like `podman run IMAGE
+// [CMD...]`, EXCEPT the default-image ergonomic must decide, among the
+// positionals, which (if any) is the image and which is the command:
+//
+//   - After an explicit `--` end-of-flags marker, the first positional is ALWAYS
+//     the image (podman's marker semantics), so a bare-token image can be forced
+//     with `run -- alpine sh`.
+//   - Otherwise the first positional is the image IFF it LOOKS like an image
+//     reference (looksLikeImageReference); a bare command-shaped token (`bash`,
+//     `sh`, `python`) is taken as the COMMAND and the pinned default image is
+//     injected, so `run -it bash` == default dev image running `bash`.
+//   - No positionals at all => default image with an EMPTY argv, so the image's
+//     own default command/entrypoint runs (e.g. an interactive shell).
+//
+// This is the deliberate disambiguation the default-dev-image task records: with
+// a default in play the first positional may be the command, not the image.
+func resolveRunPositionals(cmd *Command, positionals []string, explicitImageMarker bool) {
+	if len(positionals) == 0 {
+		cmd.Image = defaultImageReference()
+		return
+	}
+	if explicitImageMarker || looksLikeImageReference(positionals[0]) {
+		cmd.Image = positionals[0]
+		cmd.ToolArgv = positionals[1:]
+		return
+	}
+	// The first positional is a bare command-shaped token: inject the default
+	// image and take ALL positionals as the command.
+	cmd.Image = defaultImageReference()
+	cmd.ToolArgv = positionals
+}
+
+// resolveRepoMountDefaults applies the repo-mount ergonomics (prd story 10): a
+// bare `-v <repo>` value with no :container part defaults its target to /work,
+// and if the user gave no explicit -w but there is a mount targeting /work, the
+// workdir defaults to /work, so a repo dropped in is worked in without
+// hand-writing -w. An explicit -w always wins (it is left untouched here).
+func resolveRepoMountDefaults(cmd *Command) {
+	mountsAtDefaultTarget := false
+	for i, m := range cmd.Mounts {
+		if mountHasNoContainerTarget(m) {
+			cmd.Mounts[i] = m + ":" + DefaultMountTarget
+			mountsAtDefaultTarget = true
+			continue
+		}
+		if mountContainerTarget(m) == DefaultMountTarget {
+			mountsAtDefaultTarget = true
+		}
+	}
+	if cmd.Workdir == "" && mountsAtDefaultTarget {
+		cmd.Workdir = DefaultMountTarget
+	}
+}
+
+// defaultImageReference is the pinned, digest-immutable default dev image the CLI
+// injects when no positional image is given. It is a var (not a direct call) only
+// so the reference is resolved in one place; it always returns the pinned
+// devimage reference.
+func defaultImageReference() string { return devimage.ImageReference() }
+
+// looksLikeImageReference reports whether a positional looks like a container
+// image reference rather than a bare command. An image reference carries at least
+// one of: a registry/namespace path (`/`), a tag (`:`), a digest (`@`), or a
+// registry host with a dot (`registry.example`). A single bare token with none of
+// these (`bash`, `sh`, `python`) is treated as a command when the default image
+// is in play. Users who want a bare-token image (e.g. `alpine`) spell it more
+// specifically (`alpine:latest`, `docker.io/library/alpine`) or force it with the
+// `--` marker (`run -- alpine sh`).
+func looksLikeImageReference(s string) bool {
+	return strings.ContainsAny(s, "/:@.")
+}
+
+// mountHasNoContainerTarget reports whether a -v value is a bare host path with no
+// :container target (so its target should default to /work). A Windows-style
+// drive letter (`C:\...`) is not a target separator, but tooljail's mounts are
+// host paths on a Linux host, so a lone `:` here means an explicit target.
+func mountHasNoContainerTarget(m string) bool {
+	return !strings.Contains(m, ":")
+}
+
+// mountContainerTarget returns the container-target segment of a `host:container`
+// (or `host:container:opts`) -v value, or "" if there is none.
+func mountContainerTarget(m string) string {
+	parts := strings.SplitN(m, ":", 3)
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[1]
 }
 
 // denyFlag reports whether a is a jail-breaching flag (in --flag or --flag=value

@@ -80,7 +80,7 @@ func TestParse_RunPositionalPodmanGrammar(t *testing.T) {
 		"-e", "K=V",
 		"-u", "1000",
 		"--proxy", "socks5h://127.0.0.1:9050",
-		"nuclei",
+		"nuclei:latest",
 		"nuclei", "-u", "https://target",
 	}, noEnv)
 	if err != nil {
@@ -89,8 +89,12 @@ func TestParse_RunPositionalPodmanGrammar(t *testing.T) {
 	if cmd.Name != "run" {
 		t.Fatalf("Name = %q, want run", cmd.Name)
 	}
-	if cmd.Image != "nuclei" {
-		t.Fatalf("Image = %q, want nuclei (first positional)", cmd.Image)
+	// A tagged reference (nuclei:latest) is recognised as the image; the remaining
+	// positionals are the tool argv. A BARE token (`nuclei`) would instead be taken
+	// as a command with the default image injected (the default-dev-image
+	// disambiguation; see internal/cli/defaults_test.go).
+	if cmd.Image != "nuclei:latest" {
+		t.Fatalf("Image = %q, want nuclei:latest (first positional, image-form)", cmd.Image)
 	}
 	if cmd.Proxy.Address() != "127.0.0.1:9050" {
 		t.Fatalf("Proxy = %q", cmd.Proxy.Address())
@@ -150,7 +154,7 @@ func TestParse_AllowListEqualsForms(t *testing.T) {
 		"--user=42",
 		"--entrypoint=/bin/sh",
 		"--proxy=socks5h://h:1",
-		"img", "cmd",
+		"img:latest", "cmd",
 	}, noEnv)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -170,7 +174,7 @@ func TestParse_AllowListEqualsForms(t *testing.T) {
 	if cmd.Entrypoint != "/bin/sh" {
 		t.Fatalf("Entrypoint = %q", cmd.Entrypoint)
 	}
-	if cmd.Image != "img" {
+	if cmd.Image != "img:latest" {
 		t.Fatalf("Image = %q", cmd.Image)
 	}
 	if strings.Join(cmd.ToolArgv, " ") != "cmd" {
@@ -187,7 +191,7 @@ func TestParse_MultipleEnvAndVolume(t *testing.T) {
 		"-e", "A=1",
 		"--env", "B=2",
 		"--proxy", "socks5h://127.0.0.1:9050",
-		"ffuf", "ffuf", "-o", "/out/r.json",
+		"ffuf:latest", "ffuf", "-o", "/out/r.json",
 	}, noEnv)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -404,19 +408,51 @@ func TestParse_UnknownCommandFailsLoud(t *testing.T) {
 	}
 }
 
-// TestParse_RunMissingImageFailsLoud checks a run with no positional image is
-// rejected (the image is a required positional).
-func TestParse_RunMissingImageFailsLoud(t *testing.T) {
-	if _, err := cli.ParseWithEnv([]string{"run", "--proxy", "socks5h://h:1"}, noEnv); err == nil {
-		t.Fatal("run without a positional image accepted; want failure")
+// TestParse_RunNoPositionalsUsesDefaultImage checks that `run` with NO
+// positionals no longer fails: the default-dev-image ergonomic injects the pinned
+// default image and leaves the command empty (the image's own default command
+// runs). This REPLACES the old "image is a required positional" contract, which
+// the default-dev-image-and-repo-mount task deliberately relaxes.
+func TestParse_RunNoPositionalsUsesDefaultImage(t *testing.T) {
+	cmd, err := cli.ParseWithEnv([]string{"run", "--proxy", "socks5h://h:1"}, noEnv)
+	if err != nil {
+		t.Fatalf("run with no positionals should inject the default image, not fail: %v", err)
+	}
+	if !strings.Contains(cmd.Image, "@sha256:") {
+		t.Fatalf("Image = %q, want the pinned default dev image", cmd.Image)
 	}
 }
 
-// TestParse_RunMissingCommandFailsLoud checks a run with an image but no tool
-// command is rejected.
-func TestParse_RunMissingCommandFailsLoud(t *testing.T) {
-	if _, err := cli.ParseWithEnv([]string{"run", "--proxy", "socks5h://h:1", "img"}, noEnv); err == nil {
-		t.Fatal("run with image but no tool command accepted; want failure")
+// TestParse_RunBareCommandUsesDefaultImage checks a single bare positional (a
+// command-shaped token, not an image reference) is taken as the COMMAND with the
+// default image injected, rather than failing for a missing command. This
+// REPLACES the old "image but no command" rejection for the bare-token case.
+func TestParse_RunBareCommandUsesDefaultImage(t *testing.T) {
+	cmd, err := cli.ParseWithEnv([]string{"run", "--proxy", "socks5h://h:1", "bash"}, noEnv)
+	if err != nil {
+		t.Fatalf("run <bare-command> should inject the default image, not fail: %v", err)
+	}
+	if !strings.Contains(cmd.Image, "@sha256:") {
+		t.Fatalf("Image = %q, want the pinned default dev image", cmd.Image)
+	}
+	if strings.Join(cmd.ToolArgv, " ") != "bash" {
+		t.Fatalf("ToolArgv = %v, want [bash]", cmd.ToolArgv)
+	}
+}
+
+// TestParse_ExplicitImageNoCommandRunsImageDefault checks that an explicit image
+// with no command no longer fails: the image's own default command runs (like
+// `podman run <image>`). tooljail no longer forces a trailing command.
+func TestParse_ExplicitImageNoCommandRunsImageDefault(t *testing.T) {
+	cmd, err := cli.ParseWithEnv([]string{"run", "--proxy", "socks5h://h:1", "docker.io/library/alpine:latest"}, noEnv)
+	if err != nil {
+		t.Fatalf("run <image> with no command should run the image default, not fail: %v", err)
+	}
+	if cmd.Image != "docker.io/library/alpine:latest" {
+		t.Fatalf("Image = %q, want the explicit image", cmd.Image)
+	}
+	if len(cmd.ToolArgv) != 0 {
+		t.Fatalf("ToolArgv = %v, want empty", cmd.ToolArgv)
 	}
 }
 
