@@ -149,6 +149,54 @@ func FailClosedProbe(ctx context.Context, run JailRunner, cfg jail.Config, egres
 	return strings.Contains(res.ToolStdout, egressMarker), nil
 }
 
+// DirectReachableProbe runs a probe through the jail to a split-tunnel
+// allowlisted DIRECT endpoint (cfg's ToolArgv must attempt the direct and print
+// egressMarker iff it answered). It returns whether the direct was reached: true
+// means the named direct answered over the split-tunnel hole (the desired
+// outcome for an allowlisted run), false means it did not.
+//
+// It is the mirror of FailClosedProbe (same marker-in-output detection) with the
+// polarity of "good" flipped: for the direct, reaching it IS the pass. Unlike
+// FailClosedProbe (where a jail-run error is the fail-closed SUCCESS), a jail-run
+// error here is a FAILURE (the direct probe could not run, so the direct is not
+// proven reachable) and is propagated, so an unreachable/broken direct fails the
+// report rather than passing silently.
+func DirectReachableProbe(ctx context.Context, run JailRunner, cfg jail.Config, egressMarker string) (reached bool, err error) {
+	res, err := run(ctx, cfg)
+	if err != nil {
+		return false, fmt.Errorf("direct-reachability probe: jail run: %w", err)
+	}
+	return strings.Contains(res.ToolStdout, egressMarker), nil
+}
+
+// SplitTunnelChecks composes the allowlist-aware leak-test check list: the three
+// CORE leak assertions (exit-IP is the proxy's, DNS is proxy-side, fail-closed on
+// proxy-kill) ALWAYS run, and each DIRECT-reachability check is appended AFTER
+// them. The core checks come first because they are the whole point: an
+// allowlist is a hole in a leak-proof jail, so verify must first prove the jail
+// is STILL leak-tight for all NON-allowlisted traffic, then that the named
+// directs work.
+//
+// The greenness contract falls out of Report.Ok (every assertion must pass): an
+// allowlist-active report (directs non-empty) is green ONLY when the directs are
+// reachable AND all three core assertions hold; a leak on the non-allowlisted
+// path fails the report even if the directs work, and an unreachable direct fails
+// it even if the jail is leak-tight. So `approve` means "proven leak-tight
+// outside the allowlist," not merely "the direct host works."
+//
+// With NO directs (an EMPTY allowlist), the result is EXACTLY the three core
+// checks, unchanged and in order: the no-allowlist path is byte-for-byte today's
+// composition, this is purely additive.
+func SplitTunnelChecks(core []Check, directs []Check) []Check {
+	if len(directs) == 0 {
+		return core
+	}
+	out := make([]Check, 0, len(core)+len(directs))
+	out = append(out, core...)
+	out = append(out, directs...)
+	return out
+}
+
 // RunCommandVerify runs the leak-test against a REAL configured proxy (the
 // `tooljail verify` CLI path) and returns the report. Unlike the deterministic
 // fixture-backed test suite (which knows the exit IP, the DNS view, and can kill
