@@ -114,6 +114,119 @@ func TestFailClosedProbe_JailErrorCountsAsNoEgress(t *testing.T) {
 	}
 }
 
+// --- split-tunnel: direct-reachability probe (pure orchestration) ---
+
+func TestDirectReachableProbe_ReachedWhenMarkerPresent(t *testing.T) {
+	reached, err := DirectReachableProbe(context.Background(), fakeRunner("LAN-HOST-OK answered", nil), jail.Config{}, "LAN-HOST-OK")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !reached {
+		t.Fatal("marker present => the direct endpoint answered; got reached=false")
+	}
+}
+
+func TestDirectReachableProbe_NotReachedWhenMarkerAbsent(t *testing.T) {
+	reached, err := DirectReachableProbe(context.Background(), fakeRunner("nc: connection timed out", nil), jail.Config{}, "LAN-HOST-OK")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if reached {
+		t.Fatal("marker absent => the direct endpoint did NOT answer; got reached=true")
+	}
+}
+
+func TestDirectReachableProbe_JailErrorIsNotReached(t *testing.T) {
+	// A jail-run error means the direct probe reached nothing: the direct is NOT
+	// reachable (so an allowlist-active report would fail), never a false pass.
+	reached, err := DirectReachableProbe(context.Background(), fakeRunner("", errors.New("probe failed")), jail.Config{}, "LAN-HOST-OK")
+	if err == nil {
+		t.Fatal("a jail-run error must propagate from DirectReachableProbe")
+	}
+	if reached {
+		t.Fatal("a jail-run error must count as not-reached (an unreachable direct fails the report)")
+	}
+}
+
+// --- split-tunnel: allowlist-aware report composition (pure orchestration) ---
+
+// pass/fail check builders for composition tests.
+func passCheck(name string) Check {
+	return Check{Name: name, Run: func(ctx context.Context) Assertion { return Assertion{Ok: true} }}
+}
+func failCheck(name string) Check {
+	return Check{Name: name, Run: func(ctx context.Context) Assertion { return Assertion{Ok: false} }}
+}
+
+// TestSplitTunnelChecks_NoAllowlistIsCoreOnlyUnchanged: with NO directs (empty
+// allowlist), the composition is EXACTLY the three core checks, in order, and
+// adds nothing. This is the no-allowlist-path-unchanged guarantee at the
+// composition seam.
+func TestSplitTunnelChecks_NoAllowlistIsCoreOnlyUnchanged(t *testing.T) {
+	core := []Check{passCheck("exit-ip"), passCheck("dns"), passCheck("fail-closed")}
+	got := SplitTunnelChecks(core, nil)
+	if len(got) != 3 {
+		t.Fatalf("empty allowlist must yield exactly the 3 core checks; got %d", len(got))
+	}
+	for i, want := range []string{"exit-ip", "dns", "fail-closed"} {
+		if got[i].Name != want {
+			t.Fatalf("core check %d = %q, want %q (order/identity must be unchanged)", i, got[i].Name, want)
+		}
+	}
+	rep := Run(context.Background(), got)
+	if !rep.Ok() {
+		t.Fatalf("all-core-pass, no-allowlist report must be Ok:\n%s", rep.String())
+	}
+}
+
+// TestSplitTunnelChecks_AllowlistGreenOnlyWhenDirectAndCoreBothPass: with an
+// allowlist active, the report is green ONLY when the direct-reachability check
+// AND all three core checks pass. A direct that works does NOT excuse a core
+// leak, and a core-clean jail whose direct is unreachable is NOT green either.
+func TestSplitTunnelChecks_AllowlistGreenOnlyWhenDirectAndCoreBothPass(t *testing.T) {
+	corePass := []Check{passCheck("exit-ip"), passCheck("dns"), passCheck("fail-closed")}
+	coreLeak := []Check{passCheck("exit-ip"), failCheck("dns"), passCheck("fail-closed")} // a leak on the non-allowlisted path
+	directOk := []Check{passCheck("direct-reachable")}
+	directDown := []Check{failCheck("direct-reachable")}
+
+	// direct works AND core clean => green.
+	if rep := Run(context.Background(), SplitTunnelChecks(corePass, directOk)); !rep.Ok() {
+		t.Fatalf("direct reachable + core clean must be green:\n%s", rep.String())
+	}
+	// direct works BUT a core assertion leaks => the report FAILS (approve must
+	// mean leak-tight-outside-allowlist, not merely "the direct host works").
+	if rep := Run(context.Background(), SplitTunnelChecks(coreLeak, directOk)); rep.Ok() {
+		t.Fatalf("a leak on the non-allowlisted path must FAIL the report even though the direct works:\n%s", rep.String())
+	}
+	// core clean BUT direct unreachable => the report FAILS (approve must also mean
+	// the named directs are reachable).
+	if rep := Run(context.Background(), SplitTunnelChecks(corePass, directDown)); rep.Ok() {
+		t.Fatalf("an unreachable direct must FAIL the report even though the jail is leak-tight:\n%s", rep.String())
+	}
+}
+
+// TestSplitTunnelChecks_DirectChecksRunAfterCore: the direct-reachability checks
+// are appended AFTER the three core checks, so a report lists the core leak
+// assertions first (they are the whole point) then the direct-reachability.
+func TestSplitTunnelChecks_DirectChecksRunAfterCore(t *testing.T) {
+	core := []Check{passCheck("exit-ip"), passCheck("dns"), passCheck("fail-closed")}
+	direct := []Check{passCheck("direct-a"), passCheck("direct-b")}
+	got := SplitTunnelChecks(core, direct)
+	names := make([]string, len(got))
+	for i, c := range got {
+		names[i] = c.Name
+	}
+	want := []string{"exit-ip", "dns", "fail-closed", "direct-a", "direct-b"}
+	if len(names) != len(want) {
+		t.Fatalf("composed %d checks, want %d: %v", len(names), len(want), names)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("check %d = %q, want %q (core first, directs appended)", i, names[i], want[i])
+		}
+	}
+}
+
 func TestIsHostLoopback(t *testing.T) {
 	for _, h := range []string{"127.0.0.1", "::1", "localhost"} {
 		if !isHostLoopback(h) {

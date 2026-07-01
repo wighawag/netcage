@@ -347,6 +347,138 @@ func TestVerify_FullReportGreenAndExitsZero(t *testing.T) {
 	}
 }
 
+// mappedHostLoopback is the pasta-mapped host-loopback address the jail reaches
+// host services at (jail.mappedHostLoopback, unexported; mirrored here for the
+// external test). It is link-local (169.254.0.0/16), hence a valid --allow-direct
+// entry, and is the ONE host-service address a jail netns can reach
+// deterministically without a real LAN host. The direct-reachability probe uses
+// it to reach the fixture as the stand-in LAN host.
+const mappedHostLoopback = "169.254.1.1"
+
+// allowlist169 builds a split-tunnel allowlist that names the pasta-mapped
+// host-loopback address on the given port, so the run is SPLIT-TUNNEL ACTIVE
+// (SidecarRunArgs adds the excluded route, nftRuleset emits the accept + RFC1918
+// drops). This is how verify proves the three core assertions still hold WITH an
+// allowlist active (story 8), deterministically and without a real LAN host.
+func allowlist169(port string) []cli.DirectAllow {
+	p, _ := strconv.Atoi(port)
+	return []cli.DirectAllow{{
+		Network: &net.IPNet{IP: net.ParseIP(mappedHostLoopback), Mask: net.CIDRMask(32, 32)},
+		Port:    p,
+		Raw:     mappedHostLoopback + ":" + port,
+	}}
+}
+
+// TestVerify_SplitTunnelReportGreenOnlyWhenLeakTightAndDirectReachable is the
+// split-tunnel acceptance seam (prd story 8): with an allowlist ACTIVE, the
+// verify report is green ONLY when (a) the named direct is reachable AND (b) all
+// three core leak assertions STILL hold for non-allowlisted traffic. It composes
+// the three existing probes (ExitIPProbe / DNSProbe / FailClosedProbe) into core
+// Checks that each run through a SPLIT-TUNNEL-ACTIVE jail (Config.AllowDirect
+// set), plus a direct-reachability Check (DirectReachableProbe), via
+// SplitTunnelChecks, and asserts the composed Report is Ok and exits 0.
+//
+// The direct endpoint is the socks5hfixture reached at the pasta-mapped host
+// loopback (mappedHostLoopback), the one host-service address the jail netns can
+// reach deterministically without a real LAN host (see the task Decisions). The
+// genuine split-tunnel-accept-over-the-real-NIC proof (an RFC1918 peer reached
+// via the nft accept) lives in the jail package's
+// TestJail_SplitTunnel_DirectReachableRestForcedThroughProxy; here the point is
+// that the COMPOSED report is green only when the directs work AND the jail is
+// still leak-tight outside the allowlist, proven end-to-end against real podman.
+//
+// The report-fails-on-a-non-allowlisted-leak and no-allowlist-unchanged
+// properties are proven at the (podman-free) composition seam in
+// verify_test.go (TestSplitTunnelChecks_*); this podman-gated case proves the
+// GREEN end-to-end path genuinely passes with a split-tunnel active.
+func TestVerify_SplitTunnelReportGreenOnlyWhenLeakTightAndDirectReachable(t *testing.T) {
+	requirePodman(t)
+
+	echoPort, stopEcho := startHTTPExitEcho(t)
+	defer stopEcho()
+	resolverPort := startDNSOverTCP(t)
+
+	// One fixture serves the DNS check + is the stand-in DIRECT endpoint (reached
+	// at mappedHostLoopback:<its port>). The exit-IP and fail-closed checks use
+	// their own dedicated fixtures (they need a redirect / a killed proxy).
+	fx := socks5hfixture.New(socks5hfixture.Options{
+		ExitIP:         exitIP,
+		AllowIPConnect: true,
+		KnownHosts:     map[string]string{upstreamName: resolverIP},
+	})
+	if err := fx.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("fixture start: %v", err)
+	}
+	defer fx.Close()
+	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
+
+	// The allowlist names the fixture (at the pasta map) as the direct, so every
+	// core probe below runs through a SPLIT-TUNNEL-ACTIVE jail.
+	allow := allowlist169(proxyPort)
+	base := func() jail.Config {
+		return jail.Config{
+			Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
+			ProxyOnHostLoopback: true,
+			Image:               "docker.io/library/alpine:latest",
+			AllowDirect:         allow,
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	core := []verify.Check{
+		{Name: "exit-ip-is-proxys", Run: func(ctx context.Context) verify.Assertion {
+			return exitIPAssertionAllow(ctx, t, echoPort, allow)
+		}},
+		{Name: "dns-resolves-proxy-side", Run: func(ctx context.Context) verify.Assertion {
+			cfg := base()
+			cfg.RunID = runID("vst-dns")
+			cfg.DNSUpstream = upstreamName + ":" + resolverPort
+			cfg.ToolArgv = []string{"sh", "-c", "nslookup " + uniqueName + " 2>&1 || true"}
+			out, err := verify.DNSProbe(ctx, verify.DefaultJailRunner, cfg)
+			if err != nil {
+				return verify.Assertion{Ok: false, Err: err}
+			}
+			ok := strings.Contains(out, answerIP) && sawHost(fx.ResolvedHosts(), upstreamName) && !hostResolverKnows(t, uniqueName)
+			return verify.Assertion{Ok: ok, Detail: "resolved " + uniqueName + " proxy-side (split-tunnel active)"}
+		}},
+		{Name: "fails-closed-on-proxy-kill", Run: func(ctx context.Context) verify.Assertion {
+			return failClosedAssertionAllow(ctx, t)
+		}},
+	}
+
+	const directMarker = "DIRECT-REACHED"
+	direct := []verify.Check{
+		{Name: "direct-is-reachable", Run: func(ctx context.Context) verify.Assertion {
+			cfg := base()
+			cfg.RunID = runID("vst-direct")
+			// Reach the fixture (the stand-in LAN host) at the pasta map: a successful
+			// TCP connect prints the marker, proving the named direct answered.
+			cfg.ToolArgv = []string{"sh", "-c", "nc -z -w 4 " + mappedHostLoopback + " " + proxyPort + " && echo " + directMarker + " || echo DIRECT-DOWN"}
+			reached, err := verify.DirectReachableProbe(ctx, verify.DefaultJailRunner, cfg, directMarker)
+			if err != nil {
+				return verify.Assertion{Ok: false, Err: err}
+			}
+			return verify.Assertion{Ok: reached, Detail: "direct endpoint " + mappedHostLoopback + ":" + proxyPort + " reachable"}
+		}},
+	}
+
+	checks := verify.SplitTunnelChecks(core, direct)
+	if len(checks) != 4 {
+		t.Fatalf("split-tunnel-active composition must be 3 core + 1 direct = 4 checks; got %d", len(checks))
+	}
+
+	rep := verify.Run(ctx, checks)
+	t.Logf("split-tunnel verify report:\n%s", rep.String())
+	if !rep.Ok() {
+		t.Fatalf("split-tunnel report must be green (directs reachable AND leak-tight outside the allowlist):\n%s", rep.String())
+	}
+	if rep.ExitCode() != 0 {
+		t.Fatalf("green split-tunnel report must exit 0; got %d", rep.ExitCode())
+	}
+}
+
 // exitIPAssertion runs the exit-IP probe against a dedicated redirect fixture.
 func exitIPAssertion(ctx context.Context, t *testing.T, echoPort string) verify.Assertion {
 	fx := socks5hfixture.New(socks5hfixture.Options{
@@ -413,6 +545,85 @@ func failClosedAssertion(ctx context.Context, t *testing.T) verify.Assertion {
 		return verify.Assertion{Ok: false, Err: err}
 	}
 	return verify.Assertion{Ok: !egressed, Detail: "no egress with proxy killed"}
+}
+
+// exitIPAssertionAllow is exitIPAssertion with a split-tunnel allowlist ACTIVE on
+// the probe config: it proves the exit-IP assertion (exit IP is the proxy's for
+// non-allowlisted traffic) STILL holds with the split-tunnel open. The probe
+// target (placeholder, an in-TUN routable IP) is NOT on the allowlist, so it is
+// still forced through the proxy; the allowlist entry (the pasta map) only opens
+// the direct hole, it must not loosen this.
+func exitIPAssertionAllow(ctx context.Context, t *testing.T, echoPort string, allow []cli.DirectAllow) verify.Assertion {
+	fx := socks5hfixture.New(socks5hfixture.Options{
+		ExitIP: exitIP, AllowIPConnect: true, RedirectTarget: "127.0.0.1:" + echoPort,
+	})
+	if err := fx.Start("127.0.0.1:0"); err != nil {
+		return verify.Assertion{Ok: false, Err: err}
+	}
+	defer fx.Close()
+	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
+	cfg := jail.Config{
+		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
+		ProxyOnHostLoopback: true,
+		Image:               "docker.io/library/alpine:latest",
+		ToolArgv:            []string{"sh", "-c", "wget -qO- -T 8 http://" + placeholder + ":" + echoPort + "/ 2>&1 || true"},
+		RunID:               runID("vst-exit"),
+		AllowDirect:         allowlist169(proxyPort), // this fixture's own port, so the run is split-tunnel active
+	}
+	observed, err := verify.ExitIPProbe(ctx, verify.DefaultJailRunner, cfg)
+	if err != nil {
+		return verify.Assertion{Ok: false, Err: err}
+	}
+	return verify.Assertion{Ok: observed == exitIP, Detail: "observed exit IP " + observed + " (split-tunnel active)"}
+}
+
+// failClosedAssertionAllow is failClosedAssertion with a split-tunnel allowlist
+// ACTIVE: it proves fail-closed STILL holds with the proxy killed even when the
+// split-tunnel is open. The probe target is NOT on the allowlist, so with the
+// proxy down it must still fail closed (no fall-back to the host network); the
+// allowlist hole must not become a fail-open path for non-allowlisted traffic.
+func failClosedAssertionAllow(ctx context.Context, t *testing.T) verify.Assertion {
+	const marker = "LEAKED-TO-HOST"
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return verify.Assertion{Ok: false, Err: err}
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = io.WriteString(c, "HTTP/1.0 200 OK\r\nContent-Length: "+
+					strconv.Itoa(len(marker))+"\r\nConnection: close\r\n\r\n"+marker)
+			}(c)
+		}
+	}()
+	_, markerPort, _ := net.SplitHostPort(ln.Addr().String())
+	fx := socks5hfixture.New(socks5hfixture.Options{
+		ExitIP: exitIP, AllowIPConnect: true, RedirectTarget: "127.0.0.1:" + markerPort,
+	})
+	if err := fx.Start("127.0.0.1:0"); err != nil {
+		return verify.Assertion{Ok: false, Err: err}
+	}
+	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
+	fx.Close() // kill the proxy BEFORE the probe
+	cfg := jail.Config{
+		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
+		ProxyOnHostLoopback: true,
+		Image:               "docker.io/library/alpine:latest",
+		ToolArgv:            []string{"sh", "-c", "wget -qO- -T 6 http://" + placeholder + ":" + markerPort + "/ 2>&1 || true"},
+		RunID:               runID("vst-closed"),
+		AllowDirect:         allowlist169(proxyPort),
+	}
+	egressed, err := verify.FailClosedProbe(ctx, verify.DefaultJailRunner, cfg, marker)
+	if err != nil {
+		return verify.Assertion{Ok: false, Err: err}
+	}
+	return verify.Assertion{Ok: !egressed, Detail: "no egress with proxy killed (split-tunnel active)"}
 }
 
 // ---- helpers ----
