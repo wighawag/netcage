@@ -78,6 +78,7 @@ func runRun(ctx context.Context, cmd *cli.Command) int {
 		Mounts:              cmd.Mounts,
 		Workdir:             cmd.Workdir,
 		Interactive:         interactive,
+		AllowDirect:         cmd.AllowDirect,
 	}
 	if interactive {
 		// Interactive (`tooljail run -it`): RAW stdio passthrough into the jailed
