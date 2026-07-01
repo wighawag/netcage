@@ -7,6 +7,19 @@ slug: anonymity-shell-and-lan-split-tunnel
 
 Proposed idea, captured 2026-07-01 while tasking `jailed-interactive-repo-run`. NOT tasked; recorded so it does not evaporate. Two related threads, one small (a reframe) and one that pokes a decided invariant (needs its own design/PRD before build).
 
+## Motivating incident (verified, 2026-07-01): an agent bypassed the anonymized path AND leaked identity
+
+The concrete reason this note exists. An agent running UNJAILED on the host, using the `webveil` pi extension (its `web_search`/`web_fetch` route through webveil's controlled, account-free egress: SOCKS/Tor, so searches are anonymous), was asked to search for a GitHub repo. Instead of using the anonymized search path, the agent SIDESTEPPED it and shelled out to `gh` directly. Two leaks in one move:
+
+1. **Egress leak:** `gh` went out over the HOST network, not through webveil's SOCKS egress, so the request came from the real IP.
+2. **Identity leak:** `gh` used the host's `gh` CREDENTIALS, so the request was authenticated AS the user (provably identity-linked, not merely IP-linked). This is exactly the "account-bound tool that signs every request with your identity" failure webveil exists to replace.
+
+This was NOT a tooljail bug (nothing was jailed at the time); it is the motivating "why jail agents" story. But it teaches a two-axis lesson that directly CONSTRAINS how the config-reuse sub-ask below (Thread 2, sub-ask 2) can be built:
+
+- **Egress-jailing and identity/credential-jailing are ORTHOGONAL axes; both must hold.** The jail solves the EGRESS leak by construction (inside a proper jail there is NO host network, so `gh` is forced through SOCKS or fails closed regardless of the agent's intent). But the jail does NOTHING about the IDENTITY leak if the credentials are present in the jail. A jail that stops the IP leak while carrying the user's `gh`/cloud/API credentials still authenticates as the user: a false sense of safety of exactly the kind this project exists to kill.
+- **Therefore "share the home folder" is not just risky, it is SELF-DEFEATING for the anonymity goal.** The very thing to prevent (identity leak) is partly CARRIED IN the home folder (`~/.config/gh`, tokens, keyring, cloud creds). Sharing `$HOME` into the jail re-imports the credential that deanonymizes you, so the network jail buys nothing against the identity axis.
+- **Design constraint this imposes:** the jail must start with NO ambient host identity by default. Home-sharing defaults to OFF. If config reuse is offered, it must be a CURATED, credential-free subset (e.g. `~/.pi` and pi extensions only, NEVER `~/.config` wholesale which holds `gh` and cloud creds), or simply not done (require the user to copy/provide config another way). See Thread 2 sub-ask 2 for the fork.
+
 ## Thread 1: tooljail as an anonymity shell (no tool in mind at the start)
 
 Framing broadening, not new mechanism. tooljail's value is not only "wrap a known tool"; it is "give me a jailed environment where ALL egress is forced through SOCKS5h, fail-closed." So a user with NO specific tool in mind can use it to just *do stuff anonymously*: `tooljail run -it <default-image> bash` and work in a shell whose every TCP/DNS egress goes through the proxy.
@@ -23,7 +36,8 @@ Concrete use case: run an agent harness (e.g. `pi`) INSIDE the jail so its inter
    This overlaps the repo-mount ergonomics already tasked (it is a `-v` mount at heart) BUT carries a distinct, sharper isolation tension that must be designed, not defaulted:
 
    - **Sharing the WHOLE `$HOME` into a jail that may run an untrusted tool is a serious host-exposure**, and it directly fights the "I do not fully trust this tool" premise that motivates the jail: `$HOME` typically holds SSH keys, cloud/API tokens, shell history, browser/session state, all of which become readable (and, if mounted rw, writable) by whatever runs in the jail. The network is jailed; the FILESYSTEM would not be.
-   - **Design fork to decide at PRD time:** (a) full `$HOME` share (max convenience for the pi-reuse case, max exposure); vs (b) a curated allowlist of config paths only (`~/.pi`, pi extensions dir, the specific config the harness needs), keeping secrets out; vs (c) read-only mounts where possible so the jailed tool cannot mutate host config. Likely (b)+(c) as the safe default, with full-`$HOME` an explicit, loud opt-in for the trusted-harness case.
+   - **Design fork to decide at PRD time (now informed by the motivating incident above):** (a) full `$HOME` share is REJECTED for the anonymity case, the incident shows it re-imports the identity-leaking credentials the jail is meant to shed; vs (b) a curated allowlist of config paths only (`~/.pi`, pi extensions dir, the specific config the harness needs), explicitly EXCLUDING credential-bearing dirs like `~/.config/gh`, `~/.aws`, `~/.ssh`, the keyring; vs (c) not sharing at all, requiring the user to copy/provide config another way (safest). Likely (b) with read-only mounts, or (c), as the default; full-`$HOME` is not a safe opt-in for an anonymity jail because the point is to shed host identity, not carry it.
+   - **Credential-free is the load-bearing constraint (see the motivating incident).** Whatever is shared MUST NOT contain host credentials/tokens, or the jail stops the IP leak while still authenticating as the user. Curating `~/.pi` only is viable if and only if the harness config it contains does not itself pull in tokens.
    - **Note the asymmetry:** this use case (jail MY OWN trusted `pi` so ITS egress is anonymized) is different from the untrusted-repo case (jail a tool I do NOT trust). Home-sharing may be reasonable for the former and dangerous for the latter; the config-reuse feature should make that distinction explicit rather than offering one blanket home-share that is silently unsafe when the jailed thing is untrusted.
 
 ### Why this contradicts the current design (and must be designed, not bolted on)
