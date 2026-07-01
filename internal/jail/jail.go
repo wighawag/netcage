@@ -27,6 +27,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -62,8 +63,24 @@ type Config struct {
 	// jailed tool feels like running it directly; the verify/leak-test probes leave
 	// them nil (capture-only) since they only assert on the returned output. Kept
 	// separate so the tool's stderr is never merged into the stdout a caller parses.
+	//
+	// In INTERACTIVE mode (Interactive true) these capture/tee sinks are IGNORED:
+	// the tool runs with `podman run -it` and tooljail does raw stdio passthrough
+	// (podman owns the container PTY), so there is no capture and no tee.
 	ToolStdout io.Writer
 	ToolStderr io.Writer
+
+	// Interactive runs the wrapped tool with a TTY and stdin attached (`podman run
+	// -it`) so a human or agent can shell into the jail. It is opt-in and only for
+	// `tooljail run -it`; the verify/leak-test probes leave it false so they keep
+	// the capture path. Interactive changes ONLY the stdin/stdout/TTY wiring, never
+	// the network jail (same sidecar + netns + nft + forced egress + fail-closed).
+	Interactive bool
+
+	// ToolStdin is the reader wired to the interactive tool's stdin (os.Stdin for
+	// `tooljail run -it`). It is used ONLY in Interactive mode (raw passthrough);
+	// non-interactive runs leave it nil and never attach stdin.
+	ToolStdin io.Reader
 
 	// DNSUpstream optionally overrides the DNS resolver the in-netns forwarder
 	// reaches THROUGH the proxy (DNS-over-TCP, addressed by hostname so the proxy
@@ -128,6 +145,18 @@ type RunSpec struct {
 	Args   []string
 	Stdout io.Writer
 	Stderr io.Writer
+
+	// Interactive requests RAW stdio passthrough: the command inherits Stdin and
+	// writes its stdout/stderr straight through to the process's own stdout/stderr
+	// (podman owns the container PTY under `podman run -it`). In this mode the
+	// runner does NOT capture output (the returned stdout/stderr are empty) and the
+	// Stdout/Stderr capture-tee sinks above are IGNORED. Used for the interactive
+	// jailed shell only; every other Runner call leaves it false.
+	Interactive bool
+
+	// Stdin is the reader wired to the command's stdin in Interactive mode
+	// (os.Stdin for the jailed shell). Ignored when Interactive is false.
+	Stdin io.Reader
 }
 
 // ExecRunner runs commands with os/exec.
@@ -141,6 +170,24 @@ type ExecRunner struct{}
 // stderr.
 func (ExecRunner) Run(ctx context.Context, spec RunSpec) (string, string, error) {
 	cmd := exec.CommandContext(ctx, spec.Name, spec.Args...)
+
+	// Interactive: RAW passthrough. The command inherits stdin and writes its
+	// stdout/stderr straight through to the process's own stdout/stderr; podman
+	// (`run -it`) owns the container PTY, so keystrokes, the tool's TTY output, and
+	// Ctrl-C behave as in a normal `podman run -it`. Nothing is captured (the
+	// returned strings are empty) and the capture-tee sinks are ignored.
+	if spec.Interactive {
+		if spec.Stdin != nil {
+			cmd.Stdin = spec.Stdin
+		} else {
+			cmd.Stdin = os.Stdin
+		}
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		err := cmd.Run()
+		return "", "", err
+	}
+
 	var outBuf, errBuf bytes.Buffer
 	if spec.Stdout != nil {
 		cmd.Stdout = io.MultiWriter(&outBuf, spec.Stdout)
@@ -248,12 +295,44 @@ func (c Config) SidecarRunArgs() []string {
 	}
 }
 
+// toolRunSpec builds the RunSpec for the tool-run step, choosing the run mode
+// from Config.Interactive. This is the interactive-vs-capture SEAM in one place:
+//
+//   - Interactive: RAW passthrough. Stdin is wired (os.Stdin via ToolStdin) and
+//     the capture-tee live sinks are DELIBERATELY not attached, because podman's
+//     `-it` owns the container PTY and tooljail passes stdio straight through.
+//     Nothing is captured (Result.ToolStdout is empty for an interactive run).
+//   - Non-interactive: the existing capture/tee path. The live sinks stream the
+//     tool's output to os.Stdout/os.Stderr while ExecRunner still captures it into
+//     Result.ToolStdout/ToolStderr, which the verify/leak-test probes assert on.
+//
+// Keeping this in one method makes the run-mode seam unit-testable without podman
+// (a test asserts the built spec) and guarantees the probes are never routed
+// through the raw path.
+func (c Config) toolRunSpec() RunSpec {
+	spec := RunSpec{Name: "podman", Args: c.ToolRunArgs()}
+	if c.Interactive {
+		spec.Interactive = true
+		spec.Stdin = c.ToolStdin
+		return spec
+	}
+	spec.Stdout = c.ToolStdout
+	spec.Stderr = c.ToolStderr
+	return spec
+}
+
 // ToolRunArgs returns the podman args to start the wrapped tool sharing the
 // sidecar's netns. Exposed for testing the wiring.
 func (c Config) ToolRunArgs() []string {
 	args := []string{
 		"run", "--rm", "--name", c.toolName(),
 		"--network", "container:" + c.sidecarName(),
+	}
+	// Interactive mode attaches a TTY + stdin (`podman run -it`) so a human/agent
+	// can shell into the jail. It is opt-in (only `tooljail run -it`); every other
+	// path (verify probes, declarative runs) omits it and keeps the capture path.
+	if c.Interactive {
+		args = append(args, "-it")
 	}
 	// NOTE: --dns cannot be combined with --network container: (podman refuses;
 	// the tool inherits the shared netns's resolv.conf). The tool's resolver is

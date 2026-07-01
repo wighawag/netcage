@@ -94,9 +94,10 @@ type Command struct {
 	ToolArgv []string // the tool command + args (positionals after the image)
 	Mounts   []string // -v/--volume pass-through values (run)
 
-	// Interactive / TTY record the -i / -t (and -it/-ti) booleans for the jail
-	// run-mode task to consume. This package only PARSES them; wiring an
-	// interactive TTY through the jail is the separate jailed-interactive-tty task.
+	// Interactive / TTY record the -i / -t (and -it/-ti) booleans. This package
+	// only PARSES them; `main.go`'s runRun consumes them to run the jailed tool
+	// with `podman run -it` (raw stdio passthrough, terminal in raw mode) via
+	// jail.Config.Interactive, so a human/agent can shell into the jail.
 	Interactive bool // -i / --interactive
 	TTY         bool // -t / --tty
 
