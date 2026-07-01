@@ -51,6 +51,20 @@ type Config struct {
 	Workdir  string   // podman -w/--workdir; empty leaves the image's own workdir
 	RunID    string   // run-attributable id; containers named tooljail-run-<RunID>-*
 
+	// AllowDirect is the validated split-tunnel LAN allowlist: private-only
+	// destinations (network + optional TCP port) the jailed tool may reach
+	// DIRECTLY over the real NIC instead of through the proxy, while ALL other
+	// egress stays forced through the proxy, fail-closed. EMPTY (the default) ==
+	// today's byte-identical strict jail: no extra excluded routes, no accept
+	// rules, no RFC1918 drops. A NON-EMPTY allowlist adds BOTH halves the spike
+	// proved are jointly required (each alone is insufficient): each net is added
+	// to the sidecar's TUN_EXCLUDED_ROUTES (SidecarRunArgs, the ENABLER) AND an
+	// `ip daddr <net> tcp dport <port> accept` nft rule before RFC1918-range drops
+	// (nftRuleset, the NARROWING). TCP-only; UDP stays hard-dropped (ADR-0003) even
+	// to an allowlisted host. See ADR-0005 + work/notes/findings/
+	// spike-split-tunnel-lan-allowlist.md. Populated from cli.Command.AllowDirect.
+	AllowDirect []cli.DirectAllow
+
 	// ProxyOnHostLoopback indicates the proxy listens on the HOST's 127.0.0.1
 	// (local Tor / ssh -D), so the sidecar reaches it via the pasta map. When
 	// false the proxy is a normal routable host the sidecar dials directly.
@@ -255,8 +269,58 @@ func (c Config) nftRuleset(proxyPort string) string {
 		b.WriteString(fmt.Sprintf("    ip daddr %s tcp dport %s accept\n", mappedHostLoopback, proxyPort))
 		b.WriteString(fmt.Sprintf("    ip daddr %s drop\n", mappedHostLoopback))
 	}
+	c.writeSplitTunnelRules(&b)
 	b.WriteString("  }\n}\n")
 	return b.String()
+}
+
+// rfc1918DropRanges are the private / link-local ranges the split-tunnel block
+// DROPS as defense-in-depth (in the same order the allowlist parser accepts
+// them). With the excluded routes in place, a non-allowlisted host on the same
+// LAN as an allowed one is merely unrouted-to-the-proxy; these drops make it a
+// clean DROP instead, so allowing 192.168.1.150 does not silently expose the
+// rest of 192.168.1.0/24 (prd story 7). Emitted ONLY for a non-empty allowlist.
+var rfc1918DropRanges = []string{
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"169.254.0.0/16",
+}
+
+// writeSplitTunnelRules appends the split-tunnel accept + RFC1918-drop block to
+// the ruleset, and ONLY for a NON-EMPTY allowlist. This is the NARROWING half of
+// the spike: each allowlist entry gets an `ip daddr <net> tcp dport <port>
+// accept` (or, for a port-less entry, `ip daddr <net> meta l4proto tcp accept`
+// meaning all TCP ports) placed BEFORE the RFC1918-range drops that follow it, so
+// the allowed destination is accepted and every other private-range host is
+// dropped. Both halves (this AND the excluded route) are required; each alone is
+// insufficient (excluded-route-only loses the narrowing, accept-only has no
+// direct route). TCP-only throughout: UDP was already hard-dropped above
+// (ADR-0003), so even an allowlisted host has no UDP path.
+//
+// For an EMPTY allowlist this writes NOTHING, keeping nftRuleset byte-identical
+// to today's strict jail (today's default jail has NO RFC1918 drops at all; its
+// fail-closed comes from the TUN-only route, so adding them unconditionally would
+// break the empty==today invariant).
+func (c Config) writeSplitTunnelRules(b *strings.Builder) {
+	if len(c.AllowDirect) == 0 {
+		return
+	}
+	// Accepts first (must precede the drops so an allowed host is not shadowed by
+	// the range drop for its own LAN).
+	for _, a := range c.AllowDirect {
+		daddr := a.Network.String()
+		if a.Port == 0 {
+			// Port omitted => all TCP ports to that net (TCP-only; UDP stays dropped).
+			b.WriteString(fmt.Sprintf("    ip daddr %s meta l4proto tcp accept\n", daddr))
+		} else {
+			b.WriteString(fmt.Sprintf("    ip daddr %s tcp dport %d accept\n", daddr, a.Port))
+		}
+	}
+	// RFC1918 / link-local drops after, as defense-in-depth (prd story 7).
+	for _, r := range rfc1918DropRanges {
+		b.WriteString(fmt.Sprintf("    ip daddr %s drop\n", r))
+	}
 }
 
 // proxyReachbackAddr is the address tun2socks's dialer must reach the proxy at:
@@ -289,10 +353,30 @@ func (c Config) SidecarRunArgs() []string {
 		"--network", network,
 		"--cap-add", "NET_ADMIN", "--device", "/dev/net/tun",
 		"-e", "CLONE_MAIN=0",
-		"-e", "TUN_EXCLUDED_ROUTES=" + c.proxyReachbackAddr() + "/32",
+		"-e", "TUN_EXCLUDED_ROUTES=" + c.excludedRoutes(),
 		"-e", "PROXY=" + c.sidecarProxyURL(),
 		redirector.RunPathImageReference(),
 	}
+}
+
+// excludedRoutes composes the sidecar's TUN_EXCLUDED_ROUTES value: the proxy
+// reachback /32 ALWAYS (the load-bearing forced-egress route the dialer needs)
+// FOLLOWED BY each split-tunnel allowlist net. The tun2socks entrypoint reads
+// TUN_EXCLUDED_ROUTES as a COMMA-separated list, turning each into `ip rule add
+// to <route> table main`, so each excluded destination egresses the real NIC via
+// pasta instead of the TUN (the ENABLER half of the split-tunnel spike).
+//
+// An EMPTY allowlist yields EXACTLY the reachback /32 (no comma, no extra
+// routes), byte-identical to today's strict jail. The allowlist nets are
+// appended in allowlist order, each as its normalised CIDR (a bare IP is already
+// a /32 host route from the CLI parse), so a per-host exclusion exposes only that
+// /32 (the spike proved per-host `/32` exclusion is per-host, not per-/24).
+func (c Config) excludedRoutes() string {
+	routes := []string{c.proxyReachbackAddr() + "/32"}
+	for _, a := range c.AllowDirect {
+		routes = append(routes, a.Network.String())
+	}
+	return strings.Join(routes, ",")
 }
 
 // toolRunSpec builds the RunSpec for the tool-run step, choosing the run mode

@@ -102,6 +102,14 @@ func Run(ctx context.Context, r Runner, cfg Config) (Result, error) {
 		}
 	}
 
+	// 3b. split-tunnel direct-reachability diagnostic (story 10): for each
+	// allowlisted direct with a specific port, probe it from the jail netns and
+	// WARN (not fail) if it does not answer, so an unreachable-on-LAN allowed
+	// direct is told apart from a jail-policy block. It is a WARNING, not a
+	// hard-fail: unlike the proxy (whose absence means fail-closed), a down direct
+	// is not a leak and must not stop the jailed tool's proxy egress from running.
+	warnUnreachableDirects(ctx, r, cfg)
+
 	// 4. run the tool sharing the sidecar netns, with its resolv.conf pointed at
 	// the forwarder (via --dns) so all name resolution goes proxy-side. stdout and
 	// stderr are captured SEPARATELY so a podman/runtime SETUP failure (podman's
@@ -316,6 +324,58 @@ func dnsHelperPath() (string, error) {
 		return p, nil
 	}
 	return "", errors.New("tooljail-dns helper not found (set TOOLJAIL_DNS_BIN or install it on PATH)")
+}
+
+// ErrDirectUnreachable names a split-tunnel allowlisted direct that did not
+// answer on the LAN (story 10). It is a DIAGNOSTIC signal, not a run failure:
+// its wording deliberately says the destination is ON THE ALLOWLIST but did not
+// answer, so an operator can tell a LAN problem (the direct host is down /
+// wrong-IP / firewalled on the LAN) apart from a jail-policy block (a
+// non-allowlisted destination the jail dropped). It is surfaced as a WARNING to
+// stderr, never returned from Run, because a down direct is not a leak and must
+// not stop the jailed tool's proxy egress.
+var ErrDirectUnreachable = errors.New("a split-tunnel allowlisted direct did not answer on the LAN")
+
+// warnUnreachableDirects probes each PORT-carrying allowlist entry from the jail
+// netns and prints a story-10 diagnostic to stderr for any that do not answer.
+// It skips port-less entries (a bare IP or CIDR with no :port has no single
+// probe target). Probe failures are advisory only: the message distinguishes
+// "on the allowlist but unreachable on the LAN" from a jail-policy block, so the
+// operator is not left guessing why a direct destination is silent. Any probe
+// infrastructure error (e.g. no alpine image) is swallowed: the diagnostic is a
+// convenience, never a gate.
+func warnUnreachableDirects(ctx context.Context, r Runner, cfg Config) {
+	for _, a := range cfg.AllowDirect {
+		if a.Port == 0 {
+			continue // no single host:port to probe (all-ports / CIDR entry)
+		}
+		host := a.Network.IP.String()
+		if err := probeDirect(ctx, r, cfg, host, a.Port); err != nil {
+			fmt.Fprintln(os.Stderr, directUnreachableDiagnostic(host, a.Port, a.Raw))
+		}
+	}
+}
+
+// directUnreachableDiagnostic is the story-10 message for an allowlisted direct
+// that did not answer on the LAN. Kept as a pure function so its wording (the
+// LAN-problem-vs-policy-block distinction that is the whole point of story 10) is
+// unit-testable without podman. It names the direct, that it is ON the allowlist,
+// and that non-allowlisted destinations are dropped by design, so an operator can
+// tell an unreachable-on-LAN allowed direct apart from a jail-policy block.
+func directUnreachableDiagnostic(host string, port int, raw string) string {
+	return fmt.Sprintf(
+		"tooljail: %v: %s:%d (allowlisted --allow-direct %q) did not answer over the LAN; this is a LAN problem (host down / wrong IP / LAN-firewalled), NOT a jail-policy block. Non-allowlisted destinations are dropped by design; this one is allowed but silent.",
+		ErrDirectUnreachable, host, port, raw)
+}
+
+// probeDirect TCP-connects to an allowlisted direct host:port from inside the
+// jail netns (a short-lived container sharing the sidecar netns), mirroring
+// checkReachback. A non-nil error means the direct did not answer.
+func probeDirect(ctx context.Context, r Runner, cfg Config, host string, port int) error {
+	_, _, err := runPodman(ctx, r, "run", "--rm", "--network", "container:"+cfg.sidecarName(),
+		"docker.io/library/alpine:latest", "sh", "-c",
+		fmt.Sprintf("nc -z -w 3 %s %d", host, port))
+	return err
 }
 
 // checkReachback dials the proxy port from inside the jail netns to give a clear
