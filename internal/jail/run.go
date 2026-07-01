@@ -110,12 +110,13 @@ func Run(ctx context.Context, r Runner, cfg Config) (Result, error) {
 	// The live sinks (when set by `tooljail run`) stream the tool's stdout/stderr
 	// to os.Stdout/os.Stderr as they arrive; the returned strings are still
 	// captured for the probes. When nil (verify/leak-test), Run captures only.
-	out, errOut, runErr := r.Run(ctx, RunSpec{
-		Name:   "podman",
-		Args:   cfg.ToolRunArgs(),
-		Stdout: cfg.ToolStdout,
-		Stderr: cfg.ToolStderr,
-	})
+	//
+	// In INTERACTIVE mode (`tooljail run -it`) toolRunSpec instead requests RAW
+	// passthrough (stdin wired, no capture, no tee): podman's `-it` owns the
+	// container PTY, so the jailed shell behaves like a normal `podman run -it`.
+	// The network jail is IDENTICAL either way (same sidecar/netns/nft/forced
+	// egress/fail-closed above); only the tool's stdio wiring differs.
+	out, errOut, runErr := r.Run(ctx, cfg.toolRunSpec())
 	res := Result{ToolStdout: out, ToolStderr: errOut}
 	if runErr != nil {
 		var ee *exec.ExitError

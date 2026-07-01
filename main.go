@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/wighawag/tooljail/internal/cli"
 	"github.com/wighawag/tooljail/internal/jail"
 	"github.com/wighawag/tooljail/internal/verify"
@@ -67,6 +69,7 @@ func run(args []string) int {
 // the streamed output. The captured Result.ToolStdout is what the verify probes
 // assert on; here it is already on screen, so it is NOT re-printed.
 func runRun(ctx context.Context, cmd *cli.Command) int {
+	interactive := cmd.Interactive || cmd.TTY
 	cfg := jail.Config{
 		Proxy:               cmd.Proxy,
 		ProxyOnHostLoopback: cmd.ProxyOnHostLoopback(),
@@ -74,8 +77,26 @@ func runRun(ctx context.Context, cmd *cli.Command) int {
 		ToolArgv:            cmd.ToolArgv,
 		Mounts:              cmd.Mounts,
 		Workdir:             cmd.Workdir,
-		ToolStdout:          os.Stdout,
-		ToolStderr:          os.Stderr,
+		Interactive:         interactive,
+	}
+	if interactive {
+		// Interactive (`tooljail run -it`): RAW stdio passthrough into the jailed
+		// `podman run -it`. Wire os.Stdin and leave the capture sinks nil (the raw
+		// path ignores them). Put tooljail's controlling terminal into raw mode so
+		// keystrokes and Ctrl-C are forwarded to the container's PTY as bytes (podman
+		// owns that PTY) rather than being cooked by the host terminal or turned into
+		// a SIGINT that would tear the jail down mid-keystroke. Restored on exit so
+		// the user's terminal is never left in raw mode. The network jail is
+		// unchanged; only stdio wiring differs.
+		cfg.ToolStdin = os.Stdin
+		if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
+			if oldState, err := term.MakeRaw(fd); err == nil {
+				defer term.Restore(fd, oldState)
+			}
+		}
+	} else {
+		cfg.ToolStdout = os.Stdout
+		cfg.ToolStderr = os.Stderr
 	}
 	res, err := jail.Run(ctx, jail.ExecRunner{}, cfg)
 	if err != nil {
