@@ -28,6 +28,13 @@ func main() {
 }
 
 func run(args []string) int {
+	// `tooljail --version` / `tooljail version` prints the version and exits before
+	// any CLI parse or proxy preflight (it needs neither a subcommand nor a proxy).
+	if isVersionArg(args) {
+		fmt.Println("tooljail " + resolveVersion())
+		return 0
+	}
+
 	cmd, err := cli.Parse(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tooljail: %v\n", err)

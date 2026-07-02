@@ -19,7 +19,10 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w
+      # Stamp the version with the release tag (e.g. v0.1.0 -> 0.1.0). When absent
+      # (a plain go build / go install), main.resolveVersion falls back to the
+      # module version + VCS revision from the build info.
+      - -s -w -X main.version={{.Version}}
     goos:
       - linux
     goarch:
