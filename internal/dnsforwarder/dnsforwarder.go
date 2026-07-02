@@ -2,11 +2,17 @@
 // seam (see work/notes/findings/dns-through-socks-is-tcp-not-udp.md and
 // spike-dns-to-socks-bridge). DNS through a SOCKS proxy is a CLIENT-SIDE UDP->TCP
 // conversion, never a UDP datagram to the proxy (Tor/Mullvad accept no UDP). So
-// the forwarder accepts the tool's ordinary UDP DNS query, resolves it via the
+// the forwarder accepts the tool's ordinary DNS query, resolves it via the
 // SOCKS proxy over TCP (DNS-over-TCP through a CONNECT to an upstream resolver
-// addressed by hostname, i.e. resolved proxy-side), and answers the tool. UDP
-// never leaves the jail; the host resolver never sees the name; if the proxy is
-// down the query is dropped (fail-closed, no host fallback).
+// addressed by hostname, i.e. resolved proxy-side), and answers the tool. The
+// query never leaves the jail; the host resolver never sees the name; if the
+// proxy is down the query is dropped (fail-closed, no host fallback).
+//
+// It serves on BOTH UDP and TCP at the listen address. TCP is load-bearing:
+// resolv.conf carries `options use-vc` (force TCP, since egress UDP is dropped),
+// and glibc's getaddrinfo honours it by querying over TCP (RFC 7766). A UDP-only
+// forwarder answers musl (alpine) but leaves glibc images (node/debian/
+// buildpack-deps) with EAI_AGAIN, so both listeners are required.
 package dnsforwarder
 
 import (
@@ -34,14 +40,17 @@ type Config struct {
 	Upstream string
 }
 
-// Forwarder is a running DNS-to-SOCKS-TCP bridge.
+// Forwarder is a running DNS-to-SOCKS-TCP bridge, serving UDP and TCP.
 type Forwarder struct {
 	cfg    Config
 	pc     net.PacketConn
+	ln     net.Listener
 	dialer proxy.Dialer
 }
 
-// Start binds the UDP listener and serves in the background until ctx is done.
+// Start binds the UDP and TCP listeners and serves in the background until ctx
+// is done. Both are required: UDP for musl clients, TCP for glibc clients that
+// honour resolv.conf's `use-vc` (see the package doc).
 func Start(ctx context.Context, cfg Config) (*Forwarder, error) {
 	if cfg.Upstream == "" {
 		cfg.Upstream = "1.1.1.1:53" // addressed as-is; for a hostname the proxy resolves it
@@ -52,13 +61,20 @@ func Start(ctx context.Context, cfg Config) (*Forwarder, error) {
 	}
 	pc, err := net.ListenPacket("udp", cfg.Listen)
 	if err != nil {
-		return nil, fmt.Errorf("dns forwarder: listen %s: %w", cfg.Listen, err)
+		return nil, fmt.Errorf("dns forwarder: listen udp %s: %w", cfg.Listen, err)
 	}
-	f := &Forwarder{cfg: cfg, pc: pc, dialer: dialer}
-	go f.serve(ctx)
+	ln, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		_ = pc.Close()
+		return nil, fmt.Errorf("dns forwarder: listen tcp %s: %w", cfg.Listen, err)
+	}
+	f := &Forwarder{cfg: cfg, pc: pc, ln: ln, dialer: dialer}
+	go f.serveUDP(ctx)
+	go f.serveTCP(ctx)
 	go func() {
 		<-ctx.Done()
 		_ = pc.Close()
+		_ = ln.Close()
 	}()
 	return f, nil
 }
@@ -66,10 +82,19 @@ func Start(ctx context.Context, cfg Config) (*Forwarder, error) {
 // Addr returns the bound UDP address.
 func (f *Forwarder) Addr() string { return f.pc.LocalAddr().String() }
 
-// Close stops the forwarder.
-func (f *Forwarder) Close() error { return f.pc.Close() }
+// TCPAddr returns the bound TCP address.
+func (f *Forwarder) TCPAddr() string { return f.ln.Addr().String() }
 
-func (f *Forwarder) serve(ctx context.Context) {
+// Close stops the forwarder.
+func (f *Forwarder) Close() error {
+	err := f.pc.Close()
+	if e := f.ln.Close(); e != nil && err == nil {
+		err = e
+	}
+	return err
+}
+
+func (f *Forwarder) serveUDP(ctx context.Context) {
 	buf := make([]byte, 65535)
 	for {
 		n, addr, err := f.pc.ReadFrom(buf)
@@ -85,6 +110,43 @@ func (f *Forwarder) serve(ctx context.Context) {
 			}
 			_, _ = f.pc.WriteTo(resp, addr)
 		}()
+	}
+}
+
+// serveTCP accepts DNS-over-TCP connections (RFC 7766), each carrying one or
+// more 2-byte-length-prefixed queries. Required for glibc `use-vc` clients.
+func (f *Forwarder) serveTCP(ctx context.Context) {
+	for {
+		conn, err := f.ln.Accept()
+		if err != nil {
+			return
+		}
+		go f.handleTCPConn(conn)
+	}
+}
+
+func (f *Forwarder) handleTCPConn(conn net.Conn) {
+	defer conn.Close()
+	for {
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+		var lenBuf [2]byte
+		if _, err := io.ReadFull(conn, lenBuf[:]); err != nil {
+			return // EOF or timeout: done with this connection
+		}
+		query := make([]byte, binary.BigEndian.Uint16(lenBuf[:]))
+		if _, err := io.ReadFull(conn, query); err != nil {
+			return
+		}
+		resp, err := f.resolveViaSOCKS(query)
+		if err != nil {
+			return // fail-closed: drop, never fall back
+		}
+		framed := make([]byte, 2+len(resp))
+		binary.BigEndian.PutUint16(framed[:2], uint16(len(resp)))
+		copy(framed[2:], resp)
+		if _, err := conn.Write(framed); err != nil {
+			return
+		}
 	}
 }
 

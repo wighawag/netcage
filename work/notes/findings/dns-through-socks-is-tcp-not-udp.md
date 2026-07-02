@@ -41,3 +41,20 @@ With the Option-A topology (tun2socks sidecar + tool sharing the netns), the too
 ## Corollary recorded for the build
 
 tun2socks's `--proxy` flag rejects the `socks5h://` scheme (`unsupported protocol: socks5h`) and uses `socks5://`; its tunneling is remote-resolving by construction, so tun2socks `socks5://` IS socks5h semantics for TCP. netcage must translate the user-facing `socks5h://` to `socks5://` for the tun2socks sidecar env. (DNS is still handled by the forwarder above, not by tun2socks.)
+
+## Forwarder must listen on BOTH UDP and TCP (2026-07-02)
+
+The forwarder originally listened on UDP only. But netcage's `resolv.conf`
+carries `options use-vc` (force TCP, since egress UDP is dropped), and glibc's
+`getaddrinfo` HONOURS `use-vc` by sending the query over **TCP** to
+`127.0.0.1:53`. A UDP-only listener answers musl (alpine `nslookup` worked) but
+leaves glibc-based images (node / debian / buildpack-deps) with `EAI_AGAIN` (the
+TCP query hits nothing). Symptom: `netcage verify` passed while a real Node
+workload in a Debian image could not resolve at all.
+
+Fix: the forwarder listens on UDP AND TCP at the listen address and serves
+DNS-over-TCP (RFC 7766, 2-byte length prefix) via the same proxy-side resolve.
+Both are loopback-internal to the netns (the nft ruleset already permits loopback
+UDP; loopback TCP never egresses), so neither weakens the leak model. This is a
+LISTENER-side change; the UPSTREAM hop stays TCP-through-the-proxy as ADR-0003
+requires.

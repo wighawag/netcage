@@ -46,6 +46,57 @@ func TestForwarder_ResolvesThroughProxyNotHost(t *testing.T) {
 	}
 }
 
+// TestForwarder_ResolvesOverTCP proves the TCP listener (RFC 7766 DNS-over-TCP):
+// a glibc client honouring resolv.conf's `use-vc` queries the forwarder over TCP
+// and gets the proxy-side answer. This is the path a UDP-only forwarder missed,
+// leaving glibc images (node/debian) with EAI_AGAIN.
+func TestForwarder_ResolvesOverTCP(t *testing.T) {
+	resolver := startDNSOverTCP(t)
+	proxyAddr := startSOCKS(t, resolver.addr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fwd, err := dnsforwarder.Start(ctx, dnsforwarder.Config{
+		Listen:    "127.0.0.1:0",
+		ProxyAddr: proxyAddr,
+		Upstream:  "dns.netcage.test:53",
+	})
+	if err != nil {
+		t.Fatalf("start forwarder: %v", err)
+	}
+	defer fwd.Close()
+
+	conn, err := net.Dial("tcp", fwd.TCPAddr())
+	if err != nil {
+		t.Fatalf("dial forwarder tcp: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+
+	q := buildAQuery(uniqueName)
+	framed := make([]byte, 2+len(q))
+	binary.BigEndian.PutUint16(framed[:2], uint16(len(q)))
+	copy(framed[2:], q)
+	if _, err := conn.Write(framed); err != nil {
+		t.Fatalf("write tcp query: %v", err)
+	}
+
+	var lenBuf [2]byte
+	if _, err := io.ReadFull(conn, lenBuf[:]); err != nil {
+		t.Fatalf("read tcp resp length: %v", err)
+	}
+	resp := make([]byte, binary.BigEndian.Uint16(lenBuf[:]))
+	if _, err := io.ReadFull(conn, resp); err != nil {
+		t.Fatalf("read tcp resp: %v", err)
+	}
+	if ip := parseFirstA(resp); ip != answerIP {
+		t.Fatalf("TCP resolved %s to %q, want %q (proxy-side answer)", uniqueName, ip, answerIP)
+	}
+	if !resolver.saw(uniqueName) {
+		t.Fatalf("proxy-side resolver never saw %q over the TCP path", uniqueName)
+	}
+}
+
 // TestForwarder_FailsClosedWhenProxyDown asserts that with the proxy unreachable,
 // the forwarder gives NO answer (no fallback to a host resolver).
 func TestForwarder_FailsClosedWhenProxyDown(t *testing.T) {
