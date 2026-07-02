@@ -98,6 +98,20 @@ The security rationale lives in the ADRs under [`docs/adr/`](docs/adr/):
 - **0004** the default dev image is a pinned buildpack-deps base.
 - **0005** the split-tunnel LAN allowlist is a guardrailed hole in forced egress.
 
+## Development
+
+Unit tests need no runtime and run everywhere:
+
+```sh
+go test ./...
+```
+
+The jail and `verify` integration tests are behind the `integration` build tag because they stand up a real jail (rootless podman + pasta + `/dev/net/tun`). Run them on a capable Linux host:
+
+```sh
+go test -tags integration ./...
+```
+
 ## License
 
 [AGPL-3.0-only](LICENSE).

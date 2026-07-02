@@ -28,7 +28,11 @@ jobs:
           go-version: "1.26"
           check-latest: true
 
-      - name: Run tests
+      - name: Run unit tests
+        # Unit tests only. The jail/verify integration tests are behind the
+        # `integration` build tag because they need a host with rootless
+        # podman + pasta + /dev/net/tun, which GitHub runners lack. Run them on
+        # a capable host with `go test -tags integration ./...`.
         run: go test ./...
 
       - name: Run GoReleaser
