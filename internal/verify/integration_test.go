@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/wighawag/netcage/internal/cli"
+	"github.com/wighawag/netcage/internal/devimage"
 	"github.com/wighawag/netcage/internal/jail"
 	"github.com/wighawag/netcage/internal/socks5hfixture"
 	"github.com/wighawag/netcage/internal/verify"
@@ -218,6 +219,58 @@ func TestVerify_DNSResolvesProxySideNotHost(t *testing.T) {
 	// The proxy saw the lookup (proof it went proxy-side).
 	if !sawHost(fx.ResolvedHosts(), upstreamName) {
 		t.Fatalf("proxy never resolved %q proxy-side; DNS did not go through the proxy (saw=%v)", upstreamName, fx.ResolvedHosts())
+	}
+}
+
+// TestVerify_DNSResolvesOverTCPForGlibc guards the glibc `use-vc`/TCP DNS path:
+// glibc's getaddrinfo (getent) honours resolv.conf's `options use-vc` and
+// queries DNS over TCP, so it exercises the forwarder's TCP listener. A UDP-only
+// forwarder answers alpine/musl but leaves glibc images (node/debian/
+// buildpack-deps) unable to resolve; this test (default dev image = buildpack-
+// deps = glibc) fails if that regresses. It complements the musl nslookup test
+// above.
+func TestVerify_DNSResolvesOverTCPForGlibc(t *testing.T) {
+	requirePodman(t)
+
+	resolverPort := startDNSOverTCP(t)
+
+	fx := socks5hfixture.New(socks5hfixture.Options{
+		ExitIP:     exitIP,
+		KnownHosts: map[string]string{upstreamName: resolverIP},
+	})
+	if err := fx.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("fixture start: %v", err)
+	}
+	defer fx.Close()
+	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
+
+	cfg := jail.Config{
+		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
+		ProxyOnHostLoopback: true,
+		DNSUpstream:         upstreamName + ":" + resolverPort,
+		Image:               devimage.ImageReference(), // buildpack-deps: glibc + getent
+		ToolArgv: []string{
+			"sh", "-c",
+			"getent ahostsv4 " + uniqueName + " 2>&1 || true",
+		},
+		RunID: runID("vdnsglibc"),
+	}
+	// buildpack-deps is a large image; allow a generous cold-pull budget.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	out, err := verify.DNSProbe(ctx, verify.DefaultJailRunner, cfg)
+	if err != nil {
+		t.Fatalf("glibc dns probe: %v", err)
+	}
+	// glibc getaddrinfo, over TCP (use-vc), resolved the unique name to the
+	// proxy-side answer. A UDP-only forwarder would leave this empty/unresolved.
+	if !strings.Contains(out, answerIP) {
+		t.Fatalf("glibc getent did not resolve %q to the proxy-side answer %s (forwarder not answering over TCP?); output:\n%s",
+			uniqueName, answerIP, out)
+	}
+	if !sawHost(fx.ResolvedHosts(), upstreamName) {
+		t.Fatalf("proxy never resolved %q proxy-side over the glibc/TCP path (saw=%v)", upstreamName, fx.ResolvedHosts())
 	}
 }
 

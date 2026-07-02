@@ -6,7 +6,10 @@
 //  1. Exit IP is the proxy's   — an IP-echo through the jail observes the proxy's
 //     exit IP, not the host's (forced TCP egress).
 //  2. DNS goes through the proxy — a unique hostname resolves PROXY-SIDE (the
-//     proxy's resolver sees the lookup), NOT via the host resolver.
+//     proxy's resolver sees the lookup), NOT via the host resolver. Checked for
+//     BOTH musl (alpine nslookup, UDP) and glibc (getent, which honours
+//     resolv.conf `use-vc` and queries over TCP), so a UDP-only forwarder that
+//     breaks glibc images cannot pass verify.
 //  3. Fail-closed on proxy-kill — with the proxy killed, a probe FAILS CLOSED
 //     (no egress), never falling back to the host network.
 //
@@ -23,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/wighawag/netcage/internal/cli"
+	"github.com/wighawag/netcage/internal/devimage"
 	"github.com/wighawag/netcage/internal/jail"
 )
 
@@ -217,6 +221,22 @@ func RunCommandVerify(ctx context.Context, proxy cli.ProxyConfig) Report {
 		Image:               "docker.io/library/alpine:latest",
 		ToolArgv:            []string{"sh", "-c", "wget -qO- -T 10 " + ipEchoURL + " 2>&1 || true"},
 	}
+	// A glibc DNS probe: resolve a public name with getent (glibc getaddrinfo),
+	// which HONOURS resolv.conf's `options use-vc` and queries DNS over TCP. This
+	// is the exact path a UDP-only forwarder broke while musl (alpine) still
+	// worked, so exercising it here stops that regression from passing verify.
+	// The default dev image is buildpack-deps (glibc + getent).
+	dnsCfg := jail.Config{
+		Proxy:               proxy,
+		ProxyOnHostLoopback: isHostLoopback(proxy.Host),
+		Image:               devimage.ImageReference(),
+		ToolArgv: []string{
+			"sh", "-c",
+			// print an A record via glibc getaddrinfo; empty output on failure
+			"getent ahostsv4 " + dnsProbeName + " 2>/dev/null | head -n1 || true",
+		},
+	}
+
 	return Run(ctx, []Check{
 		{Name: "forced-egress-exit-ip-differs-from-host", Run: func(ctx context.Context) Assertion {
 			hostIP, herr := hostExitIP(ctx)
@@ -235,8 +255,25 @@ func RunCommandVerify(ctx context.Context, proxy cli.ProxyConfig) Report {
 			}
 			return Assertion{Ok: true, Detail: "jail exit IP " + jailIP + " differs from host " + hostIP + " (forced egress active)"}
 		}},
+		{Name: "dns-resolves-over-tcp-glibc", Run: func(ctx context.Context) Assertion {
+			out, err := DNSProbe(ctx, DefaultJailRunner, dnsCfg)
+			if err != nil {
+				return Assertion{Ok: false, Err: err}
+			}
+			if ip := firstIP(out); ip != "" {
+				return Assertion{Ok: true, Detail: "glibc getaddrinfo resolved " + dnsProbeName + " to " + ip + " (DNS-over-TCP via the proxy works)"}
+			}
+			return Assertion{Ok: false, Detail: "glibc getaddrinfo could NOT resolve " + dnsProbeName +
+				" in the jail: the in-jail DNS forwarder is not answering over TCP (resolv.conf sets use-vc). " +
+				"A UDP-only forwarder breaks glibc images; check netcage-dns."}
+		}},
 	})
 }
+
+// dnsProbeName is a stable public hostname the glibc DNS check resolves. Its
+// actual IP is irrelevant (we only assert it resolves to SOMETHING), so a
+// well-known always-up name is used.
+const dnsProbeName = "one.one.one.one"
 
 // ipEchoURL is a public service returning the caller's IP as plain text.
 const ipEchoURL = "http://api.ipify.org/"
