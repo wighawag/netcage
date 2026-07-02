@@ -53,10 +53,17 @@ netcage run --proxy socks5h://127.0.0.1:9050 \
 Drop into an interactive shell in a jailed dev environment, working on a local repo (the default dev image is a pinned broad dev base with git + build toolchains):
 
 ```sh
-netcage run --proxy socks5h://127.0.0.1:9050 -it -v ./my-repo bash
+netcage run --proxy socks5h://127.0.0.1:9050 -it -v ./my-repo
 ```
 
-- A **bare command-shaped** first positional (e.g. `run -it bash`) is taken as the COMMAND, with the default dev image. A first positional that looks like an image (has `/`, `:`, `@`, or `.`) is the image. Force a bare-token image with `run -- alpine sh`.
+Or shell into a specific image directly:
+
+```sh
+netcage run --proxy socks5h://127.0.0.1:9050 -it alpine sh
+```
+
+- **Podman-native grammar:** the **first positional is always the image** and the rest is the tool command, exactly like `podman run [flags] IMAGE [CMD...]`. So `run -it alpine sh` means image `alpine`, command `sh`, with no `--` marker and no guessing.
+- **Default dev image:** if you give **no** positional image at all (e.g. `run -it -v ./my-repo`), the pinned dev base is used and its own shell runs. The default applies only when no image is supplied.
 - **Repo-mount ergonomics:** `-v <repo>` with no target defaults to `<repo>:/work`, and a mount at `/work` with no `-w` defaults the workdir to `/work`, so a repo is worked in without hand-writing `-w`.
 
 ### Allowed run flags

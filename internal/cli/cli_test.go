@@ -423,20 +423,21 @@ func TestParse_RunNoPositionalsUsesDefaultImage(t *testing.T) {
 	}
 }
 
-// TestParse_RunBareCommandUsesDefaultImage checks a single bare positional (a
-// command-shaped token, not an image reference) is taken as the COMMAND with the
-// default image injected, rather than failing for a missing command. This
-// REPLACES the old "image but no command" rejection for the bare-token case.
-func TestParse_RunBareCommandUsesDefaultImage(t *testing.T) {
+// TestParse_SingleBarePositionalIsTheImage checks the podman-native rule for a
+// single bare positional: it is the IMAGE (with the image's own default command),
+// exactly like `podman run bash` => image `bash`. This REPLACES the old
+// heuristic that treated a bare command-shaped token as the command + default
+// image; the default image now applies only when NO positional is given.
+func TestParse_SingleBarePositionalIsTheImage(t *testing.T) {
 	cmd, err := cli.ParseWithEnv([]string{"run", "--proxy", "socks5h://h:1", "bash"}, noEnv)
 	if err != nil {
-		t.Fatalf("run <bare-command> should inject the default image, not fail: %v", err)
+		t.Fatalf("run <image>: %v", err)
 	}
-	if !strings.Contains(cmd.Image, "@sha256:") {
-		t.Fatalf("Image = %q, want the pinned default dev image", cmd.Image)
+	if cmd.Image != "bash" {
+		t.Fatalf("Image = %q, want bash (the first positional is always the image)", cmd.Image)
 	}
-	if strings.Join(cmd.ToolArgv, " ") != "bash" {
-		t.Fatalf("ToolArgv = %v, want [bash]", cmd.ToolArgv)
+	if len(cmd.ToolArgv) != 0 {
+		t.Fatalf("ToolArgv = %v, want empty (the image's own default command runs)", cmd.ToolArgv)
 	}
 }
 

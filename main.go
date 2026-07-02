@@ -130,14 +130,13 @@ const usage = `usage:
   netcage run    [flags] [<image>] [<cmd> <args...>]
   netcage verify [--proxy socks5h://[user:pass@]host:port]
 
-run uses podman-native grammar: the image is the first positional and the tool
-command + args follow it (like ` + "`podman run [flags] IMAGE [CMD...]`" + `).
+run uses podman-native grammar: the FIRST positional is always the image and the
+tool command + args follow it (like ` + "`podman run [flags] IMAGE [CMD...]`" + `), so
+` + "`netcage run --proxy ... -it alpine sh`" + ` just works (no marker, no guessing).
 
-default dev image: if no positional image is given, a pinned broad dev base
-(buildpack-deps, git + build toolchains) is used, so ` + "`netcage run -it -v <repo>:/work bash`" + `
-is useful bare. A bare command-shaped first positional (e.g. ` + "`run -it bash`" + `) is
-taken as the COMMAND with the default image; a first positional that looks like an
-image (has /, :, @, or .) is the image. Force a bare-token image with ` + "`run -- alpine sh`" + `.
+default dev image: if NO positional image is given at all, a pinned broad dev
+base (buildpack-deps, git + build toolchains) is used, so
+` + "`netcage run -it -v <repo>:/work`" + ` drops into that image's shell out of the box.
 
 repo-mount ergonomics: ` + "`-v <repo>`" + ` with no target defaults to ` + "`<repo>:/work`" + `, and
 a mount at /work with no -w defaults the workdir to /work, so a repo is worked in

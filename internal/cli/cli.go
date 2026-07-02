@@ -81,12 +81,14 @@ func ParseProxy(raw string) (ProxyConfig, error) {
 // Command is a parsed netcage invocation.
 //
 // The `run` grammar is podman-native and POSITIONAL: `run [flags] <image>
-// [<cmd> <args...>]`, mirroring `podman run [flags] IMAGE [CMD...]`. The image is
-// the first positional argument and the tool argv is the remaining positionals;
-// there is no --image flag and no `--` tool-argv separator (a standalone `--`
-// before the image is accepted only as an optional end-of-flags marker, a podman
-// nicety). Flags outside the curated allow-list are rejected: jail-breaching
-// flags with an explanatory message, anything else as an unknown flag.
+// [<cmd> <args...>]`, mirroring `podman run [flags] IMAGE [CMD...]`. The FIRST
+// positional is ALWAYS the image (no image-vs-command guessing, so `run alpine
+// sh` just works) and the tool argv is the remaining positionals. If NO
+// positional image is given, the pinned default dev image is used. There is no
+// --image flag; a standalone `--` is accepted only as an optional end-of-flags
+// marker (a podman nicety) and is not load-bearing. Flags outside the curated
+// allow-list are rejected: jail-breaching flags with an explanatory message,
+// anything else as an unknown flag.
 type Command struct {
 	Name     string // "run" or "verify"
 	Proxy    ProxyConfig
@@ -210,11 +212,6 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 	var proxyFromFlag bool
 	var positionals []string
 	endOfFlags := false
-	// explicitImageMarker records whether a standalone `--` ended the flags. After
-	// an explicit `--`, the first positional is ALWAYS the image (podman's marker
-	// semantics), which also lets a user force a bare-token image (`run -- alpine
-	// sh`) past the image-vs-command heuristic below.
-	explicitImageMarker := false
 
 	for i := 0; i < len(rest); i++ {
 		a := rest[i]
@@ -228,10 +225,9 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 		}
 		if a == "--" {
 			// Optional explicit end-of-flags marker (a podman nicety). The image and
-			// argv follow it; the marker itself is not a positional. After an explicit
-			// `--`, the first positional is treated as the image unconditionally.
+			// argv follow it; the marker itself is not a positional. It is no longer
+			// load-bearing: the first positional is the image with or without it.
 			endOfFlags = true
-			explicitImageMarker = true
 			continue
 		}
 
@@ -359,7 +355,7 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 	cmd.Proxy = proxy
 
 	if name == "run" {
-		resolveRunPositionals(cmd, positionals, explicitImageMarker)
+		resolveRunPositionals(cmd, positionals)
 		resolveRepoMountDefaults(cmd)
 	} else if len(positionals) > 0 {
 		return nil, fmt.Errorf("verify takes no positional arguments, got %v", positionals)
@@ -369,38 +365,28 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 }
 
 // resolveRunPositionals splits the run positionals into the image and the tool
-// argv, injecting the pinned DEFAULT dev image when no image is present so
-// `netcage run -it -v <repo>:/work bash` is useful out of the box (prd story
-// 10). The image is the first positional, exactly like `podman run IMAGE
-// [CMD...]`, EXCEPT the default-image ergonomic must decide, among the
-// positionals, which (if any) is the image and which is the command:
+// argv, following podman's grammar exactly: `run [flags] IMAGE [CMD...]`.
 //
-//   - After an explicit `--` end-of-flags marker, the first positional is ALWAYS
-//     the image (podman's marker semantics), so a bare-token image can be forced
-//     with `run -- alpine sh`.
-//   - Otherwise the first positional is the image IFF it LOOKS like an image
-//     reference (looksLikeImageReference); a bare command-shaped token (`bash`,
-//     `sh`, `python`) is taken as the COMMAND and the pinned default image is
-//     injected, so `run -it bash` == default dev image running `bash`.
-//   - No positionals at all => default image with an EMPTY argv, so the image's
-//     own default command/entrypoint runs (e.g. an interactive shell).
+//   - The FIRST positional is ALWAYS the image, just like `podman run IMAGE
+//     [CMD...]`. So `run -it alpine sh` => image `alpine`, argv `[sh]`, with no
+//     `--` marker and no image-vs-command guessing. A bare-token image (`alpine`,
+//     `ubuntu`) needs nothing special: it is the first positional, so it is the
+//     image.
+//   - NO positionals at all => the pinned DEFAULT dev image with an EMPTY argv,
+//     so `netcage run -it -v <repo>:/work` drops into the default image's own
+//     shell out of the box (prd story 10). This is the ONLY case the default
+//     image applies: a default is used solely when the user supplied no image.
 //
-// This is the deliberate disambiguation the default-dev-image task records: with
-// a default in play the first positional may be the command, not the image.
-func resolveRunPositionals(cmd *Command, positionals []string, explicitImageMarker bool) {
+// The `--` end-of-flags marker is still accepted (a podman nicety) but is no
+// longer load-bearing: because the first positional is unconditionally the
+// image, `run alpine sh` and `run -- alpine sh` mean the same thing.
+func resolveRunPositionals(cmd *Command, positionals []string) {
 	if len(positionals) == 0 {
 		cmd.Image = defaultImageReference()
 		return
 	}
-	if explicitImageMarker || looksLikeImageReference(positionals[0]) {
-		cmd.Image = positionals[0]
-		cmd.ToolArgv = positionals[1:]
-		return
-	}
-	// The first positional is a bare command-shaped token: inject the default
-	// image and take ALL positionals as the command.
-	cmd.Image = defaultImageReference()
-	cmd.ToolArgv = positionals
+	cmd.Image = positionals[0]
+	cmd.ToolArgv = positionals[1:]
 }
 
 // resolveRepoMountDefaults applies the repo-mount ergonomics (prd story 10): a
@@ -430,18 +416,6 @@ func resolveRepoMountDefaults(cmd *Command) {
 // so the reference is resolved in one place; it always returns the pinned
 // devimage reference.
 func defaultImageReference() string { return devimage.ImageReference() }
-
-// looksLikeImageReference reports whether a positional looks like a container
-// image reference rather than a bare command. An image reference carries at least
-// one of: a registry/namespace path (`/`), a tag (`:`), a digest (`@`), or a
-// registry host with a dot (`registry.example`). A single bare token with none of
-// these (`bash`, `sh`, `python`) is treated as a command when the default image
-// is in play. Users who want a bare-token image (e.g. `alpine`) spell it more
-// specifically (`alpine:latest`, `docker.io/library/alpine`) or force it with the
-// `--` marker (`run -- alpine sh`).
-func looksLikeImageReference(s string) bool {
-	return strings.ContainsAny(s, "/:@.")
-}
 
 // mountHasNoContainerTarget reports whether a -v value is a bare host path with no
 // :container target (so its target should default to /work). A Windows-style

@@ -13,12 +13,14 @@ import (
 // image or a workdir. They are pure-logic (no podman): they assert on the parsed
 // + resolved Command the jail consumes.
 
-// TestParse_NoImageInjectsPinnedDefault checks that with NO positional image, the
-// resolved run uses the pinned default dev image and the sole positional is taken
-// as the COMMAND (e.g. `run -it bash` => default image + `bash`).
+// TestParse_NoImageInjectsPinnedDefault checks that with NO positional image at
+// all, the resolved run uses the pinned default dev image with an EMPTY argv (the
+// image's own default command runs). Under podman-native grammar the default
+// image applies ONLY when no image positional is given (`run -it` with no
+// positional), never as a guess about a bare command-shaped token.
 func TestParse_NoImageInjectsPinnedDefault(t *testing.T) {
 	cmd, err := cli.ParseWithEnv([]string{
-		"run", "-it", "--proxy", "socks5h://127.0.0.1:9050", "bash",
+		"run", "-it", "--proxy", "socks5h://127.0.0.1:9050",
 	}, noEnv)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -26,17 +28,37 @@ func TestParse_NoImageInjectsPinnedDefault(t *testing.T) {
 	if cmd.Image != devimage.ImageReference() {
 		t.Fatalf("Image = %q, want the pinned default dev image %q", cmd.Image, devimage.ImageReference())
 	}
-	if strings.Join(cmd.ToolArgv, " ") != "bash" {
-		t.Fatalf("ToolArgv = %v, want [bash] (the bare positional is the command when the default image is injected)", cmd.ToolArgv)
+	if len(cmd.ToolArgv) != 0 {
+		t.Fatalf("ToolArgv = %v, want empty (no positional => default image's own command runs)", cmd.ToolArgv)
+	}
+}
+
+// TestParse_FirstPositionalIsAlwaysTheImage checks the podman-native rule: the
+// first positional is the image with NO guessing, so a bare-token image needs no
+// `--` marker. `run alpine sh` => image `alpine`, command `sh`. This is the
+// behaviour that replaced the old image-vs-command heuristic (which forced
+// `run -- alpine sh`).
+func TestParse_FirstPositionalIsAlwaysTheImage(t *testing.T) {
+	cmd, err := cli.ParseWithEnv([]string{
+		"run", "--proxy", "socks5h://h:1", "-it", "alpine", "sh",
+	}, noEnv)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cmd.Image != "alpine" {
+		t.Fatalf("Image = %q, want alpine (the first positional is ALWAYS the image, no marker needed)", cmd.Image)
+	}
+	if strings.Join(cmd.ToolArgv, " ") != "sh" {
+		t.Fatalf("ToolArgv = %v, want [sh]", cmd.ToolArgv)
 	}
 }
 
 // TestParse_DefaultImageIsDigestPinned mirrors the redirector-pin assertion at
-// the CLI seam: the injected default image is pinned by an @sha256: digest, never
-// a mutable tag.
+// the CLI seam: the injected default image (used when no positional is given) is
+// pinned by an @sha256: digest, never a mutable tag.
 func TestParse_DefaultImageIsDigestPinned(t *testing.T) {
 	cmd, err := cli.ParseWithEnv([]string{
-		"run", "--proxy", "socks5h://h:1", "sh",
+		"run", "--proxy", "socks5h://h:1",
 	}, noEnv)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -47,8 +69,7 @@ func TestParse_DefaultImageIsDigestPinned(t *testing.T) {
 }
 
 // TestParse_ExplicitImageOverridesDefault checks that an explicit image reference
-// (one that LOOKS like an image: has a registry path, tag, or digest) is used
-// as-is and is NOT replaced by the default.
+// is used as-is and is NOT replaced by the default.
 func TestParse_ExplicitImageOverridesDefault(t *testing.T) {
 	cmd, err := cli.ParseWithEnv([]string{
 		"run", "--proxy", "socks5h://h:1", "docker.io/library/alpine:latest", "sh",
@@ -64,9 +85,10 @@ func TestParse_ExplicitImageOverridesDefault(t *testing.T) {
 	}
 }
 
-// TestParse_ExplicitTaggedImageOverridesDefault checks a bare `repo:tag` image is
-// recognised as an image (the tag is the image-form signal), not a command.
-func TestParse_ExplicitTaggedImageOverridesDefault(t *testing.T) {
+// TestParse_TaggedImageAndCommand checks a bare `repo:tag` image is the image and
+// the rest is the command (nothing special about the tag now; the first
+// positional is always the image).
+func TestParse_TaggedImageAndCommand(t *testing.T) {
 	cmd, err := cli.ParseWithEnv([]string{
 		"run", "--proxy", "socks5h://h:1", "python:3.12", "python", "--version",
 	}, noEnv)
@@ -74,7 +96,7 @@ func TestParse_ExplicitTaggedImageOverridesDefault(t *testing.T) {
 		t.Fatalf("Parse: %v", err)
 	}
 	if cmd.Image != "python:3.12" {
-		t.Fatalf("Image = %q, want python:3.12 (a tagged reference is an image, not a command)", cmd.Image)
+		t.Fatalf("Image = %q, want python:3.12", cmd.Image)
 	}
 	wantArgv := []string{"python", "--version"}
 	if strings.Join(cmd.ToolArgv, " ") != strings.Join(wantArgv, " ") {
