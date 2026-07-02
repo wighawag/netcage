@@ -20,17 +20,17 @@ netcage ships as two binaries: `netcage` and its DNS-forwarder helper `netcage-d
 ### Install script (recommended)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/wighawag/netcage/main/install.sh | sh
+curl -fsSL https://github.com/wighawag/netcage/releases/latest/download/install.sh | sh
 ```
 
 This detects your architecture (amd64 / arm64 / armv7 / armv6), downloads the latest release, **verifies its sha256 checksum**, and installs **both** `netcage` and `netcage-dns` to `~/.local/bin` (or `/usr/local/bin` if writable). Override with env vars:
 
 ```sh
 # a specific version, and a custom install dir
-curl -fsSL https://raw.githubusercontent.com/wighawag/netcage/main/install.sh | NETCAGE_VERSION=v0.2.0 PREFIX=$HOME/bin sh
+curl -fsSL https://github.com/wighawag/netcage/releases/latest/download/install.sh | NETCAGE_VERSION=v0.2.0 PREFIX=$HOME/bin sh
 ```
 
-Prefer not to pipe to `sh`? Download [`install.sh`](https://raw.githubusercontent.com/wighawag/netcage/main/install.sh), read it, then run it. The armv6/armv7 builds cover older Raspberry Pi models.
+The installer is served as a release asset (stable storage). The same script also lives at [`install.sh`](https://github.com/wighawag/netcage/blob/main/install.sh) in the repo; prefer not to pipe to `sh`? Download it, read it, then run it. The armv6/armv7 builds cover older Raspberry Pi models.
 
 ### go install
 
