@@ -15,13 +15,24 @@ netcage is **Linux only** (see [Platform](#platform)). It relies on Linux kernel
 
 The redirector sidecar and the default dev image are **pinned by digest** and pulled by Podman on first use; there is nothing extra to install or publish. First run pulls them (and caches them).
 
-netcage ships as two binaries: `netcage` and its DNS-forwarder helper `netcage-dns` (the jail launches it in-netns, ADR-0003). The helper must sit next to the `netcage` binary, or on `PATH`, or be pointed at by `NETCAGE_DNS_BIN`. Without it the jail cannot run.
+netcage ships as two binaries: `netcage` and its DNS-forwarder helper `netcage-dns` (the jail launches it in-netns, ADR-0003). The helper must sit next to the `netcage` binary, or on `PATH`, or be pointed at by `NETCAGE_DNS_BIN`. Without it the jail cannot run. Every install method below places both together.
 
-### Prebuilt binary (recommended)
+### Install script (recommended)
 
-Download a prebuilt Linux archive (amd64 / arm64 / armv7 / armv6) from the [Releases](https://github.com/wighawag/netcage/releases) page and extract it. Each archive contains **both** `netcage` and `netcage-dns` side by side, so it works out of the box. The armv6/armv7 builds cover older Raspberry Pi models.
+```sh
+curl -fsSL https://raw.githubusercontent.com/wighawag/netcage/main/install.sh | sh
+```
 
-### From source
+This detects your architecture (amd64 / arm64 / armv7 / armv6), downloads the latest release, **verifies its sha256 checksum**, and installs **both** `netcage` and `netcage-dns` to `~/.local/bin` (or `/usr/local/bin` if writable). Override with env vars:
+
+```sh
+# a specific version, and a custom install dir
+curl -fsSL https://raw.githubusercontent.com/wighawag/netcage/main/install.sh | NETCAGE_VERSION=v0.2.0 PREFIX=$HOME/bin sh
+```
+
+Prefer not to pipe to `sh`? Download [`install.sh`](https://raw.githubusercontent.com/wighawag/netcage/main/install.sh), read it, then run it. The armv6/armv7 builds cover older Raspberry Pi models.
+
+### go install
 
 ```sh
 go install github.com/wighawag/netcage@latest
@@ -29,6 +40,10 @@ go install github.com/wighawag/netcage/cmd/netcage-dns@latest
 ```
 
 `go install` places both in the same `$GOBIN`, so `netcage` finds `netcage-dns` as its sibling. Install **both**: the second one is required for the jail to run.
+
+### Manual download
+
+Download a prebuilt Linux archive (amd64 / arm64 / armv7 / armv6) from the [Releases](https://github.com/wighawag/netcage/releases) page and extract it. Each archive contains **both** `netcage` and `netcage-dns` side by side; put them on your `PATH` (in the same directory).
 
 ## Usage
 
