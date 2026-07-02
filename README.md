@@ -27,16 +27,10 @@ This detects your architecture (amd64 / arm64 / armv7 / armv6), downloads the la
 
 ```sh
 # a specific version, and a custom install dir
-curl -fsSL https://github.com/wighawag/netcage/releases/latest/download/install.sh | NETCAGE_VERSION=v0.2.0 PREFIX=$HOME/bin sh
+curl -fsSL https://github.com/wighawag/netcage/releases/latest/download/install.sh | NETCAGE_VERSION=v0.2.1 PREFIX=$HOME/bin sh
 ```
 
-The installer is served as a release asset (stable storage). If the `latest/` URL 404s right after a new release (GitHub's `latest` alias can lag a minute or two), use the versioned URL, which is immutable and works immediately:
-
-```sh
-curl -fsSL https://github.com/wighawag/netcage/releases/download/v0.2.1/install.sh | sh
-```
-
-The same script also lives at [`install.sh`](https://github.com/wighawag/netcage/blob/main/install.sh) in the repo; prefer not to pipe to `sh`? Download it, read it, then run it. The armv6/armv7 builds cover older Raspberry Pi models.
+The installer is served as a release asset (stable storage). The same script also lives at [`install.sh`](https://github.com/wighawag/netcage/blob/main/install.sh) in the repo; prefer not to pipe to `sh`? Download it, read it, then run it. The armv6/armv7 builds cover older Raspberry Pi models.
 
 ### go install
 
