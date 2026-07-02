@@ -44,6 +44,12 @@ func requirePodman(t *testing.T) {
 	if _, err := exec.LookPath("podman"); err != nil {
 		t.Skip("podman not found; skipping verify integration test")
 	}
+	// The jail is built on a TUN redirector (README Requirements); without
+	// /dev/net/tun it cannot stand up, so skip rather than fail. Stock CI runners
+	// ship podman but no /dev/net/tun.
+	if _, err := os.Stat("/dev/net/tun"); err != nil {
+		t.Skip("/dev/net/tun not available; skipping verify integration test")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := exec.CommandContext(ctx, "podman", "info").Run(); err != nil {

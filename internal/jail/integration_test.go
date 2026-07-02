@@ -40,13 +40,18 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// requirePodman skips the test unless a working rootless podman is present, so
-// the plain `go test ./...` gate stays green on a host without podman. The jail
-// is a system-mutating integration; it runs only where the runtime exists.
+// requirePodman skips the test unless a working rootless podman AND a usable
+// /dev/net/tun are present, so the plain `go test ./...` gate stays green on a
+// host that can't stand up the jail (e.g. stock CI runners, which ship podman
+// but no /dev/net/tun). The jail is a system-mutating integration built on a TUN
+// redirector (README Requirements); it runs only where that runtime exists.
 func requirePodman(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("podman"); err != nil {
 		t.Skip("podman not found; skipping jail integration test")
+	}
+	if _, err := os.Stat("/dev/net/tun"); err != nil {
+		t.Skip("/dev/net/tun not available; skipping jail integration test")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
