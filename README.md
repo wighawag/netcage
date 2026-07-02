@@ -15,13 +15,20 @@ netcage is **Linux only** (see [Platform](#platform)). It relies on Linux kernel
 
 The redirector sidecar and the default dev image are **pinned by digest** and pulled by Podman on first use; there is nothing extra to install or publish. First run pulls them (and caches them).
 
-## Install
+netcage ships as two binaries: `netcage` and its DNS-forwarder helper `netcage-dns` (the jail launches it in-netns, ADR-0003). The helper must sit next to the `netcage` binary, or on `PATH`, or be pointed at by `NETCAGE_DNS_BIN`. Without it the jail cannot run.
+
+### Prebuilt binary (recommended)
+
+Download a prebuilt Linux archive (amd64 / arm64 / armv7 / armv6) from the [Releases](https://github.com/wighawag/netcage/releases) page and extract it. Each archive contains **both** `netcage` and `netcage-dns` side by side, so it works out of the box. The armv6/armv7 builds cover older Raspberry Pi models.
+
+### From source
 
 ```sh
 go install github.com/wighawag/netcage@latest
+go install github.com/wighawag/netcage/cmd/netcage-dns@latest
 ```
 
-Or download a prebuilt Linux binary (amd64 / arm64 / armv7 / armv6) from the [Releases](https://github.com/wighawag/netcage/releases) page. The armv6/armv7 builds cover older Raspberry Pi models.
+`go install` places both in the same `$GOBIN`, so `netcage` finds `netcage-dns` as its sibling. Install **both**: the second one is required for the jail to run.
 
 ## Usage
 

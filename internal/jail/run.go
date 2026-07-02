@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -315,15 +316,24 @@ func writeResolvConf() (string, func(), error) {
 }
 
 // dnsHelperPath locates the netcage-dns binary: an env override (set in tests),
-// else a sibling of the running executable, else on PATH.
+// else a sibling of the running executable (how the release archive ships the
+// pair), else on PATH.
 func dnsHelperPath() (string, error) {
 	if p := os.Getenv("NETCAGE_DNS_BIN"); p != "" {
 		return p, nil
 	}
+	if exe, err := os.Executable(); err == nil {
+		if exe, err = filepath.EvalSymlinks(exe); err == nil {
+			sibling := filepath.Join(filepath.Dir(exe), "netcage-dns")
+			if info, err := os.Stat(sibling); err == nil && !info.IsDir() {
+				return sibling, nil
+			}
+		}
+	}
 	if p, err := exec.LookPath("netcage-dns"); err == nil {
 		return p, nil
 	}
-	return "", errors.New("netcage-dns helper not found (set NETCAGE_DNS_BIN or install it on PATH)")
+	return "", errors.New("netcage-dns helper not found (set NETCAGE_DNS_BIN, place it next to the netcage binary, or install it on PATH)")
 }
 
 // ErrDirectUnreachable names a split-tunnel allowlisted direct that did not

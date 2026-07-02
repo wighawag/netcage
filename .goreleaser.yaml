@@ -34,8 +34,36 @@ builds:
       - "7" # Pi 2, Pi 3 (32-bit OS)
       - "6" # Pi 1, Pi Zero / Zero W
 
+  # The in-netns DNS-to-SOCKS-TCP forwarder helper. netcage launches it inside
+  # the jail's netns (ADR-0003); without it the jail cannot run, so it MUST ship
+  # alongside the netcage binary. netcage finds it as a sibling of its own
+  # executable, so the archive places both binaries side by side.
+  - id: netcage-dns
+    main: ./cmd/netcage-dns
+    binary: netcage-dns
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+      - arm
+    goarm:
+      - "7"
+      - "6"
+
 archives:
   - id: netcage
+    # Bundle BOTH binaries (netcage + netcage-dns) into one archive per target,
+    # so a downloaded release runs the jail out of the box.
+    ids:
+      - netcage
+      - netcage-dns
     formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_
