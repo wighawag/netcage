@@ -1,7 +1,7 @@
 ---
 title: Teardown invariant — no leftover netns, nft, sidecar, or container after run
 slug: teardown-invariant
-prd: tooljail
+prd: netcage
 blockedBy: [jail-run-forced-egress]
 covers: [9]
 ---
@@ -10,7 +10,7 @@ covers: [9]
 
 Guaranteed teardown of the jail, tested as an INVARIANT. A botched teardown is itself a leak/footgun (half-applied firewall state, an orphaned sidecar still holding a route), so this is a first-class property, not cleanup-as-afterthought.
 
-The invariant: after `tooljail run` ends in ANY of three ways — **normal exit, error exit, and SIGINT (Ctrl-C)** — there is **no leftover netns, no leftover nft ruleset, no leftover redirector sidecar, and no leftover tool container**. Built on Go's `context` cancellation + signal handling + `defer` cleanup (one of the reasons the prd chose Go: the leak boundary is teardown correctness).
+The invariant: after `netcage run` ends in ANY of three ways — **normal exit, error exit, and SIGINT (Ctrl-C)** — there is **no leftover netns, no leftover nft ruleset, no leftover redirector sidecar, and no leftover tool container**. Built on Go's `context` cancellation + signal handling + `defer` cleanup (one of the reasons the prd chose Go: the leak boundary is teardown correctness).
 
 End-to-end thin path: a teardown routine wired to all three exit paths, plus tests that exercise each path and then assert ZERO residue (enumerate netns / nft rules / podman containers attributable to the run and assert none remain).
 
@@ -50,7 +50,7 @@ Non-obvious in-scope decisions:
 - **Enumeration seam = container names.** The netns AND the nft ruleset are lifecycle-bound to the
   SIDECAR container: they live in its network namespace, so removing the sidecar destroys both.
   Verified live (remove the sidecar -> its PID/netns/nft are gone). Therefore "no run-attributable
-  `tooljail-run-<id>-*` container remains" is a SUFFICIENT residue check; there is no separate
+  `netcage-run-<id>-*` container remains" is a SUFFICIENT residue check; there is no separate
   netns/nft to enumerate or delete. The in-netns DNS forwarder is an `exec.CommandContext` child of
   the run, so a cancelled/finished run kills it; the temp resolv.conf is removed by its own defer.
 - **Idempotency via `podman rm -f -i`.** `-i/--ignore` makes removing an already-gone container a

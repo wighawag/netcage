@@ -1,4 +1,4 @@
-// Package jail stands up tooljail's forced-egress jail: the wrapped tool runs
+// Package jail stands up netcage's forced-egress jail: the wrapped tool runs
 // with ALL its TCP egress forced through a tun2socks sidecar (the jail's only
 // route out), all UDP hard-dropped, DNS resolved proxy-side via a
 // DNS-to-SOCKS-TCP forwarder, and a fail-closed default (proxy down => no
@@ -33,8 +33,8 @@ import (
 
 	"golang.org/x/net/proxy"
 
-	"github.com/wighawag/tooljail/internal/cli"
-	"github.com/wighawag/tooljail/internal/redirector"
+	"github.com/wighawag/netcage/internal/cli"
+	"github.com/wighawag/netcage/internal/redirector"
 )
 
 // mappedHostLoopback is the dedicated link-local address pasta maps to host
@@ -49,7 +49,7 @@ type Config struct {
 	ToolArgv []string
 	Mounts   []string // podman -v values, passed through
 	Workdir  string   // podman -w/--workdir; empty leaves the image's own workdir
-	RunID    string   // run-attributable id; containers named tooljail-run-<RunID>-*
+	RunID    string   // run-attributable id; containers named netcage-run-<RunID>-*
 
 	// AllowDirect is the validated split-tunnel LAN allowlist: private-only
 	// destinations (network + optional TCP port) the jailed tool may reach
@@ -73,26 +73,26 @@ type Config struct {
 	// ToolStdout and ToolStderr are OPTIONAL live sinks for the wrapped tool's
 	// output. When set, the tool's stdout/stderr are streamed to them AS THEY
 	// ARRIVE (a tee) in addition to being captured into Result.ToolStdout /
-	// Result.ToolStderr. `tooljail run` sets them to os.Stdout/os.Stderr so a
+	// Result.ToolStderr. `netcage run` sets them to os.Stdout/os.Stderr so a
 	// jailed tool feels like running it directly; the verify/leak-test probes leave
 	// them nil (capture-only) since they only assert on the returned output. Kept
 	// separate so the tool's stderr is never merged into the stdout a caller parses.
 	//
 	// In INTERACTIVE mode (Interactive true) these capture/tee sinks are IGNORED:
-	// the tool runs with `podman run -it` and tooljail does raw stdio passthrough
+	// the tool runs with `podman run -it` and netcage does raw stdio passthrough
 	// (podman owns the container PTY), so there is no capture and no tee.
 	ToolStdout io.Writer
 	ToolStderr io.Writer
 
 	// Interactive runs the wrapped tool with a TTY and stdin attached (`podman run
 	// -it`) so a human or agent can shell into the jail. It is opt-in and only for
-	// `tooljail run -it`; the verify/leak-test probes leave it false so they keep
+	// `netcage run -it`; the verify/leak-test probes leave it false so they keep
 	// the capture path. Interactive changes ONLY the stdin/stdout/TTY wiring, never
 	// the network jail (same sidecar + netns + nft + forced egress + fail-closed).
 	Interactive bool
 
 	// ToolStdin is the reader wired to the interactive tool's stdin (os.Stdin for
-	// `tooljail run -it`). It is used ONLY in Interactive mode (raw passthrough);
+	// `netcage run -it`). It is used ONLY in Interactive mode (raw passthrough);
 	// non-interactive runs leave it nil and never attach stdin.
 	ToolStdin io.Reader
 
@@ -247,8 +247,8 @@ func (c Config) sidecarProxyURL() string {
 }
 
 // sidecarName / toolName are the run-attributable container names.
-func (c Config) sidecarName() string { return "tooljail-run-" + c.RunID + "-sidecar" }
-func (c Config) toolName() string    { return "tooljail-run-" + c.RunID + "-tool" }
+func (c Config) sidecarName() string { return "netcage-run-" + c.RunID + "-sidecar" }
+func (c Config) toolName() string    { return "netcage-run-" + c.RunID + "-tool" }
 
 // nftRuleset is the in-netns ruleset: drop all egress UDP except the local
 // tool<->forwarder loopback hop, and narrow host-loopback reachback to exactly
@@ -384,7 +384,7 @@ func (c Config) excludedRoutes() string {
 //
 //   - Interactive: RAW passthrough. Stdin is wired (os.Stdin via ToolStdin) and
 //     the capture-tee live sinks are DELIBERATELY not attached, because podman's
-//     `-it` owns the container PTY and tooljail passes stdio straight through.
+//     `-it` owns the container PTY and netcage passes stdio straight through.
 //     Nothing is captured (Result.ToolStdout is empty for an interactive run).
 //   - Non-interactive: the existing capture/tee path. The live sinks stream the
 //     tool's output to os.Stdout/os.Stderr while ExecRunner still captures it into
@@ -413,7 +413,7 @@ func (c Config) ToolRunArgs() []string {
 		"--network", "container:" + c.sidecarName(),
 	}
 	// Interactive mode attaches a TTY + stdin (`podman run -it`) so a human/agent
-	// can shell into the jail. It is opt-in (only `tooljail run -it`); every other
+	// can shell into the jail. It is opt-in (only `netcage run -it`); every other
 	// path (verify probes, declarative runs) omits it and keeps the capture path.
 	if c.Interactive {
 		args = append(args, "-it")

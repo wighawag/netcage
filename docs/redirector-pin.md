@@ -19,7 +19,7 @@ kept in lockstep with this record by the guard tests in
 
 The run path pulls the **digest** reference only. The tag is never used to
 resolve the image (a tag is mutable; a digest is not), so re-pushing `v2.6.0` or
-`:latest` upstream cannot change the bytes tooljail runs.
+`:latest` upstream cannot change the bytes netcage runs.
 
 ## How the digest was obtained (re-verifiable)
 

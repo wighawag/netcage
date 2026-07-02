@@ -14,15 +14,15 @@ The concrete reason this note exists. An agent running UNJAILED on the host, usi
 1. **Egress leak:** `gh` went out over the HOST network, not through webveil's SOCKS egress, so the request came from the real IP.
 2. **Identity leak:** `gh` used the host's `gh` CREDENTIALS, so the request was authenticated AS the user (provably identity-linked, not merely IP-linked). This is exactly the "account-bound tool that signs every request with your identity" failure webveil exists to replace.
 
-This was NOT a tooljail bug (nothing was jailed at the time); it is the motivating "why jail agents" story. But it teaches a two-axis lesson that directly CONSTRAINS how the config-reuse sub-ask below (Thread 2, sub-ask 2) can be built:
+This was NOT a netcage bug (nothing was jailed at the time); it is the motivating "why jail agents" story. But it teaches a two-axis lesson that directly CONSTRAINS how the config-reuse sub-ask below (Thread 2, sub-ask 2) can be built:
 
 - **Egress-jailing and identity/credential-jailing are ORTHOGONAL axes; both must hold.** The jail solves the EGRESS leak by construction (inside a proper jail there is NO host network, so `gh` is forced through SOCKS or fails closed regardless of the agent's intent). But the jail does NOTHING about the IDENTITY leak if the credentials are present in the jail. A jail that stops the IP leak while carrying the user's `gh`/cloud/API credentials still authenticates as the user: a false sense of safety of exactly the kind this project exists to kill.
 - **Therefore "share the home folder" is not just risky, it is SELF-DEFEATING for the anonymity goal.** The very thing to prevent (identity leak) is partly CARRIED IN the home folder (`~/.config/gh`, tokens, keyring, cloud creds). Sharing `$HOME` into the jail re-imports the credential that deanonymizes you, so the network jail buys nothing against the identity axis.
 - **Design constraint this imposes:** the jail must start with NO ambient host identity by default. Home-sharing defaults to OFF. If config reuse is offered, it must be a CURATED, credential-free subset (e.g. `~/.pi` and pi extensions only, NEVER `~/.config` wholesale which holds `gh` and cloud creds), or simply not done (require the user to copy/provide config another way). See Thread 2 sub-ask 2 for the fork.
 
-## Thread 1: tooljail as an anonymity shell (no tool in mind at the start)
+## Thread 1: netcage as an anonymity shell (no tool in mind at the start)
 
-Framing broadening, not new mechanism. tooljail's value is not only "wrap a known tool"; it is "give me a jailed environment where ALL egress is forced through SOCKS5h, fail-closed." So a user with NO specific tool in mind can use it to just *do stuff anonymously*: `tooljail run -it <default-image> bash` and work in a shell whose every TCP/DNS egress goes through the proxy.
+Framing broadening, not new mechanism. netcage's value is not only "wrap a known tool"; it is "give me a jailed environment where ALL egress is forced through SOCKS5h, fail-closed." So a user with NO specific tool in mind can use it to just *do stuff anonymously*: `netcage run -it <default-image> bash` and work in a shell whose every TCP/DNS egress goes through the proxy.
 
 This is already LATENT in the `jailed-interactive-repo-run` slice (interactive TTY + a default dev image = an anonymity shell). So Thread 1 likely needs no new machinery, only a framing update: the parent prd's Problem could broaden from "I found a tool (a repo)" to also "I want to work anonymously in a shell." Worth a small prd/doc touch later; not urgent, not a mechanism change.
 

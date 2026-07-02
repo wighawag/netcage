@@ -2,7 +2,7 @@ package main
 
 import "runtime/debug"
 
-// version is the tooljail version string. For a GOReleaser build it is stamped
+// version is the netcage version string. For a GOReleaser build it is stamped
 // via -ldflags "-X main.version=<tag>" (so a v0.1.0 tag becomes "0.1.0"). When it
 // is left at the default "dev" (e.g. a plain `go build`, or `go install ...@vX`),
 // resolveVersion falls back to the module version + VCS revision from the build

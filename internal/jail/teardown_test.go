@@ -9,15 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wighawag/tooljail/internal/cli"
-	"github.com/wighawag/tooljail/internal/jail"
-	"github.com/wighawag/tooljail/internal/socks5hfixture"
+	"github.com/wighawag/netcage/internal/cli"
+	"github.com/wighawag/netcage/internal/jail"
+	"github.com/wighawag/netcage/internal/socks5hfixture"
 )
 
 // residueFor returns the run-attributable podman container names still present
 // for runID (the enumeration the teardown invariant asserts is empty). The
 // netns + nft ruleset are lifecycle-bound to the sidecar container, so once no
-// tooljail-run-<id>-* container remains, neither does any netns/nft for the run.
+// netcage-run-<id>-* container remains, neither does any netns/nft for the run.
 func residueFor(t *testing.T, runID string) []string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -26,7 +26,7 @@ func residueFor(t *testing.T, runID string) []string {
 	var left []string
 	for _, line := range strings.Split(string(out), "\n") {
 		name := strings.TrimSpace(line)
-		if name != "" && strings.Contains(name, "tooljail-run-"+runID) {
+		if name != "" && strings.Contains(name, "netcage-run-"+runID) {
 			left = append(left, name)
 		}
 	}

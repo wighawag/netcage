@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wighawag/tooljail/internal/cli"
+	"github.com/wighawag/netcage/internal/cli"
 )
 
 // TestDirectUnreachableDiagnostic_DistinguishesLANFromPolicyBlock pins the

@@ -6,7 +6,7 @@ source: 'Tor SOCKS-extensions spec (spec.torproject.org/socks-extensions.html, r
 
 # DNS through a SOCKS proxy is TCP, resolved proxy-side — never a UDP datagram to the proxy
 
-This finding settles the DNS seam for tooljail and CONFIRMS (strengthens) ADR-0003 (hard-block all UDP). It was prompted by a real question — "Tor/Mullvad don't do SOCKS UDP-associate, but don't they accept UDP for DNS? could we allow UDP only for DNS?" — and the answer, from the protocols themselves, is NO.
+This finding settles the DNS seam for netcage and CONFIRMS (strengthens) ADR-0003 (hard-block all UDP). It was prompted by a real question — "Tor/Mullvad don't do SOCKS UDP-associate, but don't they accept UDP for DNS? could we allow UDP only for DNS?" — and the answer, from the protocols themselves, is NO.
 
 ## The ground truth
 
@@ -23,12 +23,12 @@ This finding settles the DNS seam for tooljail and CONFIRMS (strengthens) ADR-00
 
 So the question productively CONFIRMS ADR-0003 rather than reopening it: keep UDP hard-blocked, AND convert the tool's DNS to a SOCKS-TCP resolution locally.
 
-## The correct mechanism (what tooljail must build)
+## The correct mechanism (what netcage must build)
 
 A **DNS-to-SOCKS-TCP forwarder** inside the jail's netns:
 
 1. The wrapped tool emits ordinary UDP (or TCP) DNS to its `resolv.conf` nameserver.
-2. tooljail points the tool's `resolv.conf` at the forwarder's address.
+2. netcage points the tool's `resolv.conf` at the forwarder's address.
 3. The forwarder takes each query and RESOLVES IT VIA THE SOCKS PROXY OVER TCP (a socks5h CONNECT to the proxy, or a SOCKS-tunnelled DNS-over-TCP to a resolver), then answers the tool.
 4. UDP never leaves the jail (ADR-0003 holds); the host resolver NEVER sees the name (no leak).
 
@@ -40,4 +40,4 @@ With the Option-A topology (tun2socks sidecar + tool sharing the netns), the too
 
 ## Corollary recorded for the build
 
-tun2socks's `--proxy` flag rejects the `socks5h://` scheme (`unsupported protocol: socks5h`) and uses `socks5://`; its tunneling is remote-resolving by construction, so tun2socks `socks5://` IS socks5h semantics for TCP. tooljail must translate the user-facing `socks5h://` to `socks5://` for the tun2socks sidecar env. (DNS is still handled by the forwarder above, not by tun2socks.)
+tun2socks's `--proxy` flag rejects the `socks5h://` scheme (`unsupported protocol: socks5h`) and uses `socks5://`; its tunneling is remote-resolving by construction, so tun2socks `socks5://` IS socks5h semantics for TCP. netcage must translate the user-facing `socks5h://` to `socks5://` for the tun2socks sidecar env. (DNS is still handled by the forwarder above, not by tun2socks.)

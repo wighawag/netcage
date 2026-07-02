@@ -14,24 +14,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wighawag/tooljail/internal/cli"
-	"github.com/wighawag/tooljail/internal/devimage"
-	"github.com/wighawag/tooljail/internal/jail"
-	"github.com/wighawag/tooljail/internal/socks5hfixture"
+	"github.com/wighawag/netcage/internal/cli"
+	"github.com/wighawag/netcage/internal/devimage"
+	"github.com/wighawag/netcage/internal/jail"
+	"github.com/wighawag/netcage/internal/socks5hfixture"
 )
 
-// TestMain builds the tooljail-dns helper once (the in-netns DNS forwarder the
-// jail launches via nsenter) and points the jail at it via TOOLJAIL_DNS_BIN, so
+// TestMain builds the netcage-dns helper once (the in-netns DNS forwarder the
+// jail launches via nsenter) and points the jail at it via NETCAGE_DNS_BIN, so
 // the integration tests have the helper without a separate install step.
 func TestMain(m *testing.M) {
 	if _, err := exec.LookPath("podman"); err == nil {
-		dir, err := os.MkdirTemp("", "tooljail-dns-bin")
+		dir, err := os.MkdirTemp("", "netcage-dns-bin")
 		if err == nil {
 			defer os.RemoveAll(dir)
-			bin := filepath.Join(dir, "tooljail-dns")
-			build := exec.Command("go", "build", "-o", bin, "github.com/wighawag/tooljail/cmd/tooljail-dns")
+			bin := filepath.Join(dir, "netcage-dns")
+			build := exec.Command("go", "build", "-o", bin, "github.com/wighawag/netcage/cmd/netcage-dns")
 			if out, berr := build.CombinedOutput(); berr == nil {
-				os.Setenv("TOOLJAIL_DNS_BIN", bin)
+				os.Setenv("NETCAGE_DNS_BIN", bin)
 			} else {
 				os.Stderr.Write(out)
 			}
@@ -157,12 +157,12 @@ func TestJail_ForcedEgress_ExitIPIsProxys(t *testing.T) {
 
 // TestJail_DefaultDevImage_ForcedEgressAndNoResidue is the podman-gated proof for
 // the default-dev-image ergonomic: the PINNED default dev image (the one
-// `tooljail run` injects when no positional image is given) runs THROUGH the jail
+// `netcage run` injects when no positional image is given) runs THROUGH the jail
 // with its egress FORCED through the proxy (the observed exit IP is the fixture's,
 // not the host's), and the run leaves NO run-attributable residue. It mirrors
 // TestJail_ForcedEgress_ExitIPIsProxys but pins Config.Image to
 // devimage.ImageReference() so the leak guarantee is proven for the image an
-// out-of-the-box `tooljail run -it -v <repo>:/work bash` actually uses.
+// out-of-the-box `netcage run -it -v <repo>:/work bash` actually uses.
 //
 // The default dev image (buildpack-deps) is large; the pull can be slow on a cold
 // cache, so the test budget is generous. It is podman-gated (t.Skip without
@@ -214,7 +214,7 @@ func TestJail_DefaultDevImage_ForcedEgressAndNoResidue(t *testing.T) {
 
 	// No run-attributable container for this run should remain (no residue).
 	out, _ := exec.CommandContext(ctx, "podman", "ps", "-a", "--format", "{{.Names}}").CombinedOutput()
-	if strings.Contains(string(out), "tooljail-run-"+runID) {
+	if strings.Contains(string(out), "netcage-run-"+runID) {
 		t.Fatalf("run-attributable containers left after the default-dev-image run:\n%s", out)
 	}
 }
@@ -246,15 +246,15 @@ func TestJail_TeardownLeavesNoResidue(t *testing.T) {
 
 	// No container named for this run should remain.
 	out, _ := exec.CommandContext(ctx, "podman", "ps", "-a", "--format", "{{.Names}}").CombinedOutput()
-	if strings.Contains(string(out), "tooljail-run-"+runID) {
+	if strings.Contains(string(out), "netcage-run-"+runID) {
 		t.Fatalf("run-attributable containers left after teardown:\n%s", out)
 	}
 }
 
-// TestJail_PropagatesToolExitCode backs the `tooljail run` exit-code contract:
+// TestJail_PropagatesToolExitCode backs the `netcage run` exit-code contract:
 // a wrapped tool that exits non-zero has that exit code surfaced in
 // Result.ToolExit (not swallowed, not reported as a jail error), so the CLI can
-// propagate it as tooljail's own exit code.
+// propagate it as netcage's own exit code.
 func TestJail_PropagatesToolExitCode(t *testing.T) {
 	requirePodman(t)
 
@@ -299,7 +299,7 @@ func TestJail_StreamsToolOutputLiveThroughRun(t *testing.T) {
 	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
 
 	var live safeBuf
-	const marker = "TOOLJAIL-LIVE-MARKER"
+	const marker = "NETCAGE-LIVE-MARKER"
 	cfg := jail.Config{
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
@@ -376,7 +376,7 @@ func TestJail_UnpullableImageIsSetupError_NotToolExit(t *testing.T) {
 	cfg := jail.Config{
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
-		Image:               "docker.io/library/tooljail-nonexistent-image-xyz:doesnotexist",
+		Image:               "docker.io/library/netcage-nonexistent-image-xyz:doesnotexist",
 		ToolArgv:            []string{"true"},
 		RunID:               "badimg" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", ""),
 	}
@@ -411,7 +411,7 @@ func TestJail_CommandNotFoundIsSetupError_NotToolExit(t *testing.T) {
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
 		Image:               "docker.io/library/alpine:latest",
-		ToolArgv:            []string{"tooljail-no-such-command-xyz"},
+		ToolArgv:            []string{"netcage-no-such-command-xyz"},
 		RunID:               "badcmd" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", ""),
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)

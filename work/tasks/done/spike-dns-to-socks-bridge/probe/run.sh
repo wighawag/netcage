@@ -16,7 +16,7 @@ echo "  proxy=$PROXY upstream(real)=$UPSTREAM"
 echo "=== 2. start forwarder (UDP DNS -> socks5 TCP -> resolver) ==="
 # forwarder uses a HOSTNAME upstream (resolved proxy-side); the harness proxy
 # redirects any CONNECT to the real resolver, so the name is arbitrary-but-stable.
-./forwarder/forwarder -listen=127.0.0.1:1053 -proxy="$PROXY" -upstream="dns.tooljail.test:53" > fwd.out 2>&1 &
+./forwarder/forwarder -listen=127.0.0.1:1053 -proxy="$PROXY" -upstream="dns.netcage.test:53" > fwd.out 2>&1 &
 FWD_PID=$!
 sleep 0.5
 cat fwd.out | sed 's/^/  /'
@@ -28,4 +28,4 @@ echo "  assert exit: $?"
 echo "=== 4. LEAK CHECK: did the host resolver ever see the name? ==="
 # the harness records names its proxy-side resolver saw; a separate check that
 # the HOST resolver can't resolve it (it's a fake TLD) proves no host leak.
-host unique.tooljail.test >/dev/null 2>&1 && echo "  ⚠ host resolver resolved it (unexpected)" || echo "  ✅ host resolver returns NXDOMAIN/fail for unique.tooljail.test (no host leak path)"
+host unique.netcage.test >/dev/null 2>&1 && echo "  ⚠ host resolver resolved it (unexpected)" || echo "  ✅ host resolver returns NXDOMAIN/fail for unique.netcage.test (no host leak path)"

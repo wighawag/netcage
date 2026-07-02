@@ -1,4 +1,4 @@
-// Command tooljail-dns is the in-netns DNS-to-SOCKS-TCP forwarder helper. The
+// Command netcage-dns is the in-netns DNS-to-SOCKS-TCP forwarder helper. The
 // jail launches it INSIDE the shared netns via nsenter so the wrapped tool's
 // resolv.conf (127.0.0.1:53) resolves names proxy-side over TCP, never via the
 // host resolver and never as egress UDP (ADR-0003). It dials the SOCKS proxy at
@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/net/proxy"
 
-	"github.com/wighawag/tooljail/internal/dnsforwarder"
+	"github.com/wighawag/netcage/internal/dnsforwarder"
 )
 
 func main() {
@@ -26,7 +26,7 @@ func main() {
 	flag.Parse()
 
 	if *proxyAddr == "" {
-		fmt.Fprintln(os.Stderr, "tooljail-dns: -proxy is required")
+		fmt.Fprintln(os.Stderr, "netcage-dns: -proxy is required")
 		os.Exit(2)
 	}
 	var auth *proxy.Auth
@@ -41,7 +41,7 @@ func main() {
 		ProxyAuth: auth,
 		Upstream:  *upstream,
 	}); err != nil {
-		fmt.Fprintf(os.Stderr, "tooljail-dns: %v\n", err)
+		fmt.Fprintf(os.Stderr, "netcage-dns: %v\n", err)
 		os.Exit(1)
 	}
 	select {} // serve until killed (the jail kills it at teardown)

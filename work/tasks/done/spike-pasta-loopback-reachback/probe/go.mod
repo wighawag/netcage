@@ -1,3 +1,3 @@
-module tooljail.spike/pasta-reachback
+module netcage.spike/pasta-reachback
 
 go 1.26

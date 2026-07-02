@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wighawag/tooljail/internal/cli"
+	"github.com/wighawag/netcage/internal/cli"
 )
 
 // TestInteractive_SameSidecarAndNftAsPlainRun pins the topology-IDENTITY
@@ -73,7 +73,7 @@ func TestToolRunSpec_InteractiveWiresStdinBypassesCaptureTee(t *testing.T) {
 		c.Interactive = true
 		c.ToolStdin = stdin
 		// Even if live sinks are set, interactive must ignore them (podman owns the
-		// container PTY; tooljail does raw stdio passthrough, no capture tee).
+		// container PTY; netcage does raw stdio passthrough, no capture tee).
 		c.ToolStdout = &sink
 		c.ToolStderr = &sink
 		spec := c.toolRunSpec()

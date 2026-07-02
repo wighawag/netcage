@@ -52,8 +52,8 @@ the shorthand `ip daddr 127.0.0.0/8 udp accept` is a syntax error in nftables v1
 End-to-end through the real jail, after the fix:
 
 ```
-tool: nslookup unique.tooljail.test   ->  Address: 203.0.113.55   (the proxy-side answer)
-fixture ResolvedHosts(): [dns.tooljail.test ...]   (the lookup went THROUGH the proxy)
+tool: nslookup unique.netcage.test   ->  Address: 203.0.113.55   (the proxy-side answer)
+fixture ResolvedHosts(): [dns.netcage.test ...]   (the lookup went THROUGH the proxy)
 ```
 
 The forced-egress task's integration test missed this because it tests by IP (no DNS); the DNS path

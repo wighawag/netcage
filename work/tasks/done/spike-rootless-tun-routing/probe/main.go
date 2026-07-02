@@ -135,7 +135,7 @@ func packetArrivesOnTUN(tun *tunDevice) (bool, error) {
 			default:
 			}
 			if conn, err := net.DialTimeout("udp", offLinkTarget, 500*time.Millisecond); err == nil {
-				_, _ = conn.Write([]byte("tooljail-tun-probe"))
+				_, _ = conn.Write([]byte("netcage-tun-probe"))
 				_ = conn.Close()
 			}
 			time.Sleep(200 * time.Millisecond)

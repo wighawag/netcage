@@ -33,7 +33,7 @@ import (
 func main() {
 	listen := flag.String("listen", "127.0.0.1:1053", "UDP address to serve DNS on")
 	proxyAddr := flag.String("proxy", "", "SOCKS5 proxy host:port")
-	upstream := flag.String("upstream", "dns.tooljail.test:53", "upstream DNS resolver, addressed by HOSTNAME so the proxy resolves it (socks5h)")
+	upstream := flag.String("upstream", "dns.netcage.test:53", "upstream DNS resolver, addressed by HOSTNAME so the proxy resolves it (socks5h)")
 	flag.Parse()
 
 	if *proxyAddr == "" {

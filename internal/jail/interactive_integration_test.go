@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wighawag/tooljail/internal/cli"
-	"github.com/wighawag/tooljail/internal/jail"
-	"github.com/wighawag/tooljail/internal/socks5hfixture"
+	"github.com/wighawag/netcage/internal/cli"
+	"github.com/wighawag/netcage/internal/jail"
+	"github.com/wighawag/netcage/internal/socks5hfixture"
 )
 
 // TestJail_Interactive_IdenticalTopologyForcedEgressAndNoResidue is the
@@ -103,11 +103,11 @@ func TestJail_Interactive_IdenticalTopologyForcedEgressAndNoResidue(t *testing.T
 			extractIP(string(got)), exitIP, string(got))
 	}
 
-	// No run-attributable residue (no tooljail-run-<id>-* container; the netns +
+	// No run-attributable residue (no netcage-run-<id>-* container; the netns +
 	// nft are lifecycle-bound to the sidecar container, so no container means no
 	// netns/nft either).
 	out, _ := exec.CommandContext(ctx, "podman", "ps", "-a", "--format", "{{.Names}}").CombinedOutput()
-	if strings.Contains(string(out), "tooljail-run-"+runID) {
+	if strings.Contains(string(out), "netcage-run-"+runID) {
 		t.Fatalf("interactive run left run-attributable containers behind:\n%s", out)
 	}
 }

@@ -1,5 +1,5 @@
 // Package socks5hfixture is a controllable, in-process SOCKS5h proxy used as the
-// deterministic test harness for tooljail's leak assertions. It is NOT a
+// deterministic test harness for netcage's leak assertions. It is NOT a
 // production proxy: it exists so tests can assert the three leak properties
 // (exit IP is the proxy's, a unique hostname resolves proxy-side, proxy-killed
 // fails closed) without depending on real Tor.

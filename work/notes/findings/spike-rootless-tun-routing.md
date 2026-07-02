@@ -20,7 +20,7 @@ The container invocation that worked:
 
 ```
 podman run --rm \
-  --name tooljail-spike-tun \
+  --name netcage-spike-tun \
   --network none \
   --device /dev/net/tun \
   --cap-add NET_ADMIN \
@@ -54,4 +54,4 @@ Teardown: `--rm` removed the container (and its ephemeral netns/TUN) on exit; `p
 
 - This proves the TUN ROUTING primitive, not the full tun2socks dial-out. The jail task still wires a real `tun2socks` reading that TUN and dialing the socks5h proxy.
 - Reachback (sidecar reaching a host-loopback proxy) is the SEPARATE `spike-pasta-loopback-reachback` spike; this spike used `--network none` and asserted only the TUN path.
-- The probe lives as a separate Go module (`tooljail.spike/tun-probe`) under the task's sidecar folder so it does not enter the main module's `go build ./...` / verify gate.
+- The probe lives as a separate Go module (`netcage.spike/tun-probe`) under the task's sidecar folder so it does not enter the main module's `go build ./...` / verify gate.

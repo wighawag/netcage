@@ -14,7 +14,7 @@ covers: []
 
 ## What to build
 
-Make `tooljail run` stream the wrapped tool's output as it happens, instead of capturing it all and
+Make `netcage run` stream the wrapped tool's output as it happens, instead of capturing it all and
 printing it only after the tool exits.
 
 Today the jail runs the tool via the `Runner` interface, whose `ExecRunner.Run` calls
@@ -23,7 +23,7 @@ string, which `main.go`'s `runRun` prints at the end. For a scan tool that emits
 report this is fine, but for a long or interactive run (progress bars, per-target findings, a tool
 that prompts) the user sees NOTHING until it finishes, and unbounded buffering of a chatty tool's
 output is a memory footgun. A jailed tool should feel like running the tool directly: its stdout and
-stderr appear live on tooljail's stdout/stderr.
+stderr appear live on netcage's stdout/stderr.
 
 The tension to resolve cleanly: the leak-test assertions and several jail tests consume the tool's
 output as a returned string (e.g. the exit-IP probe parses the echoed IP from `Result.ToolStdout`).
@@ -34,8 +34,8 @@ the existing `Runner` seam so unit tests stay podman-free.
 
 End-to-end thin path:
 
-- The wrapped tool's stdout/stderr are written to tooljail's stdout/stderr AS THEY ARRIVE for
-  `tooljail run` (no wait-until-exit, no unbounded in-memory buffer for the streamed path).
+- The wrapped tool's stdout/stderr are written to netcage's stdout/stderr AS THEY ARRIVE for
+  `netcage run` (no wait-until-exit, no unbounded in-memory buffer for the streamed path).
 - The capture path the probes/verify rely on (`Result.ToolStdout` for assertions) keeps working —
   via a tee, or a separate capturing runner for the test/probe path.
 - stdout vs stderr separation is preserved (do not merge the tool's stderr into the data a caller
@@ -47,7 +47,7 @@ End-to-end thin path:
       INCREMENTALLY (e.g. a marker line is seen before the tool exits), not only after exit.
 - [ ] The capture path still yields the tool's output for assertions (the exit-IP / DNS / fail-closed
       probes and `TestJail_ForcedEgress_ExitIPIsProxys` keep working against `Result.ToolStdout`).
-- [ ] `tooljail run` shows the tool's stdout on stdout and stderr on stderr, live, so a jailed tool
+- [ ] `netcage run` shows the tool's stdout on stdout and stderr on stderr, live, so a jailed tool
       feels like running it directly; no unbounded buffering on the streamed path.
 - [ ] The `Runner` seam stays unit-testable without podman (a fake runner can simulate streamed
       chunks); podman-dependent tests are podman-gated and leave no residue.
@@ -64,7 +64,7 @@ End-to-end thin path:
 
 ## Prompt
 
-> Goal: stream the wrapped tool's stdout/stderr live from `tooljail run` instead of buffering to the
+> Goal: stream the wrapped tool's stdout/stderr live from `netcage run` instead of buffering to the
 > end. Read `internal/jail/jail.go` (the `Runner` interface + `ExecRunner`, which uses
 > `CombinedOutput()`), `internal/jail/run.go` (the tool-run step returns `Result.ToolStdout`),
 > `main.go`'s `runRun` (prints the captured output at the end), and how `internal/verify` +
@@ -80,7 +80,7 @@ End-to-end thin path:
 > the production-stream vs test-capture runners. Keep stdout and stderr separate; keep the `Runner`
 > seam unit-testable without podman; keep the leak-test and forced-egress probes green.
 >
-> "Done" means `tooljail run` shows tool output live (stdout on stdout, stderr on stderr) with no
+> "Done" means `netcage run` shows tool output live (stdout on stdout, stderr on stderr) with no
 > unbounded buffering, the capture-for-assertions path still works, and the streaming/capture design
 > decision is recorded. RECORD non-obvious in-scope decisions per the task-template guidance.
 
@@ -96,8 +96,8 @@ Runner shape as intended.
 
 **Tee via Config live sinks, not a separate runner (the design choice the task left open).**
 `jail.Config` gained `ToolStdout` / `ToolStderr` `io.Writer` fields; `jail.Run` threads them into the
-tool-run step's `RunSpec`. `tooljail run` (`main.go` `runRun`) sets them to `os.Stdout`/`os.Stderr`,
-so the wrapped tool's output streams live to tooljail's own stdout/stderr and a jailed tool feels
+tool-run step's `RunSpec`. `netcage run` (`main.go` `runRun`) sets them to `os.Stdout`/`os.Stderr`,
+so the wrapped tool's output streams live to netcage's own stdout/stderr and a jailed tool feels
 like running it directly. The verify/leak-test probes call `jail.Run` via `verify.DefaultJailRunner`,
 which leaves the sinks nil, so those paths stay CAPTURE-ONLY and keep asserting on
 `Result.ToolStdout` unchanged. This is the tee shape (one runner that streams AND captures), chosen

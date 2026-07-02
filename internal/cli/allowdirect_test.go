@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wighawag/tooljail/internal/cli"
+	"github.com/wighawag/netcage/internal/cli"
 )
 
 // The --allow-direct flag is the CLI half of the split-tunnel LAN allowlist

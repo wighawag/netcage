@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wighawag/tooljail/internal/redirector"
+	"github.com/wighawag/netcage/internal/redirector"
 )
 
 // The redirector is the jail's only route out (ADR-0001: the xjasonlyu/tun2socks

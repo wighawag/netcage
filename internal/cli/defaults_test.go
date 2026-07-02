@@ -4,12 +4,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wighawag/tooljail/internal/cli"
-	"github.com/wighawag/tooljail/internal/devimage"
+	"github.com/wighawag/netcage/internal/cli"
+	"github.com/wighawag/netcage/internal/devimage"
 )
 
 // These tests own the default-dev-image + repo-mount ergonomics behaviour:
-// making `tooljail run` useful out of the box when the user does not spell out an
+// making `netcage run` useful out of the box when the user does not spell out an
 // image or a workdir. They are pure-logic (no podman): they assert on the parsed
 // + resolved Command the jail consumes.
 

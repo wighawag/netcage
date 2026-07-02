@@ -16,10 +16,10 @@ The forwarder (`probe/forwarder`) listens on UDP, and for each DNS query:
 2. sends the query as DNS-over-TCP (RFC 1035 2-byte length prefix) through the tunnel,
 3. reads the TCP answer and replies to the tool over UDP.
 
-Run against a harness (`probe/harness`) that is a minimal socks5 proxy + a dns-over-tcp resolver answering ONLY `unique.tooljail.test` -> `203.0.113.55`:
+Run against a harness (`probe/harness`) that is a minimal socks5 proxy + a dns-over-tcp resolver answering ONLY `unique.netcage.test` -> `203.0.113.55`:
 
-- **Resolves through the proxy:** `ASSERT OK: unique.tooljail.test resolved to 203.0.113.55 THROUGH the proxy (DNS-over-SOCKS-TCP)`. The proxy-side resolver answered; the tool got the record over UDP.
-- **No host-resolver leak:** the host resolver returns NXDOMAIN for `unique.tooljail.test` (a fake TLD), so the name resolved ONLY proxy-side. The tool->forwarder hop is UDP; the forwarder->proxy hop is TCP; nothing UDP and nothing name-bearing reaches the host.
+- **Resolves through the proxy:** `ASSERT OK: unique.netcage.test resolved to 203.0.113.55 THROUGH the proxy (DNS-over-SOCKS-TCP)`. The proxy-side resolver answered; the tool got the record over UDP.
+- **No host-resolver leak:** the host resolver returns NXDOMAIN for `unique.netcage.test` (a fake TLD), so the name resolved ONLY proxy-side. The tool->forwarder hop is UDP; the forwarder->proxy hop is TCP; nothing UDP and nothing name-bearing reaches the host.
 - **Fail-closed:** with the proxy DOWN (forwarder pointed at a dead address), the query gets NO answer (the forwarder drops on upstream failure, no fallback to a host resolver) -> the assert times out and exits non-zero. Proxy-down means resolution fails, never leaks. Consistent with the jail's fail-closed invariant.
 
 ## Recipe for the jail task to reuse

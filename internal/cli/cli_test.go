@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wighawag/tooljail/internal/cli"
+	"github.com/wighawag/netcage/internal/cli"
 )
 
 func TestParseProxy_FullSocks5hWithAuth(t *testing.T) {
@@ -223,18 +223,18 @@ func TestParse_OptionalDoubleDashEndOfFlags(t *testing.T) {
 	if cmd.Image != "img" {
 		t.Fatalf("Image = %q, want img", cmd.Image)
 	}
-	// A `-t` AFTER the end-of-flags marker is a tool arg, not a tooljail flag.
+	// A `-t` AFTER the end-of-flags marker is a tool arg, not a netcage flag.
 	wantArgv := []string{"cmd", "-t"}
 	if strings.Join(cmd.ToolArgv, " ") != strings.Join(wantArgv, " ") {
 		t.Fatalf("ToolArgv = %v, want %v", cmd.ToolArgv, wantArgv)
 	}
 	if cmd.TTY {
-		t.Fatal("-t after -- should be a tool arg, not tooljail's TTY flag")
+		t.Fatal("-t after -- should be a tool arg, not netcage's TTY flag")
 	}
 }
 
 // TestParse_DenyListFlagsRejectedWithReason checks EACH jail-breaching flag is
-// rejected with a message that names the flag and says WHY (tooljail owns the
+// rejected with a message that names the flag and says WHY (netcage owns the
 // network/isolation to keep the jail leak-proof).
 func TestParse_DenyListFlagsRejectedWithReason(t *testing.T) {
 	cases := []struct {
@@ -263,8 +263,8 @@ func TestParse_DenyListFlagsRejectedWithReason(t *testing.T) {
 			if !strings.Contains(msg, tc.name) {
 				t.Fatalf("rejection %q should name the flag %s", msg, tc.name)
 			}
-			if !strings.Contains(strings.ToLower(msg), "jail") && !strings.Contains(strings.ToLower(msg), "tooljail owns") {
-				t.Fatalf("rejection %q should explain WHY (tooljail owns network/isolation to keep the jail leak-proof)", msg)
+			if !strings.Contains(strings.ToLower(msg), "jail") && !strings.Contains(strings.ToLower(msg), "netcage owns") {
+				t.Fatalf("rejection %q should explain WHY (netcage owns network/isolation to keep the jail leak-proof)", msg)
 			}
 		})
 	}
@@ -298,11 +298,11 @@ func TestParse_UnknownFlagRejectedByDefault(t *testing.T) {
 	}
 }
 
-// TestParse_ProxyFromEnv checks TOOLJAIL_PROXY is honoured when --proxy is absent.
+// TestParse_ProxyFromEnv checks NETCAGE_PROXY is honoured when --proxy is absent.
 func TestParse_ProxyFromEnv(t *testing.T) {
 	cmd, err := cli.ParseWithEnv([]string{
 		"run", "img", "cmd",
-	}, envWith(map[string]string{"TOOLJAIL_PROXY": "socks5h://127.0.0.1:9050"}))
+	}, envWith(map[string]string{"NETCAGE_PROXY": "socks5h://127.0.0.1:9050"}))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestParse_ProxyFromEnv(t *testing.T) {
 func TestParse_ProxyFlagWinsOverEnv(t *testing.T) {
 	cmd, err := cli.ParseWithEnv([]string{
 		"run", "--proxy", "socks5h://flag.host:1111", "img", "cmd",
-	}, envWith(map[string]string{"TOOLJAIL_PROXY": "socks5h://env.host:2222"}))
+	}, envWith(map[string]string{"NETCAGE_PROXY": "socks5h://env.host:2222"}))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -328,14 +328,14 @@ func TestParse_ProxyFlagWinsOverEnv(t *testing.T) {
 func TestParse_NoProxyNoEnvRefuses(t *testing.T) {
 	_, err := cli.ParseWithEnv([]string{"run", "img", "cmd"}, noEnv)
 	if err == nil {
-		t.Fatal("run with no --proxy and no TOOLJAIL_PROXY accepted; want fail-closed refusal")
+		t.Fatal("run with no --proxy and no NETCAGE_PROXY accepted; want fail-closed refusal")
 	}
 	low := strings.ToLower(err.Error())
 	if !strings.Contains(low, "proxy") {
 		t.Fatalf("refusal %q should mention the proxy", err)
 	}
-	if !strings.Contains(low, "tooljail_proxy") {
-		t.Fatalf("refusal %q should mention the TOOLJAIL_PROXY env var as an option", err)
+	if !strings.Contains(low, "netcage_proxy") {
+		t.Fatalf("refusal %q should mention the NETCAGE_PROXY env var as an option", err)
 	}
 }
 
@@ -345,9 +345,9 @@ func TestParse_EnvProxyMalformedRejectedBySameValidation(t *testing.T) {
 	// socks5:// (local DNS) from the env must be rejected as a leak, exactly like
 	// the flag.
 	_, err := cli.ParseWithEnv([]string{"run", "img", "cmd"},
-		envWith(map[string]string{"TOOLJAIL_PROXY": "socks5://127.0.0.1:9050"}))
+		envWith(map[string]string{"NETCAGE_PROXY": "socks5://127.0.0.1:9050"}))
 	if err == nil {
-		t.Fatal("socks5:// from TOOLJAIL_PROXY accepted; want the same leak rejection as the flag")
+		t.Fatal("socks5:// from NETCAGE_PROXY accepted; want the same leak rejection as the flag")
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "socks5h") {
 		t.Fatalf("env-proxy rejection %q should mention socks5h", err)
@@ -355,9 +355,9 @@ func TestParse_EnvProxyMalformedRejectedBySameValidation(t *testing.T) {
 
 	// A structurally-malformed env proxy is rejected too.
 	_, err = cli.ParseWithEnv([]string{"run", "img", "cmd"},
-		envWith(map[string]string{"TOOLJAIL_PROXY": "http://h:1"}))
+		envWith(map[string]string{"NETCAGE_PROXY": "http://h:1"}))
 	if err == nil {
-		t.Fatal("malformed TOOLJAIL_PROXY accepted; want rejection")
+		t.Fatal("malformed NETCAGE_PROXY accepted; want rejection")
 	}
 }
 
@@ -393,7 +393,7 @@ func TestParse_VerifyCommand(t *testing.T) {
 // TestParse_VerifyProxyFromEnv checks verify also accepts the env-provided proxy.
 func TestParse_VerifyProxyFromEnv(t *testing.T) {
 	cmd, err := cli.ParseWithEnv([]string{"verify"},
-		envWith(map[string]string{"TOOLJAIL_PROXY": "socks5h://127.0.0.1:9050"}))
+		envWith(map[string]string{"NETCAGE_PROXY": "socks5h://127.0.0.1:9050"}))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestParse_RunBareCommandUsesDefaultImage(t *testing.T) {
 
 // TestParse_ExplicitImageNoCommandRunsImageDefault checks that an explicit image
 // with no command no longer fails: the image's own default command runs (like
-// `podman run <image>`). tooljail no longer forces a trailing command.
+// `podman run <image>`). netcage no longer forces a trailing command.
 func TestParse_ExplicitImageNoCommandRunsImageDefault(t *testing.T) {
 	cmd, err := cli.ParseWithEnv([]string{"run", "--proxy", "socks5h://h:1", "docker.io/library/alpine:latest"}, noEnv)
 	if err != nil {
@@ -463,9 +463,9 @@ func TestParse_RejectsPlainSocks5(t *testing.T) {
 }
 
 // TestParse_TopLevelUsesProcessEnv checks the exported Parse (no env arg) reads
-// the real process environment for TOOLJAIL_PROXY.
+// the real process environment for NETCAGE_PROXY.
 func TestParse_TopLevelUsesProcessEnv(t *testing.T) {
-	t.Setenv("TOOLJAIL_PROXY", "socks5h://127.0.0.1:9050")
+	t.Setenv("NETCAGE_PROXY", "socks5h://127.0.0.1:9050")
 	cmd, err := cli.Parse([]string{"run", "img", "cmd"})
 	if err != nil {
 		t.Fatalf("Parse: %v", err)

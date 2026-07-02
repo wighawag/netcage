@@ -1,4 +1,4 @@
-module github.com/wighawag/tooljail
+module github.com/wighawag/netcage
 
 go 1.26
 

@@ -13,24 +13,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wighawag/tooljail/internal/cli"
-	"github.com/wighawag/tooljail/internal/jail"
-	"github.com/wighawag/tooljail/internal/socks5hfixture"
-	"github.com/wighawag/tooljail/internal/verify"
+	"github.com/wighawag/netcage/internal/cli"
+	"github.com/wighawag/netcage/internal/jail"
+	"github.com/wighawag/netcage/internal/socks5hfixture"
+	"github.com/wighawag/netcage/internal/verify"
 )
 
-// TestMain builds the tooljail-dns helper once (the jail launches it in-netns)
-// and points the jail at it via TOOLJAIL_DNS_BIN, mirroring the jail package's
+// TestMain builds the netcage-dns helper once (the jail launches it in-netns)
+// and points the jail at it via NETCAGE_DNS_BIN, mirroring the jail package's
 // own integration TestMain so verify's DNS assertion has the helper.
 func TestMain(m *testing.M) {
 	if _, err := exec.LookPath("podman"); err == nil {
-		dir, err := os.MkdirTemp("", "tooljail-dns-bin")
+		dir, err := os.MkdirTemp("", "netcage-dns-bin")
 		if err == nil {
 			defer os.RemoveAll(dir)
-			bin := filepath.Join(dir, "tooljail-dns")
-			build := exec.Command("go", "build", "-o", bin, "github.com/wighawag/tooljail/cmd/tooljail-dns")
+			bin := filepath.Join(dir, "netcage-dns")
+			build := exec.Command("go", "build", "-o", bin, "github.com/wighawag/netcage/cmd/netcage-dns")
 			if out, berr := build.CombinedOutput(); berr == nil {
-				os.Setenv("TOOLJAIL_DNS_BIN", bin)
+				os.Setenv("NETCAGE_DNS_BIN", bin)
 			} else {
 				os.Stderr.Write(out)
 			}
@@ -52,12 +52,12 @@ func requirePodman(t *testing.T) {
 }
 
 const (
-	exitIP       = "127.0.0.2"            // the fixture's known exit IP (loopback alias)
-	uniqueName   = "unique.tooljail.test" // a name only the proxy-side resolver knows
-	answerIP     = "203.0.113.55"         // the proxy-side answer for uniqueName
-	upstreamName = "dns.tooljail.test"    // the DNS resolver name, resolved proxy-side
-	resolverIP   = "127.0.0.3"            // where the test DNS-over-TCP resolver binds
-	placeholder  = "198.18.5.5"           // in-TUN-subnet target so the jail's TUN captures it
+	exitIP       = "127.0.0.2"           // the fixture's known exit IP (loopback alias)
+	uniqueName   = "unique.netcage.test" // a name only the proxy-side resolver knows
+	answerIP     = "203.0.113.55"        // the proxy-side answer for uniqueName
+	upstreamName = "dns.netcage.test"    // the DNS resolver name, resolved proxy-side
+	resolverIP   = "127.0.0.3"           // where the test DNS-over-TCP resolver binds
+	placeholder  = "198.18.5.5"          // in-TUN-subnet target so the jail's TUN captures it
 )
 
 func runID(prefix string) string {
@@ -280,7 +280,7 @@ func TestVerify_FailsClosedWhenProxyKilled(t *testing.T) {
 }
 
 // TestVerify_FullReportGreenAndExitsZero composes all three assertions through
-// the verify orchestrator (the shape `tooljail verify` uses) and asserts the
+// the verify orchestrator (the shape `netcage verify` uses) and asserts the
 // Report is Ok and ExitCode is 0. This is the CI-gating contract: a fully
 // leak-proof jail yields a green report and a zero exit; any failure would flip
 // ExitCode to non-zero (proven by the unit tests).

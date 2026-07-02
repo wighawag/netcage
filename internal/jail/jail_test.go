@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wighawag/tooljail/internal/cli"
+	"github.com/wighawag/netcage/internal/cli"
 )
 
 func cfg() Config {
@@ -56,7 +56,7 @@ func TestSidecarRunArgs_ForcedEgressShape(t *testing.T) {
 		"--cap-add NET_ADMIN", "--device /dev/net/tun",
 		"--network pasta:--map-host-loopback," + mappedHostLoopback,
 		"PROXY=socks5://" + mappedHostLoopback + ":9050",
-		"tooljail-run-abc123-sidecar",
+		"netcage-run-abc123-sidecar",
 	} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("sidecar args missing %q\ngot: %s", want, args)
@@ -124,7 +124,7 @@ func TestToolRunArgs_SharesNetnsAndPassesThrough(t *testing.T) {
 	c.Mounts = []string{"/host/out:/out", "/host/words:/words:ro"}
 	args := strings.Join(c.ToolRunArgs(), " ")
 	for _, want := range []string{
-		"--network container:tooljail-run-abc123-sidecar",
+		"--network container:netcage-run-abc123-sidecar",
 		"-v /host/out:/out", "-v /host/words:/words:ro",
 		"nuclei -u https://target",
 		"--rm",

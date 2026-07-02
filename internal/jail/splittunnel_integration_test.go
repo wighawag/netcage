@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wighawag/tooljail/internal/cli"
-	"github.com/wighawag/tooljail/internal/jail"
-	"github.com/wighawag/tooljail/internal/socks5hfixture"
+	"github.com/wighawag/netcage/internal/cli"
+	"github.com/wighawag/netcage/internal/jail"
+	"github.com/wighawag/netcage/internal/socks5hfixture"
 )
 
 // findDirectTarget discovers a real, directly-reachable RFC1918/link-local
@@ -20,16 +20,16 @@ import (
 // split-tunnel mechanism egresses the excluded destination over the REAL NIC via
 // pasta (it does NOT go through the fixture), so the target must be a genuinely
 // reachable LAN service, exactly as the spike used a real llama.cpp on
-// 192.168.1.150:8080. It honours TOOLJAIL_TEST_DIRECT=host:port for an explicit
+// 192.168.1.150:8080. It honours NETCAGE_TEST_DIRECT=host:port for an explicit
 // target, else probes the default gateway on a couple of common TCP ports (a LAN
 // gateway is the one RFC1918 host a test host almost always has). Returns "" if
 // none is reachable, so the test can Skip rather than assert against nothing.
 func findDirectTarget(t *testing.T) (host string, port int) {
 	t.Helper()
-	if v := strings.TrimSpace(os.Getenv("TOOLJAIL_TEST_DIRECT")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("NETCAGE_TEST_DIRECT")); v != "" {
 		h, p, err := net.SplitHostPort(v)
 		if err != nil {
-			t.Fatalf("TOOLJAIL_TEST_DIRECT=%q is not host:port: %v", v, err)
+			t.Fatalf("NETCAGE_TEST_DIRECT=%q is not host:port: %v", v, err)
 		}
 		pn, _ := net.LookupPort("tcp", p)
 		return h, pn
@@ -73,7 +73,7 @@ func tcpReachable(host string, port int, to time.Duration) bool {
 
 // TestJail_SplitTunnel_DirectReachableRestForcedThroughProxy is the podman-gated
 // proof of the split-tunnel allowlist end to end (the spike's decisive matrix,
-// reproduced against tooljail's real wiring + the socks5h fixture):
+// reproduced against netcage's real wiring + the socks5h fixture):
 //
 //   - an ALLOWLISTED direct (a reachable RFC1918/link-local host:port) is reached
 //     DIRECTLY over the LAN (it answers on TCP);
@@ -89,13 +89,13 @@ func tcpReachable(host string, port int, to time.Duration) bool {
 // The run leaves NO run-attributable residue. It Skips without podman, and Skips
 // if no reachable RFC1918/link-local direct target exists on the test host (the
 // direct egresses the real NIC, so it needs a genuine LAN service, like the
-// spike's llama.cpp; set TOOLJAIL_TEST_DIRECT=host:port to pin one).
+// spike's llama.cpp; set NETCAGE_TEST_DIRECT=host:port to pin one).
 func TestJail_SplitTunnel_DirectReachableRestForcedThroughProxy(t *testing.T) {
 	requirePodman(t)
 
 	directHost, directPort := findDirectTarget(t)
 	if directHost == "" {
-		t.Skip("no reachable RFC1918/link-local direct target on this host; set TOOLJAIL_TEST_DIRECT=host:port to run the split-tunnel integration test")
+		t.Skip("no reachable RFC1918/link-local direct target on this host; set NETCAGE_TEST_DIRECT=host:port to run the split-tunnel integration test")
 	}
 
 	echoPort, stopEcho := startExitEcho(t)
@@ -184,7 +184,7 @@ func TestJail_SplitTunnel_DirectReachableRestForcedThroughProxy(t *testing.T) {
 
 	// No run-attributable container may remain (no residue).
 	psOut, _ := exec.CommandContext(ctx, "podman", "ps", "-a", "--format", "{{.Names}}").CombinedOutput()
-	if strings.Contains(string(psOut), "tooljail-run-"+runID) {
+	if strings.Contains(string(psOut), "netcage-run-"+runID) {
 		t.Fatalf("split-tunnel run left run-attributable residue:\n%s", psOut)
 	}
 }

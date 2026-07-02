@@ -44,7 +44,7 @@ unmarked (tool) traffic goes to the TUN while tun2socks's own dialer (marked `0x
 ## The working recipe (sidecar env), proven end-to-end
 
 ```
-podman run -d --name tooljail-run-<id>-sidecar \
+podman run -d --name netcage-run-<id>-sidecar \
   --network pasta:--map-host-loopback,169.254.1.1 \
   --cap-add NET_ADMIN --device /dev/net/tun \
   -e CLONE_MAIN=0 \
@@ -53,7 +53,7 @@ podman run -d --name tooljail-run-<id>-sidecar \
   docker.io/xjasonlyu/tun2socks@sha256:aa93...  # the pinned redirector
 
 # tool joins the shared netns:
-podman run --rm --network container:tooljail-run-<id>-sidecar <image> <cmd...>
+podman run --rm --network container:netcage-run-<id>-sidecar <image> <cmd...>
 ```
 
 Resulting `ip rule` in the shared netns (the shape that works):

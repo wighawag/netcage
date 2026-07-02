@@ -9,7 +9,7 @@ import (
 
 	"golang.org/x/net/proxy"
 
-	"github.com/wighawag/tooljail/internal/socks5hfixture"
+	"github.com/wighawag/netcage/internal/socks5hfixture"
 )
 
 // startEchoExit stands up a tiny TCP server that, on connect, writes back the
@@ -62,7 +62,7 @@ func TestFixture_KnownExitIP(t *testing.T) {
 	// destination observes the proxy's source, not the client's. On Linux the
 	// whole 127.0.0.0/8 is loopback, so 127.0.0.2 is bindable as a source.
 	const exitIP = "127.0.0.2"
-	const knownHost = "unique-target.tooljail.test"
+	const knownHost = "unique-target.netcage.test"
 
 	fx := socks5hfixture.New(socks5hfixture.Options{
 		ExitIP: exitIP,
@@ -97,7 +97,7 @@ func TestFixture_ResolvesUniqueHostnameProxySide(t *testing.T) {
 	defer stopExit()
 	_, exitPort, _ := net.SplitHostPort(exitAddr)
 
-	const knownHost = "unique-target.tooljail.test"
+	const knownHost = "unique-target.netcage.test"
 	fx := socks5hfixture.New(socks5hfixture.Options{
 		ExitIP:     "127.0.0.2",
 		KnownHosts: map[string]string{knownHost: "127.0.0.1"},
@@ -133,7 +133,7 @@ func TestFixture_ResolvesUniqueHostnameProxySide(t *testing.T) {
 }
 
 func TestFixture_KillFailsClosed(t *testing.T) {
-	const knownHost = "unique-target.tooljail.test"
+	const knownHost = "unique-target.netcage.test"
 	fx := socks5hfixture.New(socks5hfixture.Options{
 		ExitIP:     "127.0.0.2",
 		KnownHosts: map[string]string{knownHost: "127.0.0.1"},

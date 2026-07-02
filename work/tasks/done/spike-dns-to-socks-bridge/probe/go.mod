@@ -1,4 +1,4 @@
-module tooljail.spike/dns-bridge
+module netcage.spike/dns-bridge
 
 go 1.26
 

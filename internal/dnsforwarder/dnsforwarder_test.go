@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wighawag/tooljail/internal/dnsforwarder"
+	"github.com/wighawag/netcage/internal/dnsforwarder"
 )
 
-const uniqueName = "unique.tooljail.test"
+const uniqueName = "unique.netcage.test"
 const answerIP = "203.0.113.55"
 
 // TestForwarder_ResolvesThroughProxyNotHost proves the DNS-to-SOCKS-TCP bridge:
@@ -29,7 +29,7 @@ func TestForwarder_ResolvesThroughProxyNotHost(t *testing.T) {
 	fwd, err := dnsforwarder.Start(ctx, dnsforwarder.Config{
 		Listen:    "127.0.0.1:0",
 		ProxyAddr: proxyAddr,
-		Upstream:  "dns.tooljail.test:53", // a hostname resolved proxy-side
+		Upstream:  "dns.netcage.test:53", // a hostname resolved proxy-side
 	})
 	if err != nil {
 		t.Fatalf("start forwarder: %v", err)
@@ -54,7 +54,7 @@ func TestForwarder_FailsClosedWhenProxyDown(t *testing.T) {
 	fwd, err := dnsforwarder.Start(ctx, dnsforwarder.Config{
 		Listen:    "127.0.0.1:0",
 		ProxyAddr: "127.0.0.1:1", // nothing listening
-		Upstream:  "dns.tooljail.test:53",
+		Upstream:  "dns.netcage.test:53",
 	})
 	if err != nil {
 		t.Fatalf("start forwarder: %v", err)

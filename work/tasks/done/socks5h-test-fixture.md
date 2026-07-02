@@ -1,7 +1,7 @@
 ---
 title: Controllable local SOCKS5h test fixture (known exit IP + DNS view, killable)
 slug: socks5h-test-fixture
-prd: tooljail
+prd: netcage
 blockedBy: []
 covers: [7]
 ---

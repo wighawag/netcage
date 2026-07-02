@@ -43,7 +43,7 @@ The rootless-TUN spike (`spike-rootless-tun-routing`) PROVED a TUN routes packet
 - `internal/dnsforwarder` — DNS-to-SOCKS-TCP bridge, unit-tested (resolves through proxy, fails closed). The DNS seam is solved.
 - `internal/jail` unit tests — sidecar args, tool args, nft ruleset, socks5h->socks5 translation, teardown (the teardown integration test PASSES: containers are cleaned up).
 - `internal/socks5hfixture` — extended with AllowIPConnect + RedirectTarget for the by-IP forced-egress harness.
-- `cmd/tooljail-dns` — the in-netns DNS forwarder helper.
+- `cmd/netcage-dns` — the in-netns DNS forwarder helper.
 - The end-to-end forced-egress integration test exists as a READY harness (`TestJail_ForcedEgress_ExitIPIsProxys`), currently `t.Skip`-ped with this reason. Un-skip it once the topology is fixed; it asserts the tool's observed exit IP equals the fixture's exit IP (forced egress) by IP, with the DNS-through-proxy assertion deferred to `verify-leak-test`.
 
 ## Corollaries already captured elsewhere

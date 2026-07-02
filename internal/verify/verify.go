@@ -1,5 +1,5 @@
-// Package verify is tooljail's leak-test: the project's top acceptance seam. It
-// runs probes through the SAME jail that `tooljail run` builds and asserts the
+// Package verify is netcage's leak-test: the project's top acceptance seam. It
+// runs probes through the SAME jail that `netcage run` builds and asserts the
 // three leak properties, returning a Report whose Ok is false (=> non-zero exit,
 // CI-gating) if ANY assertion fails:
 //
@@ -22,8 +22,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/wighawag/tooljail/internal/cli"
-	"github.com/wighawag/tooljail/internal/jail"
+	"github.com/wighawag/netcage/internal/cli"
+	"github.com/wighawag/netcage/internal/jail"
 )
 
 // Assertion is one leak-test result.
@@ -51,7 +51,7 @@ func (r Report) Ok() bool {
 
 // ExitCode is the process exit code for the report: 0 iff every assertion
 // passed, else 1. This is the CI-gating contract (story 8): any failed leak
-// assertion makes `tooljail verify` exit non-zero.
+// assertion makes `netcage verify` exit non-zero.
 func (r Report) ExitCode() int {
 	if r.Ok() {
 		return 0
@@ -198,7 +198,7 @@ func SplitTunnelChecks(core []Check, directs []Check) []Check {
 }
 
 // RunCommandVerify runs the leak-test against a REAL configured proxy (the
-// `tooljail verify` CLI path) and returns the report. Unlike the deterministic
+// `netcage verify` CLI path) and returns the report. Unlike the deterministic
 // fixture-backed test suite (which knows the exit IP, the DNS view, and can kill
 // the proxy), against a live proxy verify asserts the property it CAN observe
 // without controllable infrastructure: forced egress is active, i.e. the jail's

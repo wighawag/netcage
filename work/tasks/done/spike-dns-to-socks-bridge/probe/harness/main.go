@@ -2,7 +2,7 @@
 //
 // It stands up, in one process:
 //   - a DNS-over-TCP resolver that answers ONLY the unique name
-//     "unique.tooljail.test" (A record) and records every name it was asked, so a
+//     "unique.netcage.test" (A record) and records every name it was asked, so a
 //     test can assert the lookup arrived HERE (proxy-side) and not at the host
 //     resolver;
 //   - a minimal SOCKS5 proxy that CONNECTs by hostname (socks5h) to the
@@ -33,7 +33,7 @@ import (
 	"time"
 )
 
-const uniqueName = "unique.tooljail.test"
+const uniqueName = "unique.netcage.test"
 const answerIP = "203.0.113.55" // the A record only the proxy-side resolver knows
 
 func main() {

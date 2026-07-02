@@ -1,7 +1,7 @@
 ---
-title: tooljail run — forced-egress jail (tun2socks sidecar, fail-closed, UDP-dropped)
+title: netcage run — forced-egress jail (tun2socks sidecar, fail-closed, UDP-dropped)
 slug: jail-run-forced-egress
-prd: tooljail
+prd: netcage
 blockedBy: [spike-rootless-tun-routing, spike-pasta-loopback-reachback, socks5h-test-fixture, cli-skeleton-and-proxy-parse, vendor-pin-redirector]
 covers: [1, 3, 4, 5, 11, 12, 14]
 ---
@@ -10,7 +10,7 @@ covers: [1, 3, 4, 5, 11, 12, 14]
 
 ## What to build
 
-The core vertical: `tooljail run` actually jails the wrapped tool's network so EVERY TCP packet and DNS query is forced through the socks5h proxy, fail-closed, with all UDP dropped.
+The core vertical: `netcage run` actually jails the wrapped tool's network so EVERY TCP packet and DNS query is forced through the socks5h proxy, fail-closed, with all UDP dropped.
 
 End-to-end thin path, wiring the pieces the prior tasks proved/produced:
 
@@ -46,7 +46,7 @@ Build on the `cli-skeleton-and-proxy-parse` config types; test the forced-egress
 
 ## Prompt
 
-> Goal: make `tooljail run` actually jail the wrapped tool so all TCP + DNS egress is forced through the socks5h proxy, fail-closed, UDP dropped. Read ADR-0001 (tun2socks sidecar), ADR-0002 (pasta reachback), ADR-0003 (hard-block UDP), `CONTEXT.md` (jail, forced egress, fail-closed, redirector, reachback, socks5h), and the prd Solution section.
+> Goal: make `netcage run` actually jail the wrapped tool so all TCP + DNS egress is forced through the socks5h proxy, fail-closed, UDP dropped. Read ADR-0001 (tun2socks sidecar), ADR-0002 (pasta reachback), ADR-0003 (hard-block UDP), `CONTEXT.md` (jail, forced egress, fail-closed, redirector, reachback, socks5h), and the prd Solution section.
 >
 > FIRST and CRITICALLY, check this task against current reality: this task carries `needsAnswers: true` until BOTH spikes land. Read `work/notes/findings/` for the spike results and build against the EXACT recipes they captured (device/cap flags for TUN; pasta invocation for reachback). If either spike returned a negative result, the mechanism this task assumes is dead — route to needs-attention and reconcile the ADR, do NOT build on the stale premise.
 >
@@ -60,7 +60,7 @@ Build on the `cli-skeleton-and-proxy-parse` config types; test the forced-egress
 
 RESOLVED (2026-06-30, human-confirmed): the two blockers that stopped the prior build are answered. BUILD NOW; do not stop to ask again on these.
 
-1. SYSTEM MUTATION IS PRE-APPROVED for this build. You MAY create/tear-down Podman containers, netns, TUN devices, and nft rules as part of writing + running the tests. You do NOT need to ask a human before mutating the system in this task. Label everything run-attributably (tooljail-run-<id>) and tear it ALL down via --rm + defer; leave no residue.
+1. SYSTEM MUTATION IS PRE-APPROVED for this build. You MAY create/tear-down Podman containers, netns, TUN devices, and nft rules as part of writing + running the tests. You do NOT need to ask a human before mutating the system in this task. Label everything run-attributably (netcage-run-<id>) and tear it ALL down via --rm + defer; leave no residue.
 
 2. TOPOLOGY DECISION = OPTION A (shared netns). Wire it exactly like this:
    - Start the tun2socks sidecar from the pinned digest (redirector.RunPathImageReference()) with: --network pasta:--map-host-loopback,169.254.1.1 --cap-add NET_ADMIN --device /dev/net/tun and env PROXY=socks5h://[user:pass@]<proxyaddr> so the image's own /entrypoint.sh creates the TUN, sets up policy routing, and runs tun2socks against the proxy. For a HOST-LOOPBACK proxy the proxyaddr is the mapped 169.254.1.1:<port>; for a REMOTE proxy it is the real host:port and no --map-host-loopback is needed.

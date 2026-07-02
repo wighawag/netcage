@@ -1,4 +1,4 @@
-// Package redirector pins the tooljail redirector image by an immutable digest.
+// Package redirector pins the netcage redirector image by an immutable digest.
 //
 // The redirector is the jail's ONLY route out (CONTEXT.md: "redirector";
 // ADR-0001: a tun2socks / gVisor-netstack sidecar, the xjasonlyu/tun2socks

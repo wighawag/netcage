@@ -1,4 +1,4 @@
-module tooljail.spike/tun-probe
+module netcage.spike/tun-probe
 
 go 1.26
 

@@ -1,7 +1,7 @@
-// Package devimage pins tooljail's DEFAULT dev image by an immutable digest.
+// Package devimage pins netcage's DEFAULT dev image by an immutable digest.
 //
-// When `tooljail run` is given NO positional image, it falls back to this broad,
-// multi-language dev base so pointing tooljail at a repo folder is useful out of
+// When `netcage run` is given NO positional image, it falls back to this broad,
+// multi-language dev base so pointing netcage at a repo folder is useful out of
 // the box (prd jailed-interactive-repo-run, story 10: "a sensible DEFAULT dev
 // image ... when I do not pass one"). Exactly like the redirector (ADR-0001,
 // story 13) we pin by an immutable @sha256: digest rather than a mutable tag: a
@@ -15,7 +15,7 @@
 // pip/npm/go build/cargo build), all jailed. buildpack-deps is the official
 // Debian image that carries git, curl, a C/C++ toolchain, and the common
 // development headers/libraries repos build against, so a broad range of repos
-// can be set up in it without tooljail building or maintaining its own image
+// can be set up in it without netcage building or maintaining its own image
 // (which the prd explicitly defers: "A bespoke/owned default dev image
 // (Containerfile) ... is a later decision"). It is a manifest-list (multi-arch)
 // so the digest resolves on amd64 and arm64 alike. Language RUNTIMES beyond the

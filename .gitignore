@@ -1,5 +1,5 @@
 # compiled binary (matches the module/dir name, produced by `go build ./...`)
-/tooljail
+/netcage
 
 # goreleaser build output
 /dist/

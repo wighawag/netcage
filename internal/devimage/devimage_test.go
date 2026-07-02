@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wighawag/tooljail/internal/devimage"
+	"github.com/wighawag/netcage/internal/devimage"
 )
 
-// The default dev image is what `tooljail run` uses when the user does NOT pass a
+// The default dev image is what `netcage run` uses when the user does NOT pass a
 // positional image, so a repo folder is useful out of the box. Like the
 // redirector (ADR-0001, story 13) it MUST be pinned by an immutable @sha256:
 // digest so runs are reproducible and no unaudited/mutable tag is pulled at run

@@ -1,4 +1,4 @@
-// Package dnsforwarder is tooljail's DNS-to-SOCKS-TCP bridge: the leak-proof DNS
+// Package dnsforwarder is netcage's DNS-to-SOCKS-TCP bridge: the leak-proof DNS
 // seam (see work/notes/findings/dns-through-socks-is-tcp-not-udp.md and
 // spike-dns-to-socks-bridge). DNS through a SOCKS proxy is a CLIENT-SIDE UDP->TCP
 // conversion, never a UDP datagram to the proxy (Tor/Mullvad accept no UDP). So

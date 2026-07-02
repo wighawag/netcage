@@ -26,7 +26,7 @@ type Result struct {
 var ErrReachback = errors.New("the proxy on the host's loopback is not reachable from inside the jail")
 
 // Run stands up the forced-egress jail, runs the wrapped tool, and tears
-// everything down. It is the production path behind `tooljail run`.
+// everything down. It is the production path behind `netcage run`.
 //
 // Steps (Option A, shared netns):
 //  1. start the tun2socks sidecar (pasta + map-host-loopback for a loopback proxy)
@@ -47,7 +47,7 @@ func Run(ctx context.Context, r Runner, cfg Config) (Result, error) {
 		tdCtx, tdCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer tdCancel()
 		if err := Teardown(tdCtx, r, cfg); err != nil {
-			fmt.Fprintf(os.Stderr, "tooljail: teardown: %v\n", err)
+			fmt.Fprintf(os.Stderr, "netcage: teardown: %v\n", err)
 		}
 	}()
 
@@ -115,11 +115,11 @@ func Run(ctx context.Context, r Runner, cfg Config) (Result, error) {
 	// stderr are captured SEPARATELY so a podman/runtime SETUP failure (podman's
 	// own 125/126/127 diagnostic, which podman writes to ITS stderr) is told apart
 	// from the wrapped tool's own non-zero exit.
-	// The live sinks (when set by `tooljail run`) stream the tool's stdout/stderr
+	// The live sinks (when set by `netcage run`) stream the tool's stdout/stderr
 	// to os.Stdout/os.Stderr as they arrive; the returned strings are still
 	// captured for the probes. When nil (verify/leak-test), Run captures only.
 	//
-	// In INTERACTIVE mode (`tooljail run -it`) toolRunSpec instead requests RAW
+	// In INTERACTIVE mode (`netcage run -it`) toolRunSpec instead requests RAW
 	// passthrough (stdin wired, no capture, no tee): podman's `-it` owns the
 	// container PTY, so the jailed shell behaves like a normal `podman run -it`.
 	// The network jail is IDENTICAL either way (same sidecar/netns/nft/forced
@@ -267,7 +267,7 @@ func applyNft(ctx context.Context, pid, ruleset string) error {
 	return nil
 }
 
-// startNetnsDNS launches the tooljail-dns forwarder inside the shared netns via
+// startNetnsDNS launches the netcage-dns forwarder inside the shared netns via
 // nsenter, bound on 127.0.0.1:53, dialing the proxy at the reachable address.
 func startNetnsDNS(ctx context.Context, pid string, cfg Config) (*exec.Cmd, error) {
 	bin, err := dnsHelperPath()
@@ -301,7 +301,7 @@ func startNetnsDNS(ctx context.Context, pid string, cfg Config) (*exec.Cmd, erro
 // writeResolvConf writes a temp resolv.conf pointing at the in-netns forwarder
 // (127.0.0.1:53) and returns its path + a cleanup func.
 func writeResolvConf() (string, func(), error) {
-	f, err := os.CreateTemp("", "tooljail-resolv-*.conf")
+	f, err := os.CreateTemp("", "netcage-resolv-*.conf")
 	if err != nil {
 		return "", func() {}, err
 	}
@@ -314,16 +314,16 @@ func writeResolvConf() (string, func(), error) {
 	return f.Name(), func() { os.Remove(f.Name()) }, nil
 }
 
-// dnsHelperPath locates the tooljail-dns binary: an env override (set in tests),
+// dnsHelperPath locates the netcage-dns binary: an env override (set in tests),
 // else a sibling of the running executable, else on PATH.
 func dnsHelperPath() (string, error) {
-	if p := os.Getenv("TOOLJAIL_DNS_BIN"); p != "" {
+	if p := os.Getenv("NETCAGE_DNS_BIN"); p != "" {
 		return p, nil
 	}
-	if p, err := exec.LookPath("tooljail-dns"); err == nil {
+	if p, err := exec.LookPath("netcage-dns"); err == nil {
 		return p, nil
 	}
-	return "", errors.New("tooljail-dns helper not found (set TOOLJAIL_DNS_BIN or install it on PATH)")
+	return "", errors.New("netcage-dns helper not found (set NETCAGE_DNS_BIN or install it on PATH)")
 }
 
 // ErrDirectUnreachable names a split-tunnel allowlisted direct that did not
@@ -364,7 +364,7 @@ func warnUnreachableDirects(ctx context.Context, r Runner, cfg Config) {
 // tell an unreachable-on-LAN allowed direct apart from a jail-policy block.
 func directUnreachableDiagnostic(host string, port int, raw string) string {
 	return fmt.Sprintf(
-		"tooljail: %v: %s:%d (allowlisted --allow-direct %q) did not answer over the LAN; this is a LAN problem (host down / wrong IP / LAN-firewalled), NOT a jail-policy block. Non-allowlisted destinations are dropped by design; this one is allowed but silent.",
+		"netcage: %v: %s:%d (allowlisted --allow-direct %q) did not answer over the LAN; this is a LAN problem (host down / wrong IP / LAN-firewalled), NOT a jail-policy block. Non-allowlisted destinations are dropped by design; this one is allowed but silent.",
 		ErrDirectUnreachable, host, port, raw)
 }
 
@@ -392,7 +392,7 @@ func checkReachback(ctx context.Context, r Runner, cfg Config) error {
 // Teardown removes EVERY run-attributable resource the jail created: the tool
 // container and the sidecar container. The netns and the nft ruleset are
 // lifecycle-bound to the sidecar container (they live in its network namespace),
-// so removing the sidecar destroys them too; once no tooljail-run-<id>-*
+// so removing the sidecar destroys them too; once no netcage-run-<id>-*
 // container remains, no netns/nft for the run remains either.
 //
 // It is the single teardown entry point wired to ALL exit paths (normal, error,

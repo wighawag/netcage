@@ -1,12 +1,12 @@
-# tooljail
+# netcage
 
-Run any containerized tool with **all of its TCP and DNS egress forced through a SOCKS5h proxy, fail-closed**, so a recon/scan/agent tool cannot leak your real IP or DNS. tooljail wraps an existing image + command + a socks5h URL, and ships a `verify` leak-test that proves no traffic escapes the proxy.
+Run any containerized tool with **all of its TCP and DNS egress forced through a SOCKS5h proxy, fail-closed**, so a recon/scan/agent tool cannot leak your real IP or DNS. netcage wraps an existing image + command + a socks5h URL, and ships a `verify` leak-test that proves no traffic escapes the proxy.
 
 The forced egress is done by the **network layer**, not by the tool's own proxy awareness. This is the opposite of app-level `HTTP_PROXY`/`ALL_PROXY` (which raw sockets and DNS ignore, and which therefore leaks). If the proxy is unreachable, traffic is **dropped, never sent to the host network** (fail-closed). That is the whole point of the tool, and the `verify` command exists to prove it.
 
 ## Requirements
 
-tooljail is **Linux only** (see [Platform](#platform)). It relies on Linux kernel primitives with no cross-platform equivalent:
+netcage is **Linux only** (see [Platform](#platform)). It relies on Linux kernel primitives with no cross-platform equivalent:
 
 - **Linux** with network namespaces and **nftables**.
 - **Rootless [Podman](https://podman.io/) 5.x** using the **pasta** rootless network backend (Podman 5's default on netavark). The host-loopback reachback and the forced-egress jail are built on it (ADR-0002).
@@ -18,35 +18,35 @@ The redirector sidecar and the default dev image are **pinned by digest** and pu
 ## Install
 
 ```sh
-go install github.com/wighawag/tooljail@latest
+go install github.com/wighawag/netcage@latest
 ```
 
-Or download a prebuilt Linux binary (amd64 / arm64 / armv7 / armv6) from the [Releases](https://github.com/wighawag/tooljail/releases) page. The armv6/armv7 builds cover older Raspberry Pi models.
+Or download a prebuilt Linux binary (amd64 / arm64 / armv7 / armv6) from the [Releases](https://github.com/wighawag/netcage/releases) page. The armv6/armv7 builds cover older Raspberry Pi models.
 
 ## Usage
 
 ```
-tooljail run    [flags] [<image>] [<cmd> <args...>]
-tooljail verify [--proxy socks5h://[user:pass@]host:port]
+netcage run    [flags] [<image>] [<cmd> <args...>]
+netcage verify [--proxy socks5h://[user:pass@]host:port]
 ```
 
 `run` uses podman-native grammar: the image is the first positional and the tool command + args follow it, like `podman run [flags] IMAGE [CMD...]`.
 
-The proxy is **required**: pass `--proxy socks5h://[user:pass@]host:port` or set `TOOLJAIL_PROXY` (the flag wins). If neither is set, the run refuses (fail-closed).
+The proxy is **required**: pass `--proxy socks5h://[user:pass@]host:port` or set `NETCAGE_PROXY` (the flag wins). If neither is set, the run refuses (fail-closed).
 
 ### Examples
 
 Run a scanner with its egress anonymized through a local Tor SOCKS proxy:
 
 ```sh
-tooljail run --proxy socks5h://127.0.0.1:9050 \
+netcage run --proxy socks5h://127.0.0.1:9050 \
   docker.io/projectdiscovery/nuclei:latest nuclei -u https://target.example
 ```
 
 Drop into an interactive shell in a jailed dev environment, working on a local repo (the default dev image is a pinned broad dev base with git + build toolchains):
 
 ```sh
-tooljail run --proxy socks5h://127.0.0.1:9050 -it -v ./my-repo bash
+netcage run --proxy socks5h://127.0.0.1:9050 -it -v ./my-repo bash
 ```
 
 - A **bare command-shaped** first positional (e.g. `run -it bash`) is taken as the COMMAND, with the default dev image. A first positional that looks like an image (has `/`, `:`, `@`, or `.`) is the image. Force a bare-token image with `run -- alpine sh`.
@@ -56,7 +56,7 @@ tooljail run --proxy socks5h://127.0.0.1:9050 -it -v ./my-repo bash
 
 `-i`, `-t`, `-it`/`-ti`, `-v`/`--volume host:container[:opts]`, `-w`/`--workdir <dir>`, `-e`/`--env KEY=VALUE`, `-u`/`--user <user>`, `--entrypoint <path>`, and `--allow-direct` (see below).
 
-**Jail-breaching flags are rejected** (`--network`, `-p`/`--publish`, `--dns`, `--privileged`, `--cap-add`, `--device`, `--name`, `--rm`): tooljail owns the container network and isolation to keep the jail leak-proof. Any other flag is rejected by default.
+**Jail-breaching flags are rejected** (`--network`, `-p`/`--publish`, `--dns`, `--privileged`, `--cap-add`, `--device`, `--name`, `--rm`): netcage owns the container network and isolation to keep the jail leak-proof. Any other flag is rejected by default.
 
 ## verify: prove it does not leak
 
@@ -67,7 +67,7 @@ tooljail run --proxy socks5h://127.0.0.1:9050 -it -v ./my-repo bash
 3. with the **proxy killed, the probe fails closed** (no egress to the host network).
 
 ```sh
-tooljail verify --proxy socks5h://127.0.0.1:9050
+netcage verify --proxy socks5h://127.0.0.1:9050
 ```
 
 It exits non-zero if any assertion fails, so CI can gate on it. Run it during development/CI, not per use.
@@ -77,7 +77,7 @@ It exits non-zero if any assertion fails, so CI can gate on it. Run it during de
 `--allow-direct <IP|CIDR>[:port]` (repeatable) opens a **narrow, guardrailed hole** in the forced egress for specific **RFC1918 / link-local** destinations, so a jailed tool can reach a trusted local service (e.g. a local model at `192.168.1.150:8080`) DIRECTLY over the LAN, while ALL other egress stays forced through the proxy, fail-closed.
 
 ```sh
-tooljail run --proxy socks5h://127.0.0.1:9050 \
+netcage run --proxy socks5h://127.0.0.1:9050 \
   --allow-direct 192.168.1.150:8080 \
   -it -v ./work my/agent-image agent
 ```
@@ -86,7 +86,7 @@ Guardrails (see ADR-0005): **off by default** (an empty allowlist is byte-identi
 
 ## Platform
 
-tooljail is Linux only. macOS and Windows have no network-namespace + nftables jail, so there is no native port. Podman on macOS/Windows runs inside a Linux VM, so tooljail can run **inside that VM**, but two seams are VM-boundary-sensitive: `--allow-direct` reaches the *VM's* NIC (not your host LAN), and host-loopback proxy reachback (`ssh -D`/Tor on the host's `127.0.0.1`) is the host loopback, not the VM's. Treat non-Linux as best-effort-via-VM, not supported.
+netcage is Linux only. macOS and Windows have no network-namespace + nftables jail, so there is no native port. Podman on macOS/Windows runs inside a Linux VM, so netcage can run **inside that VM**, but two seams are VM-boundary-sensitive: `--allow-direct` reaches the *VM's* NIC (not your host LAN), and host-loopback proxy reachback (`ssh -D`/Tor on the host's `127.0.0.1`) is the host loopback, not the VM's. Treat non-Linux as best-effort-via-VM, not supported.
 
 ## Design
 

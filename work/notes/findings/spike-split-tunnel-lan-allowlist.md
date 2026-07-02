@@ -6,11 +6,11 @@ source: live spike on 2026-07-01, rootless podman + Tor SOCKS 127.0.0.1:9050 + a
 
 # Spike: split-tunnel LAN allowlist
 
-POSITIVE. A rootless jailed container CAN reach a specific RFC1918 LAN host DIRECTLY (TCP) while ALL other egress still goes through the SOCKS proxy, using ONLY mechanisms tooljail already has: `TUN_EXCLUDED_ROUTES` (the sidecar env the forced-egress build already uses for the proxy reachback) + an nft accept rule. The `anonymity-shell-and-lan-split-tunnel` idea note's Thread 2 is buildable and leak-tight; it does NOT need a new networking model.
+POSITIVE. A rootless jailed container CAN reach a specific RFC1918 LAN host DIRECTLY (TCP) while ALL other egress still goes through the SOCKS proxy, using ONLY mechanisms netcage already has: `TUN_EXCLUDED_ROUTES` (the sidecar env the forced-egress build already uses for the proxy reachback) + an nft accept rule. The `anonymity-shell-and-lan-split-tunnel` idea note's Thread 2 is buildable and leak-tight; it does NOT need a new networking model.
 
 ## What was tested
 
-Replicated tooljail's jail wiring (`SidecarRunArgs` + `nftRuleset`, host-loopback / Tor case) and added the LAN host `192.168.1.150:8080` (a real llama.cpp) as a split-tunnel target. Signal convention: `HTTP/1.1 415` from the probe = reached llama.cpp DIRECTLY; `reset`/`timed out` = blocked (packet went to the TUN -> Tor, which resets an RFC1918 target).
+Replicated netcage's jail wiring (`SidecarRunArgs` + `nftRuleset`, host-loopback / Tor case) and added the LAN host `192.168.1.150:8080` (a real llama.cpp) as a split-tunnel target. Signal convention: `HTTP/1.1 415` from the probe = reached llama.cpp DIRECTLY; `reset`/`timed out` = blocked (packet went to the TUN -> Tor, which resets an RFC1918 target).
 
 ## The decisive matrix
 
@@ -30,7 +30,7 @@ Probing the allowlisted host `192.168.1.150:8080` and the non-allowlisted gatewa
 3. **nft is the NARROWING / defense-in-depth.** The narrow ruleset (`accept ip daddr .150 tcp dport 8080` then `192.168.0.0/16 drop`, `10.0.0.0/8 drop`, `172.16.0.0/12 drop`) makes non-allowlisted LAN a clean DROP (timeout) and narrows even the allowed host to exactly its port. Proven: `.150:9999` (wrong port) and `.1` (wrong host) both blocked while `.150:8080` works.
 4. **Leak-proof elsewhere still holds.** With the split-tunnel active, a public fetch by IP (`http://1.1.1.1/`) still returned `HTTP/1.1 301, Server: cloudflare` THROUGH Tor. Excluding the LAN host did not break the proxy path for everything else.
 5. **TCP-only; ADR-0003 (hard-block UDP) stays intact.** UDP to the allowlisted host is still dropped (`nc -u` -> `Operation not permitted`) while TCP to the same host works. So directs are TCP-only; UDP stays hard-dropped for everything including the allowlisted host.
-6. **No pre-existing leak / no regression.** Today's DEFAULT jail (row 4: host neither excluded nor nft-allowed, exactly current `tooljail`) BLOCKS the LAN host. The split-tunnel genuinely ADDS a narrow hole; it does not paper over an existing one.
+6. **No pre-existing leak / no regression.** Today's DEFAULT jail (row 4: host neither excluded nor nft-allowed, exactly current `netcage`) BLOCKS the LAN host. The split-tunnel genuinely ADDS a narrow hole; it does not paper over an existing one.
 
 ## The buildable design this implies
 

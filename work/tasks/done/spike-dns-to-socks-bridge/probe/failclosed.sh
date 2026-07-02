@@ -4,7 +4,7 @@ cd "$(dirname "$0")"
 cleanup(){ kill "$FWD_PID" 2>/dev/null; }
 trap cleanup EXIT
 echo "=== forwarder pointed at a DEAD proxy (nothing listening) ==="
-./forwarder/forwarder -listen=127.0.0.1:1054 -proxy="127.0.0.1:1" -upstream="dns.tooljail.test:53" > fwd2.out 2>&1 &
+./forwarder/forwarder -listen=127.0.0.1:1054 -proxy="127.0.0.1:1" -upstream="dns.netcage.test:53" > fwd2.out 2>&1 &
 FWD_PID=$!
 sleep 0.5
 echo "=== assert: query must get NO answer (fail-closed, no host fallback) ==="

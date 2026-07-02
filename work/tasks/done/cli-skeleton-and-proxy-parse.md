@@ -1,18 +1,18 @@
 ---
 title: CLI skeleton — run/verify commands, socks5h parse, fail-loud on unreachable proxy
 slug: cli-skeleton-and-proxy-parse
-prd: tooljail
+prd: netcage
 blockedBy: []
 covers: [3, 10]
 ---
 
 ## What to build
 
-The `tooljail` CLI surface for `run` and `verify`, plus the proxy-URL contract and the startup fail-loud path — all WITHOUT the jail itself yet. This is the thin CLI-to-error tracer: parse, validate, and fail correctly.
+The `netcage` CLI surface for `run` and `verify`, plus the proxy-URL contract and the startup fail-loud path — all WITHOUT the jail itself yet. This is the thin CLI-to-error tracer: parse, validate, and fail correctly.
 
 End-to-end thin path:
 
-- `tooljail run --proxy socks5h://[user:pass@]host:port --image <image> -- <tool> <args...>` and `tooljail verify --proxy socks5h://...` parse into a typed config (proxy URL incl. optional user:pass auth, image, and the post-`--` tool argv).
+- `netcage run --proxy socks5h://[user:pass@]host:port --image <image> -- <tool> <args...>` and `netcage verify --proxy socks5h://...` parse into a typed config (proxy URL incl. optional user:pass auth, image, and the post-`--` tool argv).
 - **socks5h is required**: a plain `socks5://` (local DNS) URL is REJECTED with a clear message — it is a DNS leak by definition and is not the target (CONTEXT.md).
 - **Fail-loud, fail-closed startup**: when the proxy is unreachable at startup, the command exits NON-ZERO with a clear message (story 10) — never a silent no-op, never a silent leak. (At this stage "unreachable" can be a direct reachability check to the proxy address; the jailed path comes later.)
 
@@ -32,7 +32,7 @@ No sidecar/netns/nft here — this task is pure Go and writes nothing to the sys
 
 ## Prompt
 
-> Goal: build the `tooljail run` / `tooljail verify` CLI surface, the socks5h proxy-URL contract, and the fail-loud-on-unreachable-proxy startup path — WITHOUT the jail yet. Read `CONTEXT.md` (domain terms: socks5h, fail-closed, forced egress) and the prd Solution section (the two command shapes).
+> Goal: build the `netcage run` / `netcage verify` CLI surface, the socks5h proxy-URL contract, and the fail-loud-on-unreachable-proxy startup path — WITHOUT the jail yet. Read `CONTEXT.md` (domain terms: socks5h, fail-closed, forced egress) and the prd Solution section (the two command shapes).
 >
 > FIRST, check against current reality: confirm the command shapes in the prd Solution section and that socks5h (not socks5) is the required scheme (ADR-0001/0003 context).
 >

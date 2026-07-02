@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/wighawag/tooljail/internal/jail"
+	"github.com/wighawag/netcage/internal/jail"
 )
 
 // fakeRunner returns a canned jail.Result / error without touching the system,

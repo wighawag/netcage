@@ -5,17 +5,17 @@ slug: minimal-setup-image-from-repo
 
 # Minimal-setup base image that runs an arbitrary repo
 
-Proposed idea, deferred out of tooljail v1 (which wraps an existing image + command).
+Proposed idea, deferred out of netcage v1 (which wraps an existing image + command).
 
 ## The idea
 
-Instead of requiring the user to already have a container image for the tool, let tooljail produce the **minimal setup required to run a repo** on demand:
+Instead of requiring the user to already have a container image for the tool, let netcage produce the **minimal setup required to run a repo** on demand:
 
 - a default base image that can run an arbitrary repo;
-- if the repo ships a Nix flake, use it; if not, tooljail provides/generates one;
+- if the repo ships a Nix flake, use it; if not, netcage provides/generates one;
 - ideally reuse dependencies already installed on the host so the image stays minimal.
 
-Goal: point tooljail at a tool's *repo* (not a prebuilt image) and have it build the least environment needed to run that repo, then jail its egress as usual.
+Goal: point netcage at a tool's *repo* (not a prebuilt image) and have it build the least environment needed to run that repo, then jail its egress as usual.
 
 ## Why deferred
 

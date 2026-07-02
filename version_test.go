@@ -6,7 +6,7 @@ import (
 )
 
 // TestIsVersionArg_AcceptsOnlyTheUnambiguousSpellings pins that only
-// `tooljail --version` and `tooljail version` request the version, and crucially
+// `netcage --version` and `netcage version` request the version, and crucially
 // that `-v` does NOT (it is `--volume` in the run flag set, so accepting it here
 // would collide). Extra args also disqualify it (e.g. `run -v x` is a real run).
 func TestIsVersionArg_AcceptsOnlyTheUnambiguousSpellings(t *testing.T) {
