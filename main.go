@@ -76,7 +76,25 @@ func run(args []string) int {
 // container's EXISTING jailed netns). A refusal (a non-netcage container) or a
 // podman failure exits non-zero with a clear message.
 func runManage(ctx context.Context, cmd *cli.Command) int {
-	if err := manage.Run(ctx, jail.ExecRunner{}, cmd.Name, cmd.ManageArgv, manage.IO{Stdout: os.Stdout, Stderr: os.Stderr}); err != nil {
+	io := manage.IO{Stdout: os.Stdout, Stderr: os.Stderr}
+	// `exec` is the one management verb that can be INTERACTIVE (`netcage exec -it
+	// <c> <cmd>`): wire os.Stdin so the raw-stdio passthrough path has a real stdin,
+	// and, when it is an interactive `-it` invocation, put netcage's controlling
+	// terminal into raw mode (like `run -it`/`start -ai` do) so keystrokes and
+	// Ctrl-C flow to the container's PTY as bytes rather than being cooked by the
+	// host terminal. Restored on exit. The manage package parses -i/-t itself; we
+	// re-parse ONLY to decide raw mode here (the parse is pure/side-effect-free).
+	if cmd.Name == "exec" {
+		io.Stdin = os.Stdin
+		if flags, _, _, err := manage.ParseExecArgs(cmd.ManageArgv); err == nil && flags.Interactive && flags.TTY {
+			if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
+				if oldState, err := term.MakeRaw(fd); err == nil {
+					defer term.Restore(fd, oldState)
+				}
+			}
+		}
+	}
+	if err := manage.Run(ctx, jail.ExecRunner{}, cmd.Name, cmd.ManageArgv, io); err != nil {
 		fmt.Fprintf(os.Stderr, "netcage: %s: %v\n", cmd.Name, err)
 		return 1
 	}
@@ -210,7 +228,7 @@ const usage = `usage:
   netcage ps
   netcage images
   netcage logs|inspect|stop|rm <container>
-  netcage exec <container> <cmd> [args...]
+  netcage exec   [-it] [-w <dir>] [-e KEY=VAL]... [-u <user>] <container> <cmd> [args...]
 
 management verbs (ps/logs/inspect/exec/stop/rm/images) are thin pass-throughs to
 podman, scoped to netcage's own containers via the netcage.managed label: they
@@ -219,6 +237,15 @@ NOT egress, so they need NO --proxy; they never stand up or tear down a jail
 (` + "`exec`" + ` runs inside the container's existing jailed netns). A non-netcage
 container is refused. ` + "`rm`" + ` removes the whole tool+sidecar pair (no orphaned
 sidecar).
+
+exec is podman-faithful: it honours -i/--interactive, -t/--tty (a real TTY +
+stdin passthrough for -it, so ` + "`netcage exec -it <c> bash`" + ` is a usable
+interactive shell), -w/--workdir <dir>, -e/--env KEY=VAL (repeatable), and
+-u/--user <user>. These are all network/isolation-irrelevant (ADR-0010), so they
+cannot breach the jail; any OTHER flag is refused (fail-closed on the unknown).
+exec runs inside the container's EXISTING jailed netns and REFUSES if the jail is
+not running (run ` + "`netcage start <c>`" + ` first), so a down jail never yields a
+working un-jailed exec.
 
 start is the jail-aware resume verb (NOT a thin pass-through): ` + "`netcage start <name>`" + `
 REVIVES a kept netcage container's sidecar (the baked firewall re-applies),
