@@ -171,6 +171,12 @@ var managementVerbs = map[string]bool{
 	"stop":    true,
 	"rm":      true,
 	"images":  true,
+	// commit is a pass-through management verb like the others: it snapshots a
+	// netcage-managed container's FILESYSTEM to a new image (a `podman commit`),
+	// scoped by the netcage.managed label. It does NOT egress (a pure
+	// filesystem->image snapshot), so it carries NO proxy preflight, exactly like
+	// ps/logs/exec/... - and unlike `run`/`start` it never touches the jail.
+	"commit": true,
 }
 
 // IsManagementVerb reports whether name is one of the pass-through management
@@ -330,7 +336,7 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 	switch name {
 	case "run", "verify", "start":
 	default:
-		return nil, fmt.Errorf("unknown subcommand %q: expected `run`, `verify`, `start`, or a management verb (ps/logs/inspect/exec/stop/rm/images)", name)
+		return nil, fmt.Errorf("unknown subcommand %q: expected `run`, `verify`, `start`, or a management verb (ps/logs/inspect/exec/stop/rm/images/commit)", name)
 	}
 
 	rest := args[1:]

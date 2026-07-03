@@ -668,6 +668,7 @@ func TestParse_ManagementVerbsNeedNoProxy(t *testing.T) {
 		{[]string{"stop", "netcage-run-abc-tool"}, "stop", []string{"netcage-run-abc-tool"}},
 		{[]string{"rm", "netcage-run-abc-tool"}, "rm", []string{"netcage-run-abc-tool"}},
 		{[]string{"exec", "netcage-run-abc-tool", "sh", "-c", "id"}, "exec", []string{"netcage-run-abc-tool", "sh", "-c", "id"}},
+		{[]string{"commit", "-m", "snap", "netcage-run-abc-tool", "my-image:tag"}, "commit", []string{"-m", "snap", "netcage-run-abc-tool", "my-image:tag"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.wantName, func(t *testing.T) {
