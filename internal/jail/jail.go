@@ -62,6 +62,29 @@ type Config struct {
 	Workdir  string   // podman -w/--workdir; empty leaves the image's own workdir
 	RunID    string   // run-attributable id; containers named netcage-run-<RunID>-*
 
+	// Env, User and Entrypoint are the podman -e/--env (repeatable), -u/--user, and
+	// --entrypoint pass-throughs (from cli.Command). They are NONE of them
+	// network/isolation-relevant (env vars, the in-container uid/gid, and the
+	// command the container starts), so they are safe to pass to the tool container.
+	// They were parsed by the CLI but historically NEVER wired here (silently
+	// dropped); ToolRunArgs now emits them so `-e KEY=VALUE` sets the env, `-u` runs
+	// as that user, and `--entrypoint` overrides the image entrypoint. Empty leaves
+	// the image's own defaults intact (like plain `podman run`).
+	Env        []string // podman -e/--env values, repeatable
+	User       string   // podman -u/--user; empty leaves the image's own user
+	Entrypoint string   // podman --entrypoint; empty leaves the image's own entrypoint
+
+	// PassThroughFlags is the ORDERED, verbatim podman-run token stream for the
+	// widened, vetted allow-list flags (ADR-0010), populated from
+	// cli.Command.PassThroughFlags. ToolRunArgs emits it BEFORE the image so each
+	// flag reaches the tool container's podman argv exactly as the user wrote it
+	// (order + repetition preserved). Only flags that pass the vetting checklist
+	// (they cannot alter network/netns, add caps/devices/privilege, publish/bind
+	// ports, affect DNS/resolv, or collide with a netcage-owned name/lifecycle
+	// field) are ever added by the CLI parser, so passing them through does not
+	// weaken forced egress.
+	PassThroughFlags []string
+
 	// AllowDirect is the validated split-tunnel LAN allowlist: private-only
 	// destinations (network + optional TCP port) the jailed tool may reach
 	// DIRECTLY over the real NIC instead of through the proxy, while ALL other
@@ -652,6 +675,24 @@ func (c Config) ToolRunArgs() []string {
 	if c.Workdir != "" {
 		args = append(args, "-w", c.Workdir)
 	}
+	// Env / user / entrypoint pass-throughs (the drift-bug fix): these were parsed
+	// by the CLI but never wired here, so they were silently dropped. None is
+	// network/isolation-relevant, so they pass straight through. Emitted BEFORE the
+	// image (they are run flags), so the tool gets the env, runs as the given user,
+	// and uses the overridden entrypoint. Empty values add nothing (image defaults).
+	for _, e := range c.Env {
+		args = append(args, "-e", e)
+	}
+	if c.User != "" {
+		args = append(args, "-u", c.User)
+	}
+	if c.Entrypoint != "" {
+		args = append(args, "--entrypoint", c.Entrypoint)
+	}
+	// Widened, vetted allow-list flags (ADR-0010), passed through verbatim in argv
+	// order, BEFORE the image. The CLI parser only ever appends flags that pass the
+	// vetting checklist, so this cannot introduce a network/isolation-relevant flag.
+	args = append(args, c.PassThroughFlags...)
 	args = append(args, c.Image)
 	args = append(args, c.ToolArgv...)
 	return args

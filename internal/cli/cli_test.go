@@ -317,16 +317,126 @@ func TestParse_EqualsFormDenyListRejected(t *testing.T) {
 }
 
 // TestParse_UnknownFlagRejectedByDefault checks an unaudited/unlisted flag is
-// rejected rather than silently forwarded into the tool container.
+// rejected rather than silently forwarded into the tool container. --frobnicate
+// is used deliberately: a flag netcage does NOT (and should never) recognise, so
+// this stays a genuine unknown-flag case even as the allow-list widens.
 func TestParse_UnknownFlagRejectedByDefault(t *testing.T) {
 	_, err := cli.ParseWithEnv([]string{
-		"run", "--proxy", "socks5h://h:1", "--memory", "1g", "img", "cmd",
+		"run", "--proxy", "socks5h://h:1", "--frobnicate", "1g", "img", "cmd",
 	}, noEnv)
 	if err == nil {
-		t.Fatal("unknown flag --memory accepted; want fail-closed rejection")
+		t.Fatal("unknown flag --frobnicate accepted; want fail-closed rejection")
 	}
-	if !strings.Contains(err.Error(), "--memory") {
+	if !strings.Contains(err.Error(), "--frobnicate") {
 		t.Fatalf("rejection %q should name the unknown flag", err)
+	}
+	// The refusal message must LIST the accepted flags (a self-correcting nudge),
+	// so the agent can see what IS allowed.
+	if !strings.Contains(err.Error(), "allow-list") {
+		t.Fatalf("rejection %q should mention the curated allow-list", err)
+	}
+}
+
+// TestParse_WidenedAllowListFlagsAccepted proves each newly-vetted,
+// network/isolation-IRRELEVANT flag is ACCEPTED by the parser (both `--flag
+// value` and, where applicable, `--flag=value`) and recorded on the command's
+// ordered pass-through slice so it can reach the tool container's podman run
+// args. These flags cannot alter the network/netns, add caps/devices/privilege,
+// publish ports, affect DNS, or collide with a netcage-owned name/lifecycle
+// field, so they are safe to pass through (the vetting checklist, ADR-0010).
+func TestParse_WidenedAllowListFlagsAccepted(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want []string // the tokens expected on PassThroughFlags, in order
+	}{
+		{"--memory", []string{"--memory", "512m"}, []string{"--memory", "512m"}},
+		{"--memory=", []string{"--memory=512m"}, []string{"--memory", "512m"}},
+		{"--cpus", []string{"--cpus", "1.5"}, []string{"--cpus", "1.5"}},
+		{"--cpus=", []string{"--cpus=1.5"}, []string{"--cpus", "1.5"}},
+		{"--memory-swap", []string{"--memory-swap", "1g"}, []string{"--memory-swap", "1g"}},
+		{"--memory-swap=", []string{"--memory-swap=1g"}, []string{"--memory-swap", "1g"}},
+		{"-l", []string{"-l", "a=b"}, []string{"--label", "a=b"}},
+		{"--label", []string{"--label", "a=b"}, []string{"--label", "a=b"}},
+		{"--label=", []string{"--label=a=b"}, []string{"--label", "a=b"}},
+		{"--tmpfs", []string{"--tmpfs", "/scratch"}, []string{"--tmpfs", "/scratch"}},
+		{"--tmpfs=", []string{"--tmpfs=/scratch"}, []string{"--tmpfs", "/scratch"}},
+		{"--read-only", []string{"--read-only"}, []string{"--read-only"}},
+		{"--hostname", []string{"--hostname", "box"}, []string{"--hostname", "box"}},
+		{"--hostname=", []string{"--hostname=box"}, []string{"--hostname", "box"}},
+		{"--pull", []string{"--pull", "always"}, []string{"--pull", "always"}},
+		{"--pull=", []string{"--pull=always"}, []string{"--pull", "always"}},
+		{"--platform", []string{"--platform", "linux/amd64"}, []string{"--platform", "linux/amd64"}},
+		{"--platform=", []string{"--platform=linux/amd64"}, []string{"--platform", "linux/amd64"}},
+		{"--env-file", []string{"--env-file", "/env"}, []string{"--env-file", "/env"}},
+		{"--env-file=", []string{"--env-file=/env"}, []string{"--env-file", "/env"}},
+		{"--ulimit", []string{"--ulimit", "nofile=1024:2048"}, []string{"--ulimit", "nofile=1024:2048"}},
+		{"--ulimit=", []string{"--ulimit=nofile=1024:2048"}, []string{"--ulimit", "nofile=1024:2048"}},
+		{"--shm-size", []string{"--shm-size", "256m"}, []string{"--shm-size", "256m"}},
+		{"--shm-size=", []string{"--shm-size=256m"}, []string{"--shm-size", "256m"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"run", "--proxy", "socks5h://h:1"}, tc.args...)
+			args = append(args, "img:latest", "cmd")
+			cmd, err := cli.ParseWithEnv(args, noEnv)
+			if err != nil {
+				t.Fatalf("newly-allowed flag %s must be accepted, got error: %v", tc.name, err)
+			}
+			if strings.Join(cmd.PassThroughFlags, " ") != strings.Join(tc.want, " ") {
+				t.Fatalf("PassThroughFlags = %v, want %v", cmd.PassThroughFlags, tc.want)
+			}
+			// The image and tool argv must NOT be swallowed by a value-taking flag
+			// (the value is parsed as the flag's value, not mis-scanned as the image).
+			if cmd.Image != "img:latest" {
+				t.Fatalf("Image = %q, want img:latest (value-taking flag must consume its value)", cmd.Image)
+			}
+		})
+	}
+}
+
+// TestParse_WidenedAllowListRepeatableAndOrdered checks the pass-through flags
+// accumulate in argv ORDER and are repeatable (e.g. multiple --label / --ulimit),
+// so they reach podman exactly as the user wrote them.
+func TestParse_WidenedAllowListRepeatableAndOrdered(t *testing.T) {
+	cmd, err := cli.ParseWithEnv([]string{
+		"run", "--proxy", "socks5h://h:1",
+		"--label", "a=1",
+		"--memory", "256m",
+		"-l", "b=2",
+		"--read-only",
+		"img:latest", "cmd",
+	}, noEnv)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := []string{"--label", "a=1", "--memory", "256m", "--label", "b=2", "--read-only"}
+	if strings.Join(cmd.PassThroughFlags, " ") != strings.Join(want, " ") {
+		t.Fatalf("PassThroughFlags = %v, want %v (ordered + repeatable)", cmd.PassThroughFlags, want)
+	}
+}
+
+// TestParse_AddHostRefusedAsDNSsidestep proves --add-host is in the DENY-set: it
+// can pin a hostname->IP that sidesteps proxy-side DNS, so netcage refuses it
+// with a message saying WHY (ADR-0010). It is refused in both --flag value and
+// --flag=value forms.
+func TestParse_AddHostRefusedAsDNSsidestep(t *testing.T) {
+	for _, args := range [][]string{
+		{"--add-host", "evil.example:1.2.3.4"},
+		{"--add-host=evil.example:1.2.3.4"},
+	} {
+		full := append([]string{"run", "--proxy", "socks5h://h:1"}, args...)
+		full = append(full, "img", "cmd")
+		_, err := cli.ParseWithEnv(full, noEnv)
+		if err == nil {
+			t.Fatalf("--add-host (%v) accepted; want a loud refusal (it sidesteps proxy-side DNS)", args)
+		}
+		if !strings.Contains(err.Error(), "--add-host") {
+			t.Fatalf("refusal %q should name --add-host", err)
+		}
+		if !strings.Contains(strings.ToLower(err.Error()), "dns") {
+			t.Fatalf("refusal %q should explain the DNS-sidestep reason", err)
+		}
 	}
 }
 

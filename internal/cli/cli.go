@@ -126,6 +126,20 @@ type Command struct {
 	User       string   // -u/--user pass-through (run)
 	Entrypoint string   // --entrypoint pass-through (run)
 
+	// PassThroughFlags is the ORDERED, verbatim podman-run token stream for the
+	// widened, vetted allow-list flags (ADR-0010): each accepted flag appends its
+	// podman flag token (canonicalised, e.g. -l -> --label) followed by its value
+	// (for a value-taking flag), preserving argv order and repetition. It is passed
+	// THROUGH to the tool container's podman run args unchanged. ONLY flags that
+	// pass the vetting checklist (they cannot alter network/netns, add caps/devices/
+	// privilege, publish/bind ports, affect DNS/resolv, or collide with a
+	// netcage-owned name/lifecycle field) append here; everything else is refused
+	// (deny-set or unknown-flag), so the fail-closed allow-list is preserved. A
+	// single ordered slice (not one typed field per flag) keeps these pure
+	// pass-throughs together: netcage adds no defaulting/semantics to them, unlike
+	// Mounts/Workdir/Env/User/Entrypoint which it shapes.
+	PassThroughFlags []string
+
 	// AllowDirect is the validated split-tunnel LAN allowlist: --allow-direct
 	// values (repeatable) parsed into private-only DirectAllow entries (network +
 	// optional port). EMPTY by default (no flag) == today's strict jail. This
@@ -234,6 +248,52 @@ var denyReasons = map[string]string{
 	"--cap-add":    "added capabilities (e.g. NET_ADMIN) let the tool re-route around the forced-egress jail; netcage owns the container's capabilities to keep it leak-proof",
 	"--device":     "passing host devices can bypass the network namespace the jail relies on; netcage owns device access to keep the jail leak-proof",
 	"--name":       "netcage owns the container --name (it uses a run-attributable name for teardown); a user --name would collide with the jail's lifecycle management",
+	"--add-host":   "--add-host pins a hostname->IP mapping in the container's /etc/hosts, which is consulted BEFORE the resolver and so sidesteps netcage's proxy-side DNS (the tool could reach an attacker-chosen IP for a name without the proxy resolving it); refused for now to keep DNS forced through the jail",
+}
+
+// passThroughValueFlags is the set of widened, vetted allow-list flags that TAKE
+// A VALUE and are passed THROUGH verbatim to the tool container's podman run args
+// (ADR-0010). Each passes the vetting checklist: it cannot alter network/netns,
+// add caps/devices/privilege, publish/bind ports, affect DNS/resolv, or collide
+// with a netcage-owned name/lifecycle field (--name/--rm/--network). The two
+// value-less members of the widened set (--read-only) and the short-form -l/--label
+// are handled as their own parse cases; every entry here is `--flag value`-shaped.
+//
+// This is the canonical vetting record: to widen the allow-list, add a flag here
+// (or a dedicated case) ONLY after checking it against the checklist. --add-host
+// deliberately FAILS the checklist (it pins hostname->IP, sidestepping proxy-side
+// DNS) so it lives in denyReasons, not here.
+var passThroughValueFlags = map[string]bool{
+	"--memory":      true,
+	"--cpus":        true,
+	"--memory-swap": true,
+	"--tmpfs":       true,
+	"--hostname":    true,
+	"--pull":        true,
+	"--platform":    true,
+	"--env-file":    true,
+	"--ulimit":      true,
+	"--shm-size":    true,
+}
+
+// isPassThroughValueFlag reports whether a is a value-taking pass-through flag in
+// its `--flag` (separate value) form.
+func isPassThroughValueFlag(a string) bool { return passThroughValueFlags[a] }
+
+// isPassThroughValueFlagEquals reports whether a is a value-taking pass-through
+// flag in its `--flag=value` form.
+func isPassThroughValueFlagEquals(a string) bool {
+	i := strings.IndexByte(a, '=')
+	if i < 0 {
+		return false
+	}
+	return passThroughValueFlags[a[:i]]
+}
+
+// splitFlagEquals splits a `--flag=value` into its name and value.
+func splitFlagEquals(a string) (name, value string) {
+	i := strings.IndexByte(a, '=')
+	return a[:i], a[i+1:]
 }
 
 // Parse parses argv (without the program name) into a Command, reading the
@@ -371,6 +431,38 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 		case strings.HasPrefix(a, "--entrypoint="):
 			cmd.Entrypoint = strings.TrimPrefix(a, "--entrypoint=")
 
+		// --- Widened, vetted allow-list (ADR-0010): network/isolation-IRRELEVANT
+		// podman flags passed THROUGH verbatim to the tool container. Each passes the
+		// vetting checklist (cannot alter network/netns, add caps/devices/privilege,
+		// publish/bind ports, affect DNS/resolv, or collide with a netcage-owned
+		// name/lifecycle field: --name/--rm/--network). A value-taking flag MUST be
+		// parsed as taking its value so the value is not mis-scanned as the positional
+		// image. --read-only is the sole boolean. -l is podman's short --label; it is
+		// canonicalised to --label so the pass-through carries a single spelling.
+		case a == "--read-only":
+			cmd.PassThroughFlags = append(cmd.PassThroughFlags, "--read-only")
+
+		case a == "-l" || a == "--label":
+			v, ok := next(rest, &i)
+			if !ok {
+				return nil, errors.New("-l/--label requires a value (key=value)")
+			}
+			cmd.PassThroughFlags = append(cmd.PassThroughFlags, "--label", v)
+		case strings.HasPrefix(a, "--label="):
+			cmd.PassThroughFlags = append(cmd.PassThroughFlags, "--label", strings.TrimPrefix(a, "--label="))
+		case strings.HasPrefix(a, "-l="):
+			cmd.PassThroughFlags = append(cmd.PassThroughFlags, "--label", strings.TrimPrefix(a, "-l="))
+
+		case isPassThroughValueFlag(a):
+			v, ok := next(rest, &i)
+			if !ok {
+				return nil, fmt.Errorf("%s requires a value", a)
+			}
+			cmd.PassThroughFlags = append(cmd.PassThroughFlags, a, v)
+		case isPassThroughValueFlagEquals(a):
+			name, v := splitFlagEquals(a)
+			cmd.PassThroughFlags = append(cmd.PassThroughFlags, name, v)
+
 		case a == "--allow-direct":
 			v, ok := next(rest, &i)
 			if !ok {
@@ -392,7 +484,7 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 			// An unlisted/unaudited flag: reject by default (fail-closed on the CLI)
 			// so it cannot silently ride through into the tool container. "-" alone
 			// (stdin) is treated as a positional, not a flag.
-			return nil, fmt.Errorf("unknown flag %q: netcage accepts only a curated allow-list of podman flags (-i, -t, -it, --rm, -v/--volume, -w/--workdir, -e/--env, -u/--user, --entrypoint) plus --proxy and --allow-direct", a)
+			return nil, fmt.Errorf("unknown flag %q: netcage accepts only a curated allow-list of podman flags (-i, -t, -it, --rm, -v/--volume, -w/--workdir, -e/--env, -u/--user, --entrypoint, --memory, --cpus, --memory-swap, -l/--label, --tmpfs, --read-only, --hostname, --pull, --platform, --env-file, --ulimit, --shm-size) plus --proxy and --allow-direct; a network/isolation-relevant or unknown flag is refused (fail-closed on the unknown)", a)
 
 		default:
 			// The first non-flag positional ends the flags: it is the image, and
