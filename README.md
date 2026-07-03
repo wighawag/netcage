@@ -82,9 +82,11 @@ netcage run --proxy socks5h://127.0.0.1:9050 -it alpine sh
 
 ### Allowed run flags
 
-`-i`, `-t`, `-it`/`-ti`, `-v`/`--volume host:container[:opts]`, `-w`/`--workdir <dir>`, `-e`/`--env KEY=VALUE`, `-u`/`--user <user>`, `--entrypoint <path>`, and `--allow-direct` (see below).
+`-i`, `-t`, `-it`/`-ti`, `--rm`, `-v`/`--volume host:container[:opts]`, `-w`/`--workdir <dir>`, `-e`/`--env KEY=VALUE`, `-u`/`--user <user>`, `--entrypoint <path>`, and `--allow-direct` (see below).
 
-**Jail-breaching flags are rejected** (`--network`, `-p`/`--publish`, `--dns`, `--privileged`, `--cap-add`, `--device`, `--name`, `--rm`): netcage owns the container network and isolation to keep the jail leak-proof. Any other flag is rejected by default.
+**`--rm` is netcage-owned:** it makes the run **ephemeral** (both the tool container and its sidecar are removed on exit). **WITHOUT `--rm`** the stopped tool container and its sidecar are **left behind** (inspectable/restartable like `podman run`), kept fail-closed by the jail's baked firewall so a leftover container never has a working un-jailed network. netcage interprets its own `--rm`; it never passes a raw podman `--rm` through.
+
+**Jail-breaching flags are rejected** (`--network`, `-p`/`--publish`, `--dns`, `--privileged`, `--cap-add`, `--device`, `--name`): netcage owns the container network and isolation to keep the jail leak-proof. Any other flag is rejected by default.
 
 ## verify: prove it does not leak
 

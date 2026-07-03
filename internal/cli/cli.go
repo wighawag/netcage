@@ -103,6 +103,16 @@ type Command struct {
 	Interactive bool // -i / --interactive
 	TTY         bool // -t / --tty
 
+	// Rm records the netcage-owned --rm flag: an EPHEMERAL run (remove BOTH the
+	// tool and the sidecar on exit, no residue). It is NOT smuggled to podman's raw
+	// --rm; netcage OWNS the container lifecycle and INTERPRETS its own --rm into
+	// jail.Config.Ephemeral (remove-both teardown), which also drives the tool
+	// container's --rm. Without it a run is KEPT: the stopped tool + sidecar are
+	// left behind (inspectable/restartable like `podman run`), fail-closed via the
+	// baked firewall. (Contrast --name, which STAYS denied: netcage owns the
+	// run-attributable container name.)
+	Rm bool // --rm (netcage-owned: ephemeral this run)
+
 	Workdir    string   // -w/--workdir pass-through (run)
 	Env        []string // -e/--env pass-through values, repeatable (run)
 	User       string   // -u/--user pass-through (run)
@@ -169,10 +179,15 @@ func (c *Command) PreflightWith(r Reachability) error {
 
 // denyReasons maps each jail-breaching flag to WHY netcage refuses it. netcage
 // OWNS the container's network and isolation (it sets `--network
-// container:<sidecar>`, a run-attributable `--name`, `--rm`, and the in-netns DNS
+// container:<sidecar>`, a run-attributable `--name`, and the in-netns DNS
 // forwarder), so honouring a user/agent-supplied one would either collide with
 // what netcage sets or open a leak path around the forced-egress jail. The
 // message is part of the agent-facing interface: a self-correcting nudge.
+//
+// NOTE: --rm is NOT here. It is a netcage-OWNED flag (podman-fidelity split,
+// ADR-0009): netcage interprets it as "ephemeral this run" (remove both tool +
+// sidecar) into jail.Config.Ephemeral and never passes a raw podman --rm through.
+// --name STAYS denied because netcage owns the run-attributable name.
 var denyReasons = map[string]string{
 	"--network":    "netcage owns the container network (it sets --network container:<sidecar> so all egress is forced through the socks5h proxy); overriding it would breach the jail and leak",
 	"-p":           "publishing ports (-p/--publish) would open an inbound path around the jail; netcage owns the container's networking to keep it leak-proof",
@@ -182,7 +197,6 @@ var denyReasons = map[string]string{
 	"--cap-add":    "added capabilities (e.g. NET_ADMIN) let the tool re-route around the forced-egress jail; netcage owns the container's capabilities to keep it leak-proof",
 	"--device":     "passing host devices can bypass the network namespace the jail relies on; netcage owns device access to keep the jail leak-proof",
 	"--name":       "netcage owns the container --name (it uses a run-attributable name for teardown); a user --name would collide with the jail's lifecycle management",
-	"--rm":         "netcage owns the container lifecycle (--rm and teardown); a user --rm would collide with the jail's no-residue teardown",
 }
 
 // Parse parses argv (without the program name) into a Command, reading the
@@ -253,6 +267,11 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 			cmd.TTY = true
 		case a == "-it" || a == "-ti":
 			cmd.Interactive, cmd.TTY = true, true
+		case a == "--rm":
+			// netcage-OWNED --rm: ephemeral this run (remove both tool + sidecar).
+			// netcage interprets it into jail.Config.Ephemeral; it is NOT passed
+			// through as a raw podman --rm.
+			cmd.Rm = true
 
 		case a == "-v" || a == "--volume":
 			v, ok := next(rest, &i)
@@ -328,7 +347,7 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 			// An unlisted/unaudited flag: reject by default (fail-closed on the CLI)
 			// so it cannot silently ride through into the tool container. "-" alone
 			// (stdin) is treated as a positional, not a flag.
-			return nil, fmt.Errorf("unknown flag %q: netcage accepts only a curated allow-list of podman flags (-i, -t, -it, -v/--volume, -w/--workdir, -e/--env, -u/--user, --entrypoint) plus --proxy and --allow-direct", a)
+			return nil, fmt.Errorf("unknown flag %q: netcage accepts only a curated allow-list of podman flags (-i, -t, -it, --rm, -v/--volume, -w/--workdir, -e/--env, -u/--user, --entrypoint) plus --proxy and --allow-direct", a)
 
 		default:
 			// The first non-flag positional ends the flags: it is the image, and

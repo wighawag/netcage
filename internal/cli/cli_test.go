@@ -249,7 +249,6 @@ func TestParse_DenyListFlagsRejectedWithReason(t *testing.T) {
 		{"--cap-add", []string{"--cap-add", "NET_ADMIN"}},
 		{"--device", []string{"--device", "/dev/net/tun"}},
 		{"--name", []string{"--name", "x"}},
-		{"--rm", []string{"--rm"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -268,6 +267,39 @@ func TestParse_DenyListFlagsRejectedWithReason(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestParse_RmIsNetcageOwnedFlagNotDenied proves the podman-fidelity split: --rm
+// is NO LONGER in the deny-set. It is a NETCAGE-owned flag meaning "ephemeral
+// this run" (remove both tool + sidecar on exit); netcage interprets it and does
+// NOT smuggle it to podman's raw --rm. Without it a run is KEPT (Command.Rm
+// false, the stopped pair is left behind). --name STAYS denied (netcage owns the
+// run-attributable name).
+func TestParse_RmIsNetcageOwnedFlagNotDenied(t *testing.T) {
+	t.Run("--rm is accepted and sets Command.Rm", func(t *testing.T) {
+		cmd, err := cli.ParseWithEnv([]string{"run", "--proxy", "socks5h://h:1", "--rm", "img", "cmd"}, noEnv)
+		if err != nil {
+			t.Fatalf("--rm must be accepted (netcage-owned ephemeral flag), got error: %v", err)
+		}
+		if !cmd.Rm {
+			t.Fatal("--rm must set Command.Rm true (ephemeral run)")
+		}
+	})
+	t.Run("no --rm means a kept run (Command.Rm false)", func(t *testing.T) {
+		cmd, err := cli.ParseWithEnv([]string{"run", "--proxy", "socks5h://h:1", "img", "cmd"}, noEnv)
+		if err != nil {
+			t.Fatalf("plain run must parse, got error: %v", err)
+		}
+		if cmd.Rm {
+			t.Fatal("a run without --rm must leave Command.Rm false (kept run)")
+		}
+	})
+	t.Run("--name stays denied", func(t *testing.T) {
+		_, err := cli.ParseWithEnv([]string{"run", "--proxy", "socks5h://h:1", "--name", "x", "img", "cmd"}, noEnv)
+		if err == nil {
+			t.Fatal("--name must still be rejected (netcage owns the run-attributable name)")
+		}
+	})
 }
 
 // TestParse_EqualsFormDenyListRejected checks a deny-list flag in --flag=value

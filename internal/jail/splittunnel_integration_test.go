@@ -149,6 +149,7 @@ func TestJail_SplitTunnel_DirectReachableRestForcedThroughProxy(t *testing.T) {
 	}, "; ")
 
 	cfg := jail.Config{
+		Ephemeral:           true, // internal one-shot: remove-both, no residue
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
 		Image:               "docker.io/library/alpine:latest",

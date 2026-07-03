@@ -74,6 +74,7 @@ func TestJail_Interactive_IdenticalTopologyForcedEgressAndNoResidue(t *testing.T
 
 	runID := "iact" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", "")
 	cfg := jail.Config{
+		Ephemeral:           true, // internal one-shot: remove-both, no residue
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
 		Image:               "docker.io/library/alpine:latest",

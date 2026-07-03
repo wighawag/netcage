@@ -127,10 +127,68 @@ func TestToolRunArgs_SharesNetnsAndPassesThrough(t *testing.T) {
 		"--network container:netcage-run-abc123-sidecar",
 		"-v /host/out:/out", "-v /host/words:/words:ro",
 		"nuclei -u https://target",
-		"--rm",
 	} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("tool args missing %q\ngot: %s", want, args)
+		}
+	}
+}
+
+// TestToolRunArgs_RmOnlyWhenEphemeral pins the podman-fidelity split: the tool
+// container's --rm follows netcage's Ephemeral flag, NOT a hard-coded default.
+// A KEPT run (Ephemeral=false, a plain `netcage run` with no --rm) must NOT pass
+// --rm, so podman leaves the stopped tool container behind (inspectable,
+// restartable) like `podman run`. An EPHEMERAL run (Ephemeral=true: the netcage
+// `--rm` flag and every internal one-shot) DOES pass --rm so the tool container
+// is removed on exit as before.
+func TestToolRunArgs_RmOnlyWhenEphemeral(t *testing.T) {
+	t.Run("kept run omits --rm (leaves the stopped tool container)", func(t *testing.T) {
+		c := cfg()
+		c.Ephemeral = false
+		args := c.ToolRunArgs()
+		for _, a := range args {
+			if a == "--rm" {
+				t.Fatalf("kept run (Ephemeral=false) must NOT force --rm; got: %s", strings.Join(args, " "))
+			}
+		}
+	})
+	t.Run("ephemeral run keeps --rm (removes the tool container)", func(t *testing.T) {
+		c := cfg()
+		c.Ephemeral = true
+		if !strings.Contains(strings.Join(c.ToolRunArgs(), " "), "--rm") {
+			t.Fatalf("ephemeral run (Ephemeral=true) must pass --rm; got: %s", strings.Join(c.ToolRunArgs(), " "))
+		}
+	})
+}
+
+// TestCreateArgs_CarryNetcageManagedLabel pins the netcage.managed (+ role + run
+// id) label INTRODUCED here on BOTH create paths: it is the stable discriminator
+// a left-behind pair carries so the pass-through verbs can scope to
+// netcage-managed containers (a label, not the name convention). The tool gets
+// role=tool, the sidecar role=sidecar; both carry the run id.
+func TestCreateArgs_CarryNetcageManagedLabel(t *testing.T) {
+	c := cfg()
+	c.ProxyOnHostLoopback = true
+
+	tool := strings.Join(c.ToolRunArgs(), " ")
+	for _, want := range []string{
+		"--label netcage.managed=true",
+		"--label netcage.role=tool",
+		"--label netcage.run-id=abc123",
+	} {
+		if !strings.Contains(tool, want) {
+			t.Fatalf("tool create args missing label %q\ngot: %s", want, tool)
+		}
+	}
+
+	sidecar := strings.Join(c.SidecarRunArgs(), " ")
+	for _, want := range []string{
+		"--label netcage.managed=true",
+		"--label netcage.role=sidecar",
+		"--label netcage.run-id=abc123",
+	} {
+		if !strings.Contains(sidecar, want) {
+			t.Fatalf("sidecar create args missing label %q\ngot: %s", want, sidecar)
 		}
 	}
 }

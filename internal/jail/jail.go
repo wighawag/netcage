@@ -76,6 +76,29 @@ type Config struct {
 	// spike-split-tunnel-lan-allowlist.md. Populated from cli.Command.AllowDirect.
 	AllowDirect []cli.DirectAllow
 
+	// Ephemeral selects the tool-container / jail LIFECYCLE (podman-fidelity split,
+	// ADR-0009). It decouples the two concerns that used to be conflated (the tool
+	// was hard-`--rm`'d AND force-removed at teardown):
+	//
+	//   - Ephemeral TRUE == remove-both on exit. The tool container runs with
+	//     `--rm` (podman removes it) and Teardown removes BOTH the tool and the
+	//     sidecar, so nothing is left behind. This is what the netcage-owned `--rm`
+	//     user flag maps to, and what EVERY internal one-shot sets (verify probes,
+	//     reachback/direct probes, declarative runs) so they stay residue-free.
+	//   - Ephemeral FALSE (the default, a plain `netcage run` with no `--rm`) ==
+	//     leave-both. The tool container omits `--rm` (podman leaves it stopped,
+	//     inspectable/restartable like `podman run`) and Teardown removes NEITHER,
+	//     leaving the stopped tool + its stopped sidecar behind. The pair is
+	//     fail-closed at rest and on any restart via the sidecar's baked
+	//     EXTRA_COMMANDS firewall (ADR-0008), so leaving it is safe.
+	//
+	// "Sidecar gone, tool kept" is NOT a reachable state: podman refuses to remove
+	// a `--network container:` sidecar while its dependent tool exists, and
+	// `rm --depend` cascades to the tool (see
+	// work/notes/findings/podman-network-container-dependency-lifecycle.md). So the
+	// only two coherent end-states are both-gone (ephemeral) and both-kept (kept).
+	Ephemeral bool
+
 	// ProxyOnHostLoopback indicates the proxy listens on the HOST's 127.0.0.1
 	// (local Tor / ssh -D), so the sidecar reaches it via the pasta map. When
 	// false the proxy is a normal routable host the sidecar dials directly.
@@ -264,6 +287,32 @@ func (c Config) sidecarProxyURL() string {
 // sidecarName / toolName are the run-attributable container names.
 func (c Config) sidecarName() string { return "netcage-run-" + c.RunID + "-sidecar" }
 func (c Config) toolName() string    { return "netcage-run-" + c.RunID + "-tool" }
+
+// netcage.managed / .role / .run-id are the container LABELS netcage stamps on
+// both the tool and the sidecar at CREATE time (introduced by the teardown-split
+// task, the first to leave containers behind that must be identifiable at rest).
+// They are the ROBUST discriminator the pass-through verbs (`ps`/`logs`/... and
+// `netcage start`) scope on - a label, not the `netcage-run-<id>-*` name
+// convention - so a left-behind pair is unambiguously netcage-managed even after
+// the run process is gone.
+const (
+	labelManaged = "netcage.managed"
+	labelRole    = "netcage.role"
+	labelRunID   = "netcage.run-id"
+	roleTool     = "tool"
+	roleSidecar  = "sidecar"
+)
+
+// managedLabelArgs returns the podman `--label k=v` args stamping a container as
+// netcage-managed with its role and run id, so a kept pair is identifiable at
+// rest (consumed by the pass-through verbs). role is roleTool or roleSidecar.
+func (c Config) managedLabelArgs(role string) []string {
+	return []string{
+		"--label", labelManaged + "=true",
+		"--label", labelRole + "=" + role,
+		"--label", labelRunID + "=" + c.RunID,
+	}
+}
 
 // firewallScript is the in-netns firewall: drop all egress UDP except the local
 // tool<->forwarder loopback hop, and narrow host-loopback reachback to exactly
@@ -468,11 +517,16 @@ func (c Config) SidecarRunArgs() []string {
 	}
 	args := []string{
 		"run", "-d", "--name", c.sidecarName(),
+	}
+	// Stamp the netcage.managed (+ role + run id) label so a left-behind sidecar is
+	// identifiable at rest (ADR-0009), consumed by the pass-through verbs.
+	args = append(args, c.managedLabelArgs(roleSidecar)...)
+	args = append(args,
 		"--network", network,
 		"--cap-add", "NET_ADMIN", "--device", "/dev/net/tun",
 		"-e", "CLONE_MAIN=0",
-		"-e", "TUN_EXCLUDED_ROUTES=" + c.excludedRoutes(),
-		"-e", "PROXY=" + c.sidecarProxyURL(),
+		"-e", "TUN_EXCLUDED_ROUTES="+c.excludedRoutes(),
+		"-e", "PROXY="+c.sidecarProxyURL(),
 		// The firewall is BAKED into EXTRA_COMMANDS at sidecar CREATE time (ADR-0008,
 		// refining ADR-0006), not applied via a post-start `podman exec`. The pinned
 		// tun2socks entrypoint runs EXTRA_COMMANDS on EVERY (re)start before it execs
@@ -482,8 +536,8 @@ func (c Config) SidecarRunArgs() []string {
 		// netcage's post-start verifyFirewall (EXTRA_COMMANDS cannot abort the
 		// sidecar). The DNS forwarder is NOT baked in (it stays a separate `podman
 		// exec -d` process); a raw bypass leaving DNS dead IS fail-closed.
-		"-e", "EXTRA_COMMANDS=" + c.firewallScript(c.Proxy.Port),
-	}
+		"-e", "EXTRA_COMMANDS="+c.firewallScript(c.Proxy.Port),
+	)
 	// Mount the netcage-dns helper read-only into the sidecar so the DNS
 	// forwarder runs INSIDE it via `podman exec -d` (ADR-0006), instead of on the
 	// host via nsenter. Run resolves the host path before starting the sidecar.
@@ -543,9 +597,24 @@ func (c Config) toolRunSpec() RunSpec {
 // sidecar's netns. Exposed for testing the wiring.
 func (c Config) ToolRunArgs() []string {
 	args := []string{
-		"run", "--rm", "--name", c.toolName(),
-		"--network", "container:" + c.sidecarName(),
+		"run", "--name", c.toolName(),
 	}
+	// The tool container's --rm follows netcage's Ephemeral flag (ADR-0009), NOT a
+	// hard-coded default: an EPHEMERAL run (the netcage `--rm` user flag + every
+	// internal one-shot) passes --rm so podman removes the tool on exit; a KEPT run
+	// (a plain `netcage run`) omits it so podman leaves the stopped tool behind
+	// (inspectable/restartable like `podman run`). netcage OWNS what --rm means: it
+	// interprets its own flag into this lifecycle, it does NOT smuggle a raw podman
+	// --rm from the user.
+	if c.Ephemeral {
+		args = append(args, "--rm")
+	}
+	// Stamp the netcage.managed (+ role + run id) label so a left-behind tool is
+	// identifiable at rest (ADR-0009), consumed by the pass-through verbs.
+	args = append(args, c.managedLabelArgs(roleTool)...)
+	args = append(args,
+		"--network", "container:"+c.sidecarName(),
+	)
 	// Interactive mode attaches a TTY + stdin (`podman run -it`) so a human/agent
 	// can shell into the jail. It is opt-in (only `netcage run -it`); every other
 	// path (verify probes, declarative runs) omits it and keeps the capture path.

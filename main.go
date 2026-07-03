@@ -86,6 +86,10 @@ func runRun(ctx context.Context, cmd *cli.Command) int {
 		Workdir:             cmd.Workdir,
 		Interactive:         interactive,
 		AllowDirect:         cmd.AllowDirect,
+		// The netcage-owned --rm maps to an EPHEMERAL run (remove both tool +
+		// sidecar on exit). Without it the run is KEPT: the stopped tool + sidecar
+		// are left behind (podman-run fidelity), fail-closed via the baked firewall.
+		Ephemeral: cmd.Rm,
 	}
 	if interactive {
 		// Interactive (`netcage run -it`): RAW stdio passthrough into the jailed
@@ -146,8 +150,12 @@ proxy (required): --proxy socks5h://[user:pass@]host:port, or the NETCAGE_PROXY
 env var (flag wins; if neither is set the run refuses, fail-closed). Only
 socks5h:// is accepted (plain socks5:// leaks DNS and is rejected).
 
-allowed run flags: -i, -t, -it/-ti, -v/--volume host:container[:opts],
+allowed run flags: -i, -t, -it/-ti, --rm, -v/--volume host:container[:opts],
 -w/--workdir <dir>, -e/--env KEY=VALUE, -u/--user <user>, --entrypoint <path>.
-jail-breaching flags (--network, -p/--publish, --dns, --privileged, --cap-add,
---device, --name, --rm) are rejected: netcage owns the network and isolation to
-keep the jail leak-proof. Any other flag is rejected by default.`
+--rm is netcage-owned: it makes the run EPHEMERAL (both the tool container and
+its sidecar are removed on exit). WITHOUT --rm the stopped tool container and its
+sidecar are LEFT behind (inspectable/restartable like ` + "`podman run`" + `), kept
+fail-closed by the jail's baked firewall. jail-breaching flags (--network,
+-p/--publish, --dns, --privileged, --cap-add, --device, --name) are rejected:
+netcage owns the network and isolation to keep the jail leak-proof. Any other
+flag is rejected by default.`
