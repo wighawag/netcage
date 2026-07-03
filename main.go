@@ -59,6 +59,8 @@ func run(args []string) int {
 	switch {
 	case cmd.Name == "verify":
 		return runVerify(ctx, cmd)
+	case cmd.Name == "start":
+		return runStart(ctx, cmd)
 	case cmd.IsManagement():
 		return runManage(ctx, cmd)
 	default:
@@ -144,6 +146,51 @@ func runRun(ctx context.Context, cmd *cli.Command) int {
 	return res.ToolExit
 }
 
+// runStart resumes a kept, netcage-managed jailed container: it REVIVES the
+// sidecar (the baked firewall re-applies), re-execs the DNS forwarder, and
+// re-enters the kept tool with its state intact, refusing loudly if the requested
+// jail config (--proxy/--allow-direct) differs from the one the container was
+// created with (jail.ErrJailConfigChanged) or if the named container is not
+// netcage-managed. It is the jail-aware exception to the pass-through verbs.
+//
+// Like `run`, it honours the interactive/TTY wiring (a resumed `-it` shell gets
+// raw stdio passthrough with the terminal in raw mode) and the netcage-owned --rm
+// (ephemeral: remove both on exit). Without --rm the pair is left stopped again,
+// fail-closed via the baked firewall. The tool's exit code propagates as
+// netcage's own; a jail/setup failure exits non-zero with a clear message.
+func runStart(ctx context.Context, cmd *cli.Command) int {
+	interactive := cmd.Interactive || cmd.TTY
+	cfg := jail.Config{
+		Proxy:               cmd.Proxy,
+		ProxyOnHostLoopback: cmd.ProxyOnHostLoopback(),
+		AllowDirect:         cmd.AllowDirect,
+		Interactive:         interactive,
+		// --rm makes the resume EPHEMERAL (remove both on exit); without it the pair is
+		// left stopped again, fail-closed via the baked firewall.
+		Ephemeral: cmd.Rm,
+	}
+	if interactive {
+		// Same raw stdio passthrough as `netcage run -it`: wire os.Stdin and put the
+		// controlling terminal into raw mode so keystrokes/Ctrl-C reach the container's
+		// PTY as bytes. Restored on exit. The network jail is unchanged.
+		cfg.ToolStdin = os.Stdin
+		if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
+			if oldState, err := term.MakeRaw(fd); err == nil {
+				defer term.Restore(fd, oldState)
+			}
+		}
+	} else {
+		cfg.ToolStdout = os.Stdout
+		cfg.ToolStderr = os.Stderr
+	}
+	res, err := jail.Start(ctx, jail.ExecRunner{}, cfg, cmd.StartName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "netcage: start: %v\n", err)
+		return 1
+	}
+	return res.ToolExit
+}
+
 // runVerify runs the leak-test against the configured proxy and exits per the
 // report (non-zero on any failed assertion, so CI can gate on it, story 8). The
 // per-assertion pass/fail summary goes to stderr. The passed ctx is
@@ -158,6 +205,7 @@ func runVerify(ctx context.Context, cmd *cli.Command) int {
 
 const usage = `usage:
   netcage run    [flags] [<image>] [<cmd> <args...>]
+  netcage start  [--proxy ...] [--allow-direct ...] [-it] [--rm] <container>
   netcage verify [--proxy socks5h://[user:pass@]host:port]
   netcage ps
   netcage images
@@ -171,6 +219,14 @@ NOT egress, so they need NO --proxy; they never stand up or tear down a jail
 (` + "`exec`" + ` runs inside the container's existing jailed netns). A non-netcage
 container is refused. ` + "`rm`" + ` removes the whole tool+sidecar pair (no orphaned
 sidecar).
+
+start is the jail-aware resume verb (NOT a thin pass-through): ` + "`netcage start <name>`" + `
+REVIVES a kept netcage container's sidecar (the baked firewall re-applies),
+re-execs the DNS forwarder, and re-enters the tool with its state intact, so a
+named reusable jailed container is a durable environment. It CARRIES a --proxy
+(and any --allow-direct) and RECONCILES it against the config the container was
+created with: a DIFFERENT proxy/allowlist is REFUSED (remove it and run again, or
+start it with the same jail config) rather than silently reviving a stale jail.
 
 run uses podman-native grammar: the FIRST positional is always the image and the
 tool command + args follow it (like ` + "`podman run [flags] IMAGE [CMD...]`" + `), so

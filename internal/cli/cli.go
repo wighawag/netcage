@@ -90,11 +90,20 @@ func ParseProxy(raw string) (ProxyConfig, error) {
 // allow-list are rejected: jail-breaching flags with an explanatory message,
 // anything else as an unknown flag.
 type Command struct {
-	Name     string // "run", "verify", or a management verb (ps/logs/inspect/exec/stop/rm/images)
+	Name     string // "run", "verify", "start", or a management verb (ps/logs/inspect/exec/stop/rm/images)
 	Proxy    ProxyConfig
 	Image    string   // required for run (first positional); unused for verify
 	ToolArgv []string // the tool command + args (positionals after the image)
 	Mounts   []string // -v/--volume pass-through values (run)
+
+	// StartName is the netcage-managed container NAME the jail-aware `netcage
+	// start <name>` verb revives (its single positional). It is the TOOL container
+	// name; jail.Start resolves it to the run-attributable pair via the labels. It
+	// is EMPTY for every other subcommand. `start` is a jail path (it revives a
+	// forced-egress jail and re-execs DNS), so unlike the pass-through management
+	// verbs it CARRIES a proxy and IS preflighted + reconciled against the
+	// container's baked config.
+	StartName string
 
 	// ManageArgv holds a management verb's positional arguments verbatim: the
 	// netcage container NAME for logs/inspect/stop/rm, the name + command for exec,
@@ -319,9 +328,9 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 		return &Command{Name: name, ManageArgv: args[1:]}, nil
 	}
 	switch name {
-	case "run", "verify":
+	case "run", "verify", "start":
 	default:
-		return nil, fmt.Errorf("unknown subcommand %q: expected `run`, `verify`, or a management verb (ps/logs/inspect/exec/stop/rm/images)", name)
+		return nil, fmt.Errorf("unknown subcommand %q: expected `run`, `verify`, `start`, or a management verb (ps/logs/inspect/exec/stop/rm/images)", name)
 	}
 
 	rest := args[1:]
@@ -510,11 +519,33 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 	}
 	cmd.Proxy = proxy
 
-	if name == "run" {
+	switch name {
+	case "run":
 		resolveRunPositionals(cmd, positionals)
 		resolveRepoMountDefaults(cmd)
-	} else if len(positionals) > 0 {
-		return nil, fmt.Errorf("verify takes no positional arguments, got %v", positionals)
+	case "start":
+		// `start` takes EXACTLY ONE positional: the netcage-managed container name to
+		// revive. Zero is a usage error (nothing to start); more than one is refused
+		// so a typo does not silently start the wrong container.
+		if len(positionals) == 0 {
+			return nil, errors.New("start requires a netcage container name to revive (netcage start <name>)")
+		}
+		if len(positionals) > 1 {
+			return nil, fmt.Errorf("start takes exactly one netcage container name, got %v", positionals)
+		}
+		cmd.StartName = positionals[0]
+		// `start` REVIVES an EXISTING container; the create-time flags (-v/-w/-e/-u/
+		// --entrypoint + the widened pass-throughs) cannot apply to a `podman start` and
+		// would be silently ignored, so refuse them loudly rather than pretend they took
+		// effect. --proxy/--allow-direct (the jail config to RECONCILE) and -i/-t/--rm
+		// (attach mode + ephemeral) ARE accepted.
+		if err := rejectStartCreateFlags(cmd); err != nil {
+			return nil, err
+		}
+	default: // verify
+		if len(positionals) > 0 {
+			return nil, fmt.Errorf("verify takes no positional arguments, got %v", positionals)
+		}
 	}
 
 	return cmd, nil
@@ -589,6 +620,30 @@ func mountContainerTarget(m string) string {
 		return ""
 	}
 	return parts[1]
+}
+
+// rejectStartCreateFlags refuses the create-time run flags on `netcage start`: a
+// revive of an EXISTING container cannot honour -v/-w/-e/-u/--entrypoint or the
+// widened pass-throughs (they are baked at create time and a `podman start` takes
+// none of them), so accepting-and-ignoring them would silently mislead. --proxy /
+// --allow-direct (the jail config reconciled against the container's baked one)
+// and -i/-t/--rm are the flags start DOES take, so they are not rejected here.
+func rejectStartCreateFlags(cmd *Command) error {
+	switch {
+	case len(cmd.Mounts) > 0:
+		return errors.New("start does not take -v/--volume: it revives an EXISTING container (mounts are fixed at create time); remove it and `netcage run` again to change mounts")
+	case cmd.Workdir != "":
+		return errors.New("start does not take -w/--workdir: it revives an EXISTING container whose workdir is fixed at create time")
+	case len(cmd.Env) > 0:
+		return errors.New("start does not take -e/--env: it revives an EXISTING container whose env is fixed at create time")
+	case cmd.User != "":
+		return errors.New("start does not take -u/--user: it revives an EXISTING container whose user is fixed at create time")
+	case cmd.Entrypoint != "":
+		return errors.New("start does not take --entrypoint: it revives an EXISTING container whose entrypoint is fixed at create time")
+	case len(cmd.PassThroughFlags) > 0:
+		return errors.New("start does not take create-time flags (--memory/--label/--tmpfs/...): it revives an EXISTING container; those are fixed at create time")
+	}
+	return nil
 }
 
 // denyFlag reports whether a is a jail-breaching flag (in --flag or --flag=value

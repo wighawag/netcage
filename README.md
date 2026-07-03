@@ -48,6 +48,7 @@ Download a prebuilt Linux archive (amd64 / arm64 / armv7 / armv6) from the [Rele
 
 ```
 netcage run    [flags] [<image>] [<cmd> <args...>]
+netcage start  [--proxy ...] [--allow-direct ...] [-it] [--rm] <container>
 netcage verify [--proxy socks5h://[user:pass@]host:port]
 ```
 
@@ -103,6 +104,17 @@ netcage verify --proxy socks5h://127.0.0.1:9050
 ```
 
 It exits non-zero if any assertion fails, so CI can gate on it. Run it during development/CI, not per use.
+
+## start: resume a kept jailed container
+
+A plain `netcage run` (no `--rm`) leaves a stopped tool container and its sidecar behind. `netcage start <name>` **resumes** that container with its full forced-egress jail restored, so a named reusable jailed container is a **durable environment**:
+
+```sh
+netcage run   --proxy socks5h://127.0.0.1:9050 -it -v ./my-repo   # leaves a kept pair on exit
+netcage start --proxy socks5h://127.0.0.1:9050 -it netcage-run-<id>-tool   # resume it, state intact
+```
+
+`start` **revives** the existing sidecar (its baked firewall re-applies on start, then netcage **verifies** it), **re-execs the DNS forwarder**, and re-enters the tool with its filesystem state intact. It is the jail-aware exception to the other verbs: it carries a `--proxy` (and any `--allow-direct`) and **reconciles** it against the config the container was created with. A **different** proxy/allowlist is **refused** (remove the container and `run` again, or start it with the same jail config) rather than silently reviving a stale jail or discarding container state. A non-netcage or unknown container is refused. Without `--rm` the pair is left stopped again (fail-closed via the baked firewall); with `--rm` the resume is ephemeral (both removed on exit). See [ADR-0011](docs/adr/0011-netcage-start-revives-jail-refuses-changed-config.md).
 
 ## Split tunnel: reach one local service directly
 

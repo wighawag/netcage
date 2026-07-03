@@ -700,3 +700,77 @@ func TestParse_StartIsNotAManagementPassThrough(t *testing.T) {
 		t.Fatal("`start` must NOT be a pass-through management verb (it is the jail-aware verb built separately)")
 	}
 }
+
+// TestParse_StartTakesNameAndProxy: `netcage start <name>` parses the single
+// container name into StartName and, being a JAIL path (it revives a forced-egress
+// jail + re-execs DNS), CARRIES a --proxy that must preflight (unlike the
+// pass-through verbs). --allow-direct + -it + --rm are accepted (the jail config to
+// reconcile + attach mode + ephemeral).
+func TestParse_StartTakesNameAndProxy(t *testing.T) {
+	cmd, err := cli.ParseWithEnv([]string{"start", "--proxy", "socks5h://127.0.0.1:9050", "-it", "--rm", "--allow-direct", "192.168.1.5:22", "netcage-run-abc-tool"}, noEnv)
+	if err != nil {
+		t.Fatalf("start must parse: %v", err)
+	}
+	if cmd.Name != "start" {
+		t.Fatalf("Name = %q, want start", cmd.Name)
+	}
+	if cmd.StartName != "netcage-run-abc-tool" {
+		t.Fatalf("StartName = %q, want netcage-run-abc-tool", cmd.StartName)
+	}
+	if !cmd.Interactive || !cmd.TTY {
+		t.Fatalf("start -it must set Interactive+TTY; got %v/%v", cmd.Interactive, cmd.TTY)
+	}
+	if !cmd.Rm {
+		t.Fatal("start --rm must set Rm (ephemeral resume)")
+	}
+	if len(cmd.AllowDirect) != 1 {
+		t.Fatalf("start --allow-direct must parse into AllowDirect; got %+v", cmd.AllowDirect)
+	}
+	// A jail path: it is NOT a management verb and IS preflighted (needs a reachable
+	// proxy), unlike ps/logs/... which no-op preflight.
+	if cmd.IsManagement() {
+		t.Fatal("start must NOT be a management verb (it is a jail path that carries a proxy)")
+	}
+}
+
+// TestParse_StartRequiresExactlyOneName: zero positionals is a usage error
+// (nothing to revive) and more than one is refused (a typo must not silently start
+// the wrong container).
+func TestParse_StartRequiresExactlyOneName(t *testing.T) {
+	if _, err := cli.ParseWithEnv([]string{"start", "--proxy", "socks5h://127.0.0.1:9050"}, noEnv); err == nil {
+		t.Fatal("start with no container name must be a usage error")
+	}
+	if _, err := cli.ParseWithEnv([]string{"start", "--proxy", "socks5h://127.0.0.1:9050", "a", "b"}, noEnv); err == nil {
+		t.Fatal("start with more than one positional must be refused")
+	}
+}
+
+// TestParse_StartNeedsProxyLikeRun: `start` reconciles + preflights a proxy, so it
+// refuses (fail-closed) when no --proxy and no NETCAGE_PROXY are given, exactly
+// like `run`.
+func TestParse_StartNeedsProxy(t *testing.T) {
+	if _, err := cli.ParseWithEnv([]string{"start", "netcage-run-abc-tool"}, noEnv); err == nil {
+		t.Fatal("start with no proxy must be refused (it is a jail path; fails closed)")
+	}
+}
+
+// TestParse_StartRefusesCreateTimeFlags: `start` revives an EXISTING container, so
+// the create-time flags (-v/-w/-e/-u/--entrypoint + the widened pass-throughs)
+// cannot apply and are refused LOUDLY rather than silently ignored.
+func TestParse_StartRefusesCreateTimeFlags(t *testing.T) {
+	base := []string{"start", "--proxy", "socks5h://127.0.0.1:9050"}
+	for _, extra := range [][]string{
+		{"-v", "/host:/work"},
+		{"-w", "/work"},
+		{"-e", "FOO=bar"},
+		{"-u", "root"},
+		{"--entrypoint", "/bin/sh"},
+		{"--memory", "512m"},
+		{"--label", "k=v"},
+	} {
+		args := append(append([]string{}, base...), append(extra, "netcage-run-abc-tool")...)
+		if _, err := cli.ParseWithEnv(args, noEnv); err == nil {
+			t.Fatalf("start must refuse create-time flag %v (it revives an existing container)", extra)
+		}
+	}
+}

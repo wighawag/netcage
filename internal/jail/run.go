@@ -97,12 +97,21 @@ func Run(ctx context.Context, r Runner, cfg Config) (Result, error) {
 	}
 	cfg.dnsServer = "127.0.0.1:53"
 
-	// Mount a resolv.conf into the tool pointing at the in-netns forwarder.
-	resolvPath, cleanupResolv, err := writeResolvConf()
-	if err != nil {
+	// Mount a resolv.conf into the tool pointing at the in-netns forwarder. The
+	// tool container BIND-MOUNTS this host file, so its path must OUTLIVE the run
+	// for a KEPT container: podman re-mounts the SAME source path on every restart
+	// (a `netcage start` or a raw `podman start`), and a removed temp file would
+	// make the restart fail (crun: cannot stat). So the path is run-attributable and
+	// STABLE (resolvConfPathFor), and it is cleaned up ONLY on an EPHEMERAL run;
+	// a kept run leaves it durable next to the kept pair (netcage start re-materialises
+	// it idempotently anyway).
+	resolvPath := resolvConfPathFor(cfg.RunID)
+	if err := writeResolvConfAt(resolvPath); err != nil {
 		return Result{}, fmt.Errorf("write tool resolv.conf: %w", err)
 	}
-	defer cleanupResolv()
+	if cfg.Ephemeral {
+		defer os.Remove(resolvPath)
+	}
 	cfg.resolvConfPath = resolvPath
 
 	// 3. reachback diagnostic for a host-loopback proxy (story 14): a clear
@@ -326,20 +335,22 @@ func startSidecarDNS(ctx context.Context, r Runner, cfg Config) error {
 	return nil
 }
 
-// writeResolvConf writes a temp resolv.conf pointing at the in-netns forwarder
-// (127.0.0.1:53) and returns its path + a cleanup func.
-func writeResolvConf() (string, func(), error) {
-	f, err := os.CreateTemp("", "netcage-resolv-*.conf")
-	if err != nil {
-		return "", func() {}, err
-	}
-	if _, err := f.WriteString("nameserver 127.0.0.1\noptions use-vc\n"); err != nil {
-		f.Close()
-		os.Remove(f.Name())
-		return "", func() {}, err
-	}
-	f.Close()
-	return f.Name(), func() { os.Remove(f.Name()) }, nil
+// resolvConfPathFor is the STABLE, run-attributable host path of the tool's
+// resolv.conf (nameserver 127.0.0.1). It is deterministic in the run id so a
+// KEPT container's bind-mount source is the SAME on the original run and on every
+// `netcage start` revive: podman re-mounts this exact path on restart, so it must
+// not be a random temp name that a later revive cannot reproduce. It lives under
+// the OS temp dir (world-writable-safe: it only ever says `nameserver 127.0.0.1`).
+func resolvConfPathFor(runID string) string {
+	return filepath.Join(os.TempDir(), "netcage-resolv-"+runID+".conf")
+}
+
+// writeResolvConfAt writes the in-netns-forwarder resolv.conf (127.0.0.1:53) to
+// the given stable path, idempotently (overwrite is fine: the content is fixed).
+// Used by both the run path and `netcage start` (which re-materialises the same
+// file before reviving, so a revive works even if the durable file was removed).
+func writeResolvConfAt(path string) error {
+	return os.WriteFile(path, []byte("nameserver 127.0.0.1\noptions use-vc\n"), 0o644)
 }
 
 // dnsHelperPath locates the netcage-dns binary: an env override (set in tests),
