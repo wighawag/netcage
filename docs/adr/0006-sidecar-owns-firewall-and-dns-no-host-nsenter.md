@@ -1,6 +1,6 @@
 # The sidecar owns its firewall and DNS forwarder; netcage never uses host nsenter
 
-**Status:** accepted
+**Status:** accepted (refined by ADR-0008: the firewall now rides in the sidecar's create-time `EXTRA_COMMANDS` instead of a runtime `podman exec`, so it self-heals on every restart; netcage's own post-start verification, not the script's `set -e`, is the fail-loud layer. The sidecar still owns its firewall + DNS forwarder; only WHERE/WHEN the firewall is applied moved.)
 
 The jail's two in-netns setup steps, applying the firewall (UDP drop, reachback narrowing, split-tunnel rules) and launching the `netcage-dns` forwarder, run INSIDE the redirector sidecar via `podman exec`, not from the host via `nsenter -t <sidecar-pid>`. The firewall is an iptables script (the pinned sidecar image ships iptables, nf_tables-backed; the sidecar already has `CAP_NET_ADMIN`), and the DNS helper is mounted read-only into the sidecar and started with `podman exec -d`, so it is container-lifecycle-bound (teardown's `podman rm -f` kills it; no host-side process to track).
 

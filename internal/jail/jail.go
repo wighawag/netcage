@@ -267,12 +267,32 @@ func (c Config) toolName() string    { return "netcage-run-" + c.RunID + "-tool"
 
 // firewallScript is the in-netns firewall: drop all egress UDP except the local
 // tool<->forwarder loopback hop, and narrow host-loopback reachback to exactly
-// the proxy port. It is an iptables/ip6tables shell script applied INSIDE the
-// sidecar via `podman exec` (ADR-0006): the pinned redirector image ships
-// iptables (nf_tables-backed) and the sidecar already has CAP_NET_ADMIN, so the
-// sidecar owns its own firewall and the host needs no nft/nsenter. `set -e`
-// makes a half-applied firewall abort the run loudly (a silently missing rule
-// would be a leak).
+// the proxy port. It is an iptables/ip6tables shell script BAKED into the
+// sidecar's create-time EXTRA_COMMANDS env (ADR-0008, refining ADR-0006): the
+// pinned tun2socks image runs EXTRA_COMMANDS on EVERY (re)start before it execs
+// tun2socks, so the firewall self-heals whenever podman auto-revives the sidecar
+// (e.g. as a `--network container:` dependency of a raw `podman start <tool>`).
+// The image ships iptables (nf_tables-backed) and the sidecar has CAP_NET_ADMIN.
+//
+// EXTRA_COMMANDS CANNOT fail-close the sidecar (the entrypoint runs it in a
+// child subshell and does not check its exit before `exec tun2socks`, so `set
+// -e`/`kill 1` cannot abort it - spiked). The fail-LOUD guarantee therefore
+// comes from netcage's OWN post-start VERIFICATION (verifyFirewall), NOT from
+// this script aborting. `set -e` is kept so a broken rule at least stops the
+// SUBSHELL early (leaving MORE dropped, not more open, given the DROP-first
+// ordering below).
+//
+// DROP-first ordering (ADR-0008, spiked): the only unguarded path is a raw
+// `podman start` OUTSIDE netcage (no netcage process to verify). There a
+// mid-script rule FAILURE leaves a partial chain, and the ORDER decides whether
+// that partial is more open or more closed. So the ENABLING accepts (loopback
+// UDP, the proxy-port reachback ACCEPT, each split-tunnel direct ACCEPT) are
+// emitted FIRST - they must precede the broad drops that would otherwise catch
+// the sidecar's own dial to the proxy / an allowed direct - and then ALL the
+// broad DROPs (egress UDP, the reachback drop, the RFC1918/link-local drops)
+// follow in one contiguous block. A failure inside the DROP block thus leaves
+// MORE dropped, not more open (append-style ordering LEAKED the LAN gateway on a
+// partial apply; DROP-first DROPPED it).
 func (c Config) firewallScript(proxyPort string) string {
 	// The tool's DNS query AND the forwarder's reply are BOTH loopback UDP
 	// (127.x<->127.x): the tool sends to 127.0.0.1:53 and the forwarder replies
@@ -284,15 +304,24 @@ func (c Config) firewallScript(proxyPort string) string {
 	// `meta l4proto udp drop` dropped BOTH families).
 	var b strings.Builder
 	b.WriteString("set -e\n")
+
+	// --- ENABLING ACCEPTs first (must precede the broad drops below) ---
 	b.WriteString("iptables -A OUTPUT -p udp -d 127.0.0.0/8 -j ACCEPT\n") // tool<->forwarder loopback DNS (query + reply)
-	b.WriteString("iptables -A OUTPUT -p udp -j DROP\n")                  // every other (egress) IPv4 UDP dropped
 	b.WriteString("ip6tables -A OUTPUT -p udp -d ::1/128 -j ACCEPT\n")    // v6-loopback parity
-	b.WriteString("ip6tables -A OUTPUT -p udp -j DROP\n")                 // every other (egress) IPv6 UDP dropped
 	if c.ProxyOnHostLoopback {
+		// The sidecar's own dial to the pasta-mapped proxy MUST be accepted before
+		// the reachback drop and the link-local (169.254.0.0/16) drop that follow.
 		b.WriteString(fmt.Sprintf("iptables -A OUTPUT -p tcp -d %s --dport %s -j ACCEPT\n", mappedHostLoopback, proxyPort))
-		b.WriteString(fmt.Sprintf("iptables -A OUTPUT -d %s -j DROP\n", mappedHostLoopback))
 	}
-	c.writeSplitTunnelRules(&b)
+	c.writeSplitTunnelAccepts(&b) // each allowlisted direct, before the RFC1918 drops
+
+	// --- BROAD DROPs after, in one contiguous block (DROP-first residual bound) ---
+	b.WriteString("iptables -A OUTPUT -p udp -j DROP\n")  // every other (egress) IPv4 UDP dropped
+	b.WriteString("ip6tables -A OUTPUT -p udp -j DROP\n") // every other (egress) IPv6 UDP dropped
+	if c.ProxyOnHostLoopback {
+		b.WriteString(fmt.Sprintf("iptables -A OUTPUT -d %s -j DROP\n", mappedHostLoopback)) // nothing else on the host loopback
+	}
+	c.writeSplitTunnelDrops(&b) // RFC1918 / link-local defense-in-depth drops
 	return b.String()
 }
 
@@ -309,26 +338,18 @@ var rfc1918DropRanges = []string{
 	"169.254.0.0/16",
 }
 
-// writeSplitTunnelRules appends the split-tunnel accept + RFC1918-drop block to
-// the firewall script, and ONLY for a NON-EMPTY allowlist. This is the NARROWING
-// half of the spike: each allowlist entry gets an ACCEPT for its net (per-port,
-// or all TCP ports for a port-less entry) placed BEFORE the RFC1918-range drops
-// that follow it, so the allowed destination is accepted and every other
-// private-range host is dropped. Both halves (this AND the excluded route) are
-// required; each alone is insufficient (excluded-route-only loses the narrowing,
-// accept-only has no direct route). TCP-only throughout: UDP was already
-// hard-dropped above (ADR-0003), so even an allowlisted host has no UDP path.
+// writeSplitTunnelAccepts appends the split-tunnel ACCEPT rules (the NARROWING
+// half of the spike), and ONLY for a NON-EMPTY allowlist. Each allowlist entry
+// gets an ACCEPT for its net (per-port, or all TCP ports for a port-less entry).
+// It is emitted in the ENABLING-accepts block, BEFORE the broad drops, so an
+// allowed destination is accepted and not shadowed by the RFC1918-range drop for
+// its own LAN. TCP-only throughout: UDP was already hard-dropped (ADR-0003), so
+// even an allowlisted host has no UDP path.
 //
-// For an EMPTY allowlist this writes NOTHING, keeping firewallScript
-// byte-identical to today's strict jail (today's default jail has NO RFC1918
-// drops at all; its fail-closed comes from the TUN-only route, so adding them
-// unconditionally would break the empty==today invariant).
-func (c Config) writeSplitTunnelRules(b *strings.Builder) {
-	if len(c.AllowDirect) == 0 {
-		return
-	}
-	// Accepts first (must precede the drops so an allowed host is not shadowed by
-	// the range drop for its own LAN).
+// For an EMPTY allowlist this writes NOTHING (paired with writeSplitTunnelDrops),
+// keeping firewallScript's default-jail shape unchanged (today's default jail
+// has NO RFC1918 drops at all; its fail-closed comes from the TUN-only route).
+func (c Config) writeSplitTunnelAccepts(b *strings.Builder) {
 	for _, a := range c.AllowDirect {
 		daddr := a.Network.String()
 		if a.Port == 0 {
@@ -338,11 +359,86 @@ func (c Config) writeSplitTunnelRules(b *strings.Builder) {
 			b.WriteString(fmt.Sprintf("iptables -A OUTPUT -p tcp -d %s --dport %d -j ACCEPT\n", daddr, a.Port))
 		}
 	}
-	// RFC1918 / link-local drops after, as defense-in-depth (prd story 7). These
-	// ranges are IPv4-only, matching the previous nft `ip daddr` rules.
+}
+
+// writeSplitTunnelDrops appends the RFC1918 / link-local defense-in-depth DROPs
+// (prd story 7), and ONLY for a NON-EMPTY allowlist. They are emitted in the
+// broad-DROP block, AFTER the split-tunnel accepts, so the allowed destination
+// is accepted and every other private-range host is a clean DROP. These ranges
+// are IPv4-only, matching the previous nft `ip daddr` rules.
+func (c Config) writeSplitTunnelDrops(b *strings.Builder) {
+	if len(c.AllowDirect) == 0 {
+		return
+	}
 	for _, r := range rfc1918DropRanges {
 		b.WriteString(fmt.Sprintf("iptables -A OUTPUT -d %s -j DROP\n", r))
 	}
+}
+
+// firewallVerifyRules returns the exact `iptables -S OUTPUT` / `ip6tables -S
+// OUTPUT`-shaped rule lines netcage asserts are PRESENT after the sidecar is up
+// (the fail-loud VERIFICATION layer, ADR-0008). Because EXTRA_COMMANDS cannot
+// abort the sidecar on a half-applied firewall, this post-start probe is what
+// gives the fail-loud guarantee the old `podman exec ... 'set -e; ...'` got from
+// its Go-side exit code: if any expected rule is missing, Run aborts loudly.
+//
+// The lines mirror firewallScript's `-A OUTPUT ...` rules but in the CANONICAL
+// form `iptables -S` renders them (which differs from the `-A` form we submit):
+//
+//   - the destination match `-d <addr>` is emitted BEFORE the protocol match
+//     `-p <proto>` (iptables reorders match args on save);
+//   - a bare host address (mappedHostLoopback) is normalised to /32;
+//   - a `--dport` match is rendered with its explicit module: `-p tcp -m tcp
+//     --dport N`.
+//
+// The rule SET (presence) is asserted, not the emit order (the DROP-first
+// ordering is pinned separately by the unit test).
+func (c Config) firewallVerifyRules(proxyPort string) (v4, v6 []string) {
+	v4 = []string{
+		"-A OUTPUT -d 127.0.0.0/8 -p udp -j ACCEPT",
+		"-A OUTPUT -p udp -j DROP",
+	}
+	v6 = []string{
+		"-A OUTPUT -d ::1/128 -p udp -j ACCEPT",
+		"-A OUTPUT -p udp -j DROP",
+	}
+	if c.ProxyOnHostLoopback {
+		v4 = append(v4,
+			fmt.Sprintf("-A OUTPUT -d %s/32 -p tcp -m tcp --dport %s -j ACCEPT", mappedHostLoopback, proxyPort),
+			fmt.Sprintf("-A OUTPUT -d %s/32 -j DROP", mappedHostLoopback),
+		)
+	}
+	for _, a := range c.AllowDirect {
+		if a.Port == 0 {
+			v4 = append(v4, fmt.Sprintf("-A OUTPUT -d %s -p tcp -j ACCEPT", a.Network.String()))
+		} else {
+			v4 = append(v4, fmt.Sprintf("-A OUTPUT -d %s -p tcp -m tcp --dport %d -j ACCEPT", a.Network.String(), a.Port))
+		}
+	}
+	if len(c.AllowDirect) > 0 {
+		for _, r := range rfc1918DropRanges {
+			v4 = append(v4, fmt.Sprintf("-A OUTPUT -d %s -j DROP", r))
+		}
+	}
+	return v4, v6
+}
+
+// checkRulesPresent asserts every rule in want appears (line-exact, ignoring
+// surrounding whitespace) in the captured `iptables -S` output. It returns a
+// non-nil error naming the FIRST missing rule, so a half-applied firewall makes
+// verifyFirewall abort loudly. It is a pure function so the fail-loud contract is
+// unit-testable without podman.
+func checkRulesPresent(want []string, output string) error {
+	present := make(map[string]bool)
+	for _, line := range strings.Split(output, "\n") {
+		present[strings.TrimSpace(line)] = true
+	}
+	for _, w := range want {
+		if !present[w] {
+			return fmt.Errorf("expected firewall rule not present: %q", w)
+		}
+	}
+	return nil
 }
 
 // proxyReachbackAddr is the address tun2socks's dialer must reach the proxy at:
@@ -377,6 +473,16 @@ func (c Config) SidecarRunArgs() []string {
 		"-e", "CLONE_MAIN=0",
 		"-e", "TUN_EXCLUDED_ROUTES=" + c.excludedRoutes(),
 		"-e", "PROXY=" + c.sidecarProxyURL(),
+		// The firewall is BAKED into EXTRA_COMMANDS at sidecar CREATE time (ADR-0008,
+		// refining ADR-0006), not applied via a post-start `podman exec`. The pinned
+		// tun2socks entrypoint runs EXTRA_COMMANDS on EVERY (re)start before it execs
+		// tun2socks, so the firewall self-heals whenever podman auto-revives the
+		// sidecar (e.g. as a `--network container:` dependency of a raw `podman
+		// start`), closing the LAN/UDP restart leak. The fail-LOUD guarantee is
+		// netcage's post-start verifyFirewall (EXTRA_COMMANDS cannot abort the
+		// sidecar). The DNS forwarder is NOT baked in (it stays a separate `podman
+		// exec -d` process); a raw bypass leaving DNS dead IS fail-closed.
+		"-e", "EXTRA_COMMANDS=" + c.firewallScript(c.Proxy.Port),
 	}
 	// Mount the netcage-dns helper read-only into the sidecar so the DNS
 	// forwarder runs INSIDE it via `podman exec -d` (ADR-0006), instead of on the
