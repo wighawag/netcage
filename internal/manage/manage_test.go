@@ -36,11 +36,13 @@ func TestImagesArgs_IsPodmanImages(t *testing.T) {
 	}
 }
 
-// TestNamedVerbArgs_CarryLabelScopedSubject pins the container-scoped verbs
-// (logs/inspect/stop) as thin podman pass-throughs that ALWAYS carry the
-// netcage.managed label filter AND the named subject, so they can only ever act
-// on a netcage-managed container.
-func TestNamedVerbArgs_CarryLabelScopedSubject(t *testing.T) {
+// TestNamedVerbArgs_ArePlainPassThroughs pins the container-scoped verbs
+// (logs/inspect/stop) as PLAIN podman pass-throughs: just the verb and the named
+// subject, with NO `--filter` (podman only accepts `--filter` on `ps`;
+// logs/inspect/exec/stop reject it). Scoping to netcage-managed containers is
+// enforced by the pre-verb guardManaged label check in Run, NOT by a filter on
+// the verb argv - so these must NOT carry it.
+func TestNamedVerbArgs_ArePlainPassThroughs(t *testing.T) {
 	cases := []struct {
 		verb string
 		got  []string
@@ -54,8 +56,8 @@ func TestNamedVerbArgs_CarryLabelScopedSubject(t *testing.T) {
 		if tc.got[0] != tc.verb {
 			t.Fatalf("%s args must start with the podman verb %q; got: %s", tc.verb, tc.verb, joined)
 		}
-		if !strings.Contains(joined, managedFilter) {
-			t.Fatalf("%s args must carry the netcage.managed label filter; got: %s", tc.verb, joined)
+		if strings.Contains(joined, "--filter") {
+			t.Fatalf("%s must be a PLAIN pass-through with NO --filter (podman rejects it on this verb); scoping is the guardManaged check. got: %s", tc.verb, joined)
 		}
 		if !strings.Contains(joined, "netcage-run-abc-tool") {
 			t.Fatalf("%s args must name the subject container; got: %s", tc.verb, joined)
@@ -65,17 +67,18 @@ func TestNamedVerbArgs_CarryLabelScopedSubject(t *testing.T) {
 
 // TestExecArgs_RunsInsideExistingJailedNetns pins the forced-egress invariant for
 // exec: it is a plain `podman exec` into the EXISTING container (which already
-// shares the sidecar's jailed netns), scoped by the label filter, and it passes
-// the user's command through. It must NEVER add --network or any flag that would
-// give a fresh, un-jailed netns.
+// shares the sidecar's jailed netns) and passes the user's command through. It
+// carries NO --filter (podman rejects it on exec; scoping is the guardManaged
+// check) and must NEVER add --network or any flag that would give a fresh,
+// un-jailed netns.
 func TestExecArgs_RunsInsideExistingJailedNetns(t *testing.T) {
 	got := manage.ExecArgs("netcage-run-abc-tool", []string{"sh", "-c", "id"})
 	joined := strings.Join(got, " ")
 	if got[0] != "exec" {
 		t.Fatalf("exec args must start with the podman verb exec; got: %s", joined)
 	}
-	if !strings.Contains(joined, managedFilter) {
-		t.Fatalf("exec args must carry the netcage.managed label filter; got: %s", joined)
+	if strings.Contains(joined, "--filter") {
+		t.Fatalf("exec must be a PLAIN pass-through with NO --filter (podman rejects it on exec); scoping is the guardManaged check. got: %s", joined)
 	}
 	if !strings.Contains(joined, "netcage-run-abc-tool sh -c id") {
 		t.Fatalf("exec args must name the container then pass the command through; got: %s", joined)
@@ -160,11 +163,16 @@ func TestRun_RefusesNonNetcageContainer(t *testing.T) {
 			if !strings.Contains(err.Error(), "not a netcage-managed container") {
 				t.Fatalf("%s refusal must name the reason (not a netcage-managed container); got: %v", verb, err)
 			}
-			// The refusal must happen BEFORE any ACTION verb runs. Every action verb
-			// carries the label filter (or, for rm, --depend); the guard's own bare
-			// `inspect --format ... <name>` (no filter) is expected and does not act.
-			if strings.Contains(joinAll(r.calls), managedFilter) || strings.Contains(joinAll(r.calls), "--depend") {
-				t.Fatalf("%s must not run the action verb against a refused container; calls: %s", verb, joinAll(r.calls))
+			// The refusal must happen BEFORE any ACTION verb runs. The ONLY podman call
+			// permitted on the refusal path is the guard's own label probe, which is a
+			// distinctive `inspect --format ... <name>` (it carries --format; no action
+			// verb does). So exactly one call, and it must be the guard inspect.
+			if len(r.calls) != 1 {
+				t.Fatalf("%s refusal must make exactly one podman call (the guard inspect); calls: %s", verb, joinAll(r.calls))
+			}
+			guard := strings.Join(r.calls[0], " ")
+			if !strings.HasPrefix(guard, "inspect --format") {
+				t.Fatalf("%s must only run the guard `inspect --format ...` probe on a refused container, never an action verb; got: %s", verb, guard)
 			}
 		})
 	}

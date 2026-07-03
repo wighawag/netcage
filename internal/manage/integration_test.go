@@ -139,6 +139,31 @@ func TestManageVerbs_PsShowsKeptPairAndRmRemovesIt(t *testing.T) {
 		t.Fatalf("netcage ps must list the kept netcage-managed tool %s; got:\n%s", toolName, psOut.String())
 	}
 
+	// The NAMED verbs (logs/inspect/stop) must actually WORK against podman, not
+	// just build a plausible argv: podman only accepts `--filter` on `ps`, so a
+	// named verb that carried a filter would fail live (`unknown flag: --filter` /
+	// `--filter takes no arguments`). Exercise each one against the real kept
+	// container so that regression cannot slip past the argv-only unit tests.
+	for _, verb := range []string{"inspect", "logs", "stop"} {
+		var vout bytes.Buffer
+		if err := manage.Run(ctx, jail.ExecRunner{}, verb, []string{toolName}, manage.IO{Stdout: &vout, Stderr: &vout}); err != nil {
+			t.Fatalf("netcage %s %s must succeed against the kept container (podman rejects --filter on this verb): %v\noutput:\n%s", verb, toolName, err, vout.String())
+		}
+	}
+	// `netcage exec` argv must be ACCEPTED by podman (no --filter, which podman
+	// rejects on exec). The kept tool ran `true` and is stopped, so exec fails with
+	// podman's "container is not running" - that is fine; what must NOT appear is the
+	// `--filter` rejection this fix removes. This pins that exec is a plain
+	// pass-through into the existing container (never a fresh --network run).
+	var execOut bytes.Buffer
+	err := manage.Run(ctx, jail.ExecRunner{}, "exec", []string{toolName, "echo", "netcage-exec-ok"}, manage.IO{Stdout: &execOut, Stderr: &execOut})
+	if err != nil && strings.Contains(strings.ToLower(err.Error()+execOut.String()), "unknown flag: --filter") {
+		t.Fatalf("netcage exec must be a plain `podman exec` with NO --filter (podman rejects it); got: %v\noutput:\n%s", err, execOut.String())
+	}
+	if s := execOut.String(); strings.Contains(s, "--filter takes no arguments") {
+		t.Fatalf("netcage exec must not carry --filter; got:\n%s", s)
+	}
+
 	// A non-netcage container must be REFUSED (guard by label): create a plain
 	// alpine container carrying no netcage label and assert rm/logs refuse it.
 	unmanaged := "netcage-mgmt-unmanaged-" + runID

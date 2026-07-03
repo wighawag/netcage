@@ -33,10 +33,12 @@ import (
 	"github.com/wighawag/netcage/internal/jail"
 )
 
-// managedFilter is the podman `ps`/verb filter that scopes every listing to
-// netcage's own containers: the netcage.managed label the sidecar/tool create
-// args stamp (ADR-0009). A label, not the netcage-run-<id>-* name convention, is
-// the robust discriminator, so it survives renames and is unambiguous at rest.
+// managedFilter is the podman `ps` filter that scopes the listing to netcage's
+// own containers: the netcage.managed label the sidecar/tool create args stamp
+// (ADR-0009). A label, not the netcage-run-<id>-* name convention, is the robust
+// discriminator, so it survives renames and is unambiguous at rest. Only `ps`
+// takes `--filter`; the named verbs (logs/inspect/exec/stop) are guarded by the
+// pre-verb guardManaged label check instead (they reject `--filter`).
 func managedFilter() []string {
 	return []string{"--filter", "label=" + jail.LabelManaged + "=true"}
 }
@@ -58,31 +60,35 @@ func ImagesArgs() []string {
 	return []string{"images"}
 }
 
-// LogsArgs builds `podman logs --filter ... <name>`: the tool container's logs,
-// scoped by the label filter so it can only ever act on a netcage-managed
-// container.
+// LogsArgs builds `podman logs <name>`: the tool container's logs. It is a PLAIN
+// pass-through - podman's logs/inspect/exec/stop verbs do NOT accept a `--filter`
+// (only `ps` does), so scoping to netcage-managed containers is enforced by the
+// guardManaged label check that Run runs BEFORE the verb, never by a filter on
+// the verb argv itself.
 func LogsArgs(name string) []string {
 	return namedVerbArgs("logs", name)
 }
 
-// InspectArgs builds `podman inspect --filter ... <name>` for a netcage-managed
-// container.
+// InspectArgs builds `podman inspect <name>` for a netcage-managed container (a
+// plain pass-through; scoping is the pre-verb guardManaged check, not a filter).
 func InspectArgs(name string) []string {
 	return namedVerbArgs("inspect", name)
 }
 
-// StopArgs builds `podman stop --filter ... <name>` for a netcage-managed
-// container (a plain lifecycle pass-through: stopping a jailed container does not
-// alter its firewall, which is baked into the sidecar and re-applies on restart).
+// StopArgs builds `podman stop <name>` for a netcage-managed container: a plain
+// lifecycle pass-through (stopping a jailed container does not alter its
+// firewall, which is baked into the sidecar and re-applies on restart). Scoping
+// is the pre-verb guardManaged check, not a filter.
 func StopArgs(name string) []string {
 	return namedVerbArgs("stop", name)
 }
 
-// ExecArgs builds `podman exec --filter ... <name> <cmd...>`: run a command
-// INSIDE the EXISTING container, which already shares the sidecar's jailed netns.
-// It is a plain `podman exec` (never `podman run --network ...`), so it enters
-// the container's existing netns and CANNOT hand out a fresh, un-jailed network
-// (the forced-egress invariant). The user command is passed through verbatim.
+// ExecArgs builds `podman exec <name> <cmd...>`: run a command INSIDE the
+// EXISTING container, which already shares the sidecar's jailed netns. It is a
+// plain `podman exec` (never `podman run --network ...`), so it enters the
+// container's existing netns and CANNOT hand out a fresh, un-jailed network (the
+// forced-egress invariant). Scoping is the pre-verb guardManaged check, not a
+// filter. The user command is passed through verbatim.
 func ExecArgs(name string, cmd []string) []string {
 	args := namedVerbArgs("exec", name)
 	return append(args, cmd...)
@@ -98,12 +104,13 @@ func RmPairArgs(sidecarName string) []string {
 	return []string{"rm", "-f", "--depend", sidecarName}
 }
 
-// namedVerbArgs is the shared shape for a container-scoped verb: the podman verb,
-// the netcage.managed label filter (so the verb can only ever match a
-// netcage-managed container), then the named subject.
+// namedVerbArgs is the shared shape for a container-scoped verb: the podman verb
+// then the named subject. It is a PLAIN pass-through with NO `--filter` - podman
+// only supports `--filter` on `ps` (logs/inspect/exec/stop reject it), so scoping
+// to netcage-managed containers is done by the guardManaged label check Run
+// performs BEFORE the verb, not by a filter baked into the verb argv.
 func namedVerbArgs(verb, name string) []string {
 	args := []string{verb}
-	args = append(args, managedFilter()...)
 	return append(args, name)
 }
 
