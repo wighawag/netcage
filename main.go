@@ -20,6 +20,7 @@ import (
 
 	"github.com/wighawag/netcage/internal/cli"
 	"github.com/wighawag/netcage/internal/jail"
+	"github.com/wighawag/netcage/internal/manage"
 	"github.com/wighawag/netcage/internal/verify"
 )
 
@@ -55,12 +56,29 @@ func run(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	switch cmd.Name {
-	case "verify":
+	switch {
+	case cmd.Name == "verify":
 		return runVerify(ctx, cmd)
+	case cmd.IsManagement():
+		return runManage(ctx, cmd)
 	default:
 		return runRun(ctx, cmd)
 	}
+}
+
+// runManage routes a pass-through management verb (ps/logs/inspect/exec/stop/rm/
+// images) to the manage package, which wraps podman scoped to netcage-managed
+// containers (via the netcage.managed label). These verbs are inspection /
+// lifecycle only: they do NOT stand up or tear down a jail, do NOT require a
+// proxy, and never alter a running jail's forced-egress state (`exec` enters the
+// container's EXISTING jailed netns). A refusal (a non-netcage container) or a
+// podman failure exits non-zero with a clear message.
+func runManage(ctx context.Context, cmd *cli.Command) int {
+	if err := manage.Run(ctx, jail.ExecRunner{}, cmd.Name, cmd.ManageArgv, manage.IO{Stdout: os.Stdout, Stderr: os.Stderr}); err != nil {
+		fmt.Fprintf(os.Stderr, "netcage: %s: %v\n", cmd.Name, err)
+		return 1
+	}
+	return 0
 }
 
 // runRun stands up the jail and runs the wrapped tool, propagating the tool's
@@ -133,6 +151,18 @@ func runVerify(ctx context.Context, cmd *cli.Command) int {
 const usage = `usage:
   netcage run    [flags] [<image>] [<cmd> <args...>]
   netcage verify [--proxy socks5h://[user:pass@]host:port]
+  netcage ps
+  netcage images
+  netcage logs|inspect|stop|rm <container>
+  netcage exec <container> <cmd> [args...]
+
+management verbs (ps/logs/inspect/exec/stop/rm/images) are thin pass-throughs to
+podman, scoped to netcage's own containers via the netcage.managed label: they
+list/inspect/manage the containers a kept ` + "`netcage run`" + ` leaves behind. They do
+NOT egress, so they need NO --proxy; they never stand up or tear down a jail
+(` + "`exec`" + ` runs inside the container's existing jailed netns). A non-netcage
+container is refused. ` + "`rm`" + ` removes the whole tool+sidecar pair (no orphaned
+sidecar).
 
 run uses podman-native grammar: the FIRST positional is always the image and the
 tool command + args follow it (like ` + "`podman run [flags] IMAGE [CMD...]`" + `), so

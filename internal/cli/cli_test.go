@@ -540,3 +540,53 @@ func TestRun_ReachableProxyPreflightOK(t *testing.T) {
 		t.Fatalf("reachable proxy preflight failed: %v", err)
 	}
 }
+
+// TestParse_ManagementVerbsNeedNoProxy proves the management verbs
+// (ps/logs/inspect/exec/stop/rm/images) parse WITHOUT a proxy: they are thin
+// podman pass-throughs that do not egress, so requiring --proxy to `ps`/`logs`
+// would be wrong. Their positionals pass through verbatim as ManageArgv.
+func TestParse_ManagementVerbsNeedNoProxy(t *testing.T) {
+	cases := []struct {
+		args     []string
+		wantName string
+		wantArgv []string
+	}{
+		{[]string{"ps"}, "ps", nil},
+		{[]string{"images"}, "images", nil},
+		{[]string{"logs", "netcage-run-abc-tool"}, "logs", []string{"netcage-run-abc-tool"}},
+		{[]string{"inspect", "netcage-run-abc-tool"}, "inspect", []string{"netcage-run-abc-tool"}},
+		{[]string{"stop", "netcage-run-abc-tool"}, "stop", []string{"netcage-run-abc-tool"}},
+		{[]string{"rm", "netcage-run-abc-tool"}, "rm", []string{"netcage-run-abc-tool"}},
+		{[]string{"exec", "netcage-run-abc-tool", "sh", "-c", "id"}, "exec", []string{"netcage-run-abc-tool", "sh", "-c", "id"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.wantName, func(t *testing.T) {
+			cmd, err := cli.ParseWithEnv(tc.args, noEnv)
+			if err != nil {
+				t.Fatalf("management verb %v must parse without a proxy: %v", tc.args, err)
+			}
+			if cmd.Name != tc.wantName {
+				t.Fatalf("Name = %q, want %q", cmd.Name, tc.wantName)
+			}
+			if !cmd.IsManagement() {
+				t.Fatalf("%q must be recognised as a management verb", cmd.Name)
+			}
+			if strings.Join(cmd.ManageArgv, " ") != strings.Join(tc.wantArgv, " ") {
+				t.Fatalf("ManageArgv = %v, want %v", cmd.ManageArgv, tc.wantArgv)
+			}
+			// A management command must NOT require a proxy preflight.
+			if err := cmd.Preflight(); err != nil {
+				t.Fatalf("management verb preflight must be a no-op (no proxy needed); got %v", err)
+			}
+		})
+	}
+}
+
+// TestParse_StartIsNotAManagementPassThrough guards the deliberate exclusion:
+// `netcage start` is the jail-aware revive verb (its own task), NOT a thin
+// pass-through, so it must not parse as a management verb here.
+func TestParse_StartIsNotAManagementPassThrough(t *testing.T) {
+	if cli.IsManagementVerb("start") {
+		t.Fatal("`start` must NOT be a pass-through management verb (it is the jail-aware verb built separately)")
+	}
+}
