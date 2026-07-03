@@ -32,9 +32,12 @@ var ErrReachback = errors.New("the proxy on the host's loopback is not reachable
 // Steps (Option A, shared netns; every in-netns step goes through podman, never
 // host nsenter, ADR-0006):
 //  1. start the tun2socks sidecar (pasta + map-host-loopback for a loopback
-//     proxy), with the netcage-dns helper mounted in
-//  2. apply the firewall INSIDE the sidecar via podman exec (UDP drop +
-//     reachback narrowing)
+//     proxy), with the netcage-dns helper mounted in and the firewall baked into
+//     its EXTRA_COMMANDS env (ADR-0008), so the entrypoint applies it on every
+//     (re)start before it execs tun2socks
+//  2. VERIFY the firewall INSIDE the sidecar via a podman exec `iptables -S`
+//     probe (the fail-loud layer: EXTRA_COMMANDS cannot abort the sidecar, so
+//     netcage aborts loudly here if a rule is missing/partial)
 //  3. start the DNS-to-SOCKS-TCP forwarder INSIDE the sidecar via podman exec -d
 //     and point resolv.conf at it
 //  4. run the tool sharing the sidecar netns
@@ -70,12 +73,17 @@ func Run(ctx context.Context, r Runner, cfg Config) (Result, error) {
 		return Result{}, fmt.Errorf("start tun2socks sidecar: %w%s", err, stderrSuffix(serr))
 	}
 
-	// 2. firewall INSIDE the sidecar (podman exec, ADR-0006): drop all egress UDP
-	// (ADR-0003) and narrow host-loopback reachback to exactly the proxy port. The
-	// tool->DNS hop is loopback-internal to the netns (127.0.0.1:53), so it needs
-	// no egress rule. The sidecar has CAP_NET_ADMIN and ships iptables.
-	if err := applyFirewall(ctx, r, cfg); err != nil {
-		return Result{}, fmt.Errorf("apply firewall in jail netns: %w", err)
+	// 2. VERIFY the firewall INSIDE the sidecar (ADR-0008). The firewall itself is
+	// baked into the sidecar's EXTRA_COMMANDS env (SidecarRunArgs) and applied by
+	// the image entrypoint on every (re)start, so it self-heals across restarts
+	// (closing the raw-`podman start` LAN/UDP leak). But EXTRA_COMMANDS cannot
+	// abort the sidecar on a half-applied firewall (spiked), so netcage VERIFIES
+	// the exact rule set is present (a `podman exec ... iptables -S` probe) and
+	// aborts the jail LOUDLY here if any rule is missing/partial. This preserves
+	// the fail-loud guarantee the old runtime `podman exec ... 'set -e; ...'` got
+	// from its Go-side exit-code check.
+	if err := verifyFirewall(ctx, r, cfg); err != nil {
+		return Result{}, fmt.Errorf("verify firewall in jail netns: %w", err)
 	}
 
 	// 3. DNS-to-SOCKS-TCP forwarder INSIDE the sidecar (podman exec -d), bound on
@@ -248,15 +256,40 @@ func stderrSuffix(stderr string) string {
 	return ""
 }
 
-// applyFirewall runs the firewall script INSIDE the sidecar container via
-// `podman exec` (ADR-0006). The sidecar has CAP_NET_ADMIN and its image ships
-// iptables, so it owns its own netns firewall; the host needs no nft/nsenter,
-// and the whole step goes through the Runner seam (podman only), so netcage can
-// drive a remote podman.
-func applyFirewall(ctx context.Context, r Runner, cfg Config) error {
-	if _, serr, err := runPodman(ctx, r, "exec", cfg.sidecarName(),
-		"sh", "-c", cfg.firewallScript(cfg.Proxy.Port)); err != nil {
-		return fmt.Errorf("%w%s", err, stderrSuffix(serr))
+// ErrFirewallNotApplied is returned when the post-start firewall verification
+// finds the baked EXTRA_COMMANDS firewall missing or partial in the sidecar's
+// netns. It is the fail-loud layer (ADR-0008): because the tun2socks entrypoint
+// runs EXTRA_COMMANDS in a child subshell whose exit it ignores before `exec
+// tun2socks`, a half-applied firewall would otherwise leave tun2socks running
+// with a partial firewall (a leak); netcage aborts the jail loudly instead.
+var ErrFirewallNotApplied = errors.New("the jail firewall is missing or partially applied in the sidecar netns")
+
+// verifyFirewall VERIFIES the baked EXTRA_COMMANDS firewall is fully present in
+// the sidecar's netns AFTER the sidecar is up, via `podman exec ... iptables -S
+// OUTPUT` (and `ip6tables -S OUTPUT`) probes asserting the exact expected rule
+// set. It aborts the jail loudly (returning ErrFirewallNotApplied) if any rule
+// is missing/partial. This is the fail-loud layer (ADR-0008): EXTRA_COMMANDS
+// self-heals the firewall on every (re)start but cannot abort the sidecar on a
+// half-apply, so netcage's own verification is what guarantees fail-closed on
+// the run/start paths. The whole step goes through the Runner seam (podman
+// only), so netcage stays a pure podman client and can drive a remote podman.
+func verifyFirewall(ctx context.Context, r Runner, cfg Config) error {
+	wantV4, wantV6 := cfg.firewallVerifyRules(cfg.Proxy.Port)
+
+	v4, serr, err := runPodman(ctx, r, "exec", cfg.sidecarName(), "iptables", "-S", "OUTPUT")
+	if err != nil {
+		return fmt.Errorf("probe iptables OUTPUT chain: %w%s", err, stderrSuffix(serr))
+	}
+	if err := checkRulesPresent(wantV4, v4); err != nil {
+		return fmt.Errorf("%w (IPv4): %v\nobserved rules:\n%s", ErrFirewallNotApplied, err, v4)
+	}
+
+	v6, serr, err := runPodman(ctx, r, "exec", cfg.sidecarName(), "ip6tables", "-S", "OUTPUT")
+	if err != nil {
+		return fmt.Errorf("probe ip6tables OUTPUT chain: %w%s", err, stderrSuffix(serr))
+	}
+	if err := checkRulesPresent(wantV6, v6); err != nil {
+		return fmt.Errorf("%w (IPv6): %v\nobserved rules:\n%s", ErrFirewallNotApplied, err, v6)
 	}
 	return nil
 }

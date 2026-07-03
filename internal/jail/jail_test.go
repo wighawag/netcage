@@ -201,6 +201,173 @@ func TestFirewallScript_RemoteProxyHasNoReachbackNarrowing(t *testing.T) {
 	}
 }
 
+// TestFirewallScript_DropFirstOrdering pins the DROP-first ordering the spike
+// proved bounds the partial-apply residual on the one unguarded path (a raw
+// `podman start` outside netcage): the broad DROPs (all-egress-UDP drop, the
+// reachback drop, the RFC1918/link-local drops) come BEFORE the narrow trailing
+// ... wait: the CONSTRAINT is the opposite for the accepts that ENABLE the
+// proxy/direct hop. So this test pins BOTH halves at once:
+//
+//   - every broad DROP precedes the NEXT accept it does not need to gate (there
+//     is no trailing accept after the drop block); concretely the UDP drop and
+//     the RFC1918/reachback drops are all emitted in one contiguous DROP block
+//     that comes AFTER the required enabling accepts, so a mid-script failure in
+//     the DROP block leaves MORE dropped, not more open; and
+//   - the ENABLING accepts (loopback-UDP, the proxy-port reachback ACCEPT, each
+//     split-tunnel direct ACCEPT) still precede their corresponding broad drops
+//     (the UDP drop, the link-local drop, the RFC1918 drops), else the sidecar's
+//     own dial to the pasta-mapped proxy or an allowlisted direct is caught by a
+//     broad drop.
+func TestFirewallScript_DropFirstOrdering(t *testing.T) {
+	c := cfg()
+	c.ProxyOnHostLoopback = true
+	c.AllowDirect = []cli.DirectAllow{
+		allow(t, "192.168.1.150", 8080),
+	}
+	rs := c.firewallScript("9050")
+
+	idx := func(sub string) int {
+		i := strings.Index(rs, sub)
+		if i < 0 {
+			t.Fatalf("firewall script missing %q\ngot:\n%s", sub, rs)
+		}
+		return i
+	}
+
+	// The enabling accepts.
+	loopUDPAccept := idx("iptables -A OUTPUT -p udp -d 127.0.0.0/8 -j ACCEPT")
+	proxyAccept := idx("iptables -A OUTPUT -p tcp -d " + mappedHostLoopback + " --dport 9050 -j ACCEPT")
+	directAccept := idx("iptables -A OUTPUT -p tcp -d 192.168.1.150/32 --dport 8080 -j ACCEPT")
+
+	// The broad drops.
+	udpDrop := idx("iptables -A OUTPUT -p udp -j DROP")
+	reachbackDrop := idx("iptables -A OUTPUT -d " + mappedHostLoopback + " -j DROP")
+	linkLocalDrop := idx("iptables -A OUTPUT -d 169.254.0.0/16 -j DROP")
+	rfc1918Drop := idx("iptables -A OUTPUT -d 192.168.0.0/16 -j DROP")
+
+	// The enabling accepts must precede the drops that would otherwise catch them.
+	if loopUDPAccept > udpDrop {
+		t.Fatalf("loopback-UDP accept must precede the UDP drop (else DNS fails closed)\n%s", rs)
+	}
+	if proxyAccept > reachbackDrop || proxyAccept > linkLocalDrop {
+		t.Fatalf("proxy-port reachback accept must precede the reachback/link-local drops (else the sidecar cannot reach its own proxy)\n%s", rs)
+	}
+	if directAccept > rfc1918Drop {
+		t.Fatalf("split-tunnel direct accept must precede the RFC1918 drops (else the allowed direct is dropped)\n%s", rs)
+	}
+
+	// DROP-first: the broad DROP block is CONTIGUOUS and comes AFTER all the
+	// enabling accepts, so a mid-script failure inside the drop block leaves MORE
+	// dropped, not more open. Concretely: every enabling accept precedes every
+	// broad drop.
+	lastAccept := loopUDPAccept
+	for _, a := range []int{proxyAccept, directAccept} {
+		if a > lastAccept {
+			lastAccept = a
+		}
+	}
+	firstDrop := udpDrop
+	for _, d := range []int{reachbackDrop, linkLocalDrop, rfc1918Drop} {
+		if d < firstDrop {
+			firstDrop = d
+		}
+	}
+	if lastAccept > firstDrop {
+		t.Fatalf("DROP-first violated: an enabling accept (at %d) comes AFTER a broad drop (first at %d); the broad drops must all follow the enabling accepts so a partial apply is MORE closed\n%s", lastAccept, firstDrop, rs)
+	}
+}
+
+// TestSidecarRunArgs_FirewallInExtraCommands: the firewall now rides in the
+// sidecar's create-time EXTRA_COMMANDS env (so it self-heals on every restart),
+// NOT a post-start `podman exec`. The env value must equal the firewall script
+// exactly, built without executing podman.
+func TestSidecarRunArgs_FirewallInExtraCommands(t *testing.T) {
+	c := cfg()
+	c.ProxyOnHostLoopback = true
+	args := c.SidecarRunArgs()
+
+	var extra string
+	found := false
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-e" && strings.HasPrefix(args[i+1], "EXTRA_COMMANDS=") {
+			extra = strings.TrimPrefix(args[i+1], "EXTRA_COMMANDS=")
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("sidecar args must set EXTRA_COMMANDS with the firewall script; got: %s", strings.Join(args, " "))
+	}
+	if extra != c.firewallScript(c.Proxy.Port) {
+		t.Fatalf("EXTRA_COMMANDS value must equal firewallScript(proxyPort)\ngot:\n%s\nwant:\n%s", extra, c.firewallScript(c.Proxy.Port))
+	}
+}
+
+// TestFirewallVerifyRules_MatchExpectedIptablesOutput pins the seam the
+// post-start VERIFICATION uses: firewallVerifyRules returns the exact set of
+// `iptables -S OUTPUT`-shaped rule lines netcage asserts are present after the
+// sidecar is up (the fail-loud layer, since EXTRA_COMMANDS cannot abort the
+// sidecar). Each expected rule must be a substring of what the baked script's
+// own `-A OUTPUT ...` lines would produce, using iptables' /32 normalisation for
+// a bare host address.
+func TestFirewallVerifyRules_MatchExpectedIptablesOutput(t *testing.T) {
+	c := cfg()
+	c.ProxyOnHostLoopback = true
+	c.AllowDirect = []cli.DirectAllow{allow(t, "192.168.1.150", 8080)}
+
+	v4, v6 := c.firewallVerifyRules(c.Proxy.Port)
+	if len(v4) == 0 || len(v6) == 0 {
+		t.Fatalf("firewallVerifyRules must return both v4 and v6 expected rules; got v4=%v v6=%v", v4, v6)
+	}
+	for _, want := range []string{
+		// The canonical `iptables -S` form: -d before -p, /32-normalised host, and
+		// -m tcp for a --dport match.
+		"-A OUTPUT -d 127.0.0.0/8 -p udp -j ACCEPT",
+		"-A OUTPUT -p udp -j DROP",
+		"-A OUTPUT -d " + mappedHostLoopback + "/32 -j DROP",
+		"-A OUTPUT -d " + mappedHostLoopback + "/32 -p tcp -m tcp --dport 9050 -j ACCEPT",
+		"-A OUTPUT -d 192.168.1.150/32 -p tcp -m tcp --dport 8080 -j ACCEPT",
+		"-A OUTPUT -d 192.168.0.0/16 -j DROP",
+	} {
+		if !containsRule(v4, want) {
+			t.Fatalf("firewallVerifyRules (v4) missing expected rule %q\ngot: %v", want, v4)
+		}
+	}
+	if !containsRule(v6, "-A OUTPUT -p udp -j DROP") {
+		t.Fatalf("firewallVerifyRules (v6) must assert the IPv6 UDP drop; got: %v", v6)
+	}
+}
+
+func containsRule(rules []string, want string) bool {
+	for _, r := range rules {
+		if r == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestVerifyFirewallOutput_FailsOnMissingRule proves the fail-loud check: given
+// captured `iptables -S` output that is MISSING an expected rule, the verifier
+// reports the jail as NOT fully firewalled (so Run can abort loudly). A raw
+// half-applied firewall must fail, never silently run.
+func TestVerifyFirewallOutput_FailsOnMissingRule(t *testing.T) {
+	c := cfg()
+	c.ProxyOnHostLoopback = true
+	v4, _ := c.firewallVerifyRules(c.Proxy.Port)
+
+	// Full output: every expected rule present -> ok.
+	full := strings.Join(v4, "\n")
+	if err := checkRulesPresent(v4, full); err != nil {
+		t.Fatalf("full ruleset must verify clean; got %v", err)
+	}
+
+	// Drop one rule -> the verifier must flag it as missing.
+	partial := strings.Join(v4[1:], "\n")
+	if err := checkRulesPresent(v4, partial); err == nil {
+		t.Fatalf("a missing rule must fail verification (fail-loud); got nil err for partial:\n%s", partial)
+	}
+}
+
 // TestSidecarRunArgs_MountsDNSHelper: when Run has resolved the netcage-dns
 // helper's host path, the sidecar args mount it read-only at the in-container
 // path the jail execs it from (ADR-0006: the forwarder runs INSIDE the sidecar
