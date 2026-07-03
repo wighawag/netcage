@@ -113,14 +113,11 @@ func Start(ctx context.Context, r Runner, cfg Config, resolveName string) (Resul
 	// (baked at create as resolvConfPathFor(runID)). A kept run leaves this durable,
 	// but a revive on another host, or after a temp-dir sweep, would otherwise fail
 	// with crun "cannot stat" when podman re-mounts the now-missing source. Writing
-	// it here (idempotent) makes `netcage start` self-sufficient. Ephemeral start
-	// removes it again on teardown.
+	// it here (idempotent) makes `netcage start` self-sufficient. An ephemeral start
+	// removes it again via Teardown (centralised there, and in `netcage rm`).
 	resolvPath := resolvConfPathFor(cfg.RunID)
 	if err := writeResolvConfAt(resolvPath); err != nil {
 		return Result{}, fmt.Errorf("re-materialise tool resolv.conf for start: %w", err)
-	}
-	if cfg.Ephemeral {
-		defer os.Remove(resolvPath)
 	}
 
 	// 3d. reachback diagnostic for a host-loopback proxy (as the run path), so an

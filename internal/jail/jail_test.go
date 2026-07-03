@@ -292,8 +292,9 @@ func indexOf(args []string, tok string) int {
 	return -1
 }
 
-// The firewall is applied INSIDE the sidecar via `podman exec` (ADR-0006), so
-// the ruleset is an iptables/ip6tables shell script (the pinned redirector image
+// The firewall is baked into the sidecar's create-time `EXTRA_COMMANDS` env
+// (ADR-0008, refining ADR-0006) so it re-applies on every (re)start, so the
+// ruleset is an iptables/ip6tables shell script (the pinned redirector image
 // ships iptables, not nft), not an nft ruleset piped through host nsenter.
 func TestFirewallScript_DropsUDPExceptLocalDNSAndNarrowsReachback(t *testing.T) {
 	c := cfg()

@@ -61,6 +61,9 @@ func forceRemovePair(runID string) {
 	defer cancel()
 	_ = exec.CommandContext(ctx, "podman", "rm", "-f", "--depend", "netcage-run-"+runID+"-sidecar").Run()
 	_ = exec.CommandContext(ctx, "podman", "rm", "-f", "-i", "netcage-run-"+runID+"-tool").Run()
+	// Sweep the durable resolv.conf too, so a kept-pair test cleans fully after
+	// itself and leaves no $TMPDIR orphan.
+	jail.RemoveResolvConf(runID)
 }
 
 // residueFor returns the run-attributable podman container names still present

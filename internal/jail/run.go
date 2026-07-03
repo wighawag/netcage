@@ -104,13 +104,11 @@ func Run(ctx context.Context, r Runner, cfg Config) (Result, error) {
 	// make the restart fail (crun: cannot stat). So the path is run-attributable and
 	// STABLE (resolvConfPathFor), and it is cleaned up ONLY on an EPHEMERAL run;
 	// a kept run leaves it durable next to the kept pair (netcage start re-materialises
-	// it idempotently anyway).
+	// it idempotently anyway). The ephemeral sweep is centralised in Teardown (and in
+	// `netcage rm`), so whatever finally removes the pair also removes this file.
 	resolvPath := resolvConfPathFor(cfg.RunID)
 	if err := writeResolvConfAt(resolvPath); err != nil {
 		return Result{}, fmt.Errorf("write tool resolv.conf: %w", err)
-	}
-	if cfg.Ephemeral {
-		defer os.Remove(resolvPath)
 	}
 	cfg.resolvConfPath = resolvPath
 
@@ -353,6 +351,22 @@ func writeResolvConfAt(path string) error {
 	return os.WriteFile(path, []byte("nameserver 127.0.0.1\noptions use-vc\n"), 0o644)
 }
 
+// RemoveResolvConf removes the run-attributable resolv.conf file for runID (the
+// tool's bind-mount source, resolvConfPathFor). It is the counterpart to the
+// container removal: because a KEPT run leaves the file durable on the host (so a
+// later `netcage start` can re-mount it), whatever finally removes the kept pair
+// must also sweep this file or it orphans under $TMPDIR. Both the ephemeral
+// Teardown and `netcage rm` call it. A missing file is a no-op (idempotent), so
+// it is safe on every exit path and on a pair that never had one.
+func RemoveResolvConf(runID string) {
+	if runID == "" {
+		return
+	}
+	if err := os.Remove(resolvConfPathFor(runID)); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "netcage: could not remove resolv.conf for run %s: %v\n", runID, err)
+	}
+}
+
 // dnsHelperPath locates the netcage-dns binary: an env override (set in tests),
 // else a sibling of the running executable (how the release archive ships the
 // pair), else on PATH.
@@ -474,6 +488,9 @@ func Teardown(ctx context.Context, r Runner, cfg Config) error {
 	if !cfg.Ephemeral {
 		return nil
 	}
+	// Sweep the run-attributable resolv.conf too: an ephemeral run removes the pair,
+	// so the durable bind-mount source must not orphan under $TMPDIR.
+	RemoveResolvConf(cfg.RunID)
 	var errs []error
 	// Order: tool first (it shares/depends on the sidecar netns), then sidecar
 	// (which takes the netns + firewall + DNS forwarder with it). -i (ignore) makes a missing container

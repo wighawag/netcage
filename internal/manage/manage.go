@@ -180,7 +180,14 @@ func Run(ctx context.Context, r jail.Runner, verb string, args []string, out IO)
 		}
 		// Remove the whole pair by its SIDECAR name: rm -f --depend cascades to the
 		// `--network container:` dependent tool, so no orphaned sidecar is left.
-		return stream(ctx, r, RmPairArgs(sidecarNameFor(m.runID)), out)
+		if err := stream(ctx, r, RmPairArgs(sidecarNameFor(m.runID)), out); err != nil {
+			return err
+		}
+		// Sweep the run-attributable resolv.conf too: a KEPT pair leaves it durable on
+		// the host (so `netcage start` can re-mount it), so removing the pair must also
+		// remove that file or it orphans under $TMPDIR. Idempotent (no-op if absent).
+		jail.RemoveResolvConf(m.runID)
+		return nil
 	default:
 		return fmt.Errorf("unknown management verb %q", verb)
 	}

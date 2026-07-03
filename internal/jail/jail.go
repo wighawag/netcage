@@ -14,9 +14,11 @@
 // Topology (Option A): a tun2socks sidecar container creates a TUN and routes
 // everything to it; the tool container joins the sidecar's netns via
 // `--network container:<sidecar>` so its egress hits the TUN and is forced
-// through the proxy. A firewall (iptables, applied INSIDE the sidecar via
-// `podman exec`, ADR-0006) drops all UDP egress in the shared netns and narrows
-// host-loopback reachback to exactly the proxy port. A DNS forwarder (the
+// through the proxy. A firewall (iptables, baked into the sidecar's create-time
+// `EXTRA_COMMANDS` env so it re-applies on every (re)start, ADR-0008 refining
+// ADR-0006; netcage verifies it after start as the fail-loud layer) drops all UDP
+// egress in the shared netns and narrows host-loopback reachback to exactly the
+// proxy port. A DNS forwarder (the
 // netcage-dns helper, mounted into the sidecar and exec'd there) resolves names
 // via the proxy over TCP. Everything is labeled run-attributably and torn down
 // on exit. Because every in-netns step goes through podman (never host nsenter),

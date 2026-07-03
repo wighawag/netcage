@@ -2,6 +2,7 @@ package jail
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -64,6 +65,52 @@ func TestTeardown_RemovesBothOnEphemeralLeavesBothOnKept(t *testing.T) {
 			t.Fatalf("kept teardown must NOT remove the tool or sidecar (leave both behind); got podman calls: %s", joinAll(r.calls))
 		}
 	})
+}
+
+// TestTeardown_SweepsResolvConfOnEphemeralKeepsItOnKept pins that the
+// run-attributable resolv.conf file (the tool's durable bind-mount source) is
+// swept on the EPHEMERAL path (whatever removes the pair also removes the file,
+// so it does not orphan under $TMPDIR) but LEFT durable on the KEPT path (so a
+// later `netcage start` can re-mount it). `netcage rm` performs the same sweep
+// via jail.RemoveResolvConf; this covers the Teardown half.
+func TestTeardown_SweepsResolvConfOnEphemeralKeepsItOnKept(t *testing.T) {
+	t.Run("ephemeral sweeps the resolv.conf", func(t *testing.T) {
+		c := teardownCfg(true)
+		path := resolvConfPathFor(c.RunID)
+		if err := writeResolvConfAt(path); err != nil {
+			t.Fatalf("seed resolv.conf: %v", err)
+		}
+		t.Cleanup(func() { os.Remove(path) })
+		if err := Teardown(context.Background(), &recordRunner{}, c); err != nil {
+			t.Fatalf("Teardown (ephemeral): %v", err)
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("ephemeral teardown must remove the resolv.conf %s (got stat err %v); it would otherwise orphan", path, err)
+		}
+	})
+
+	t.Run("kept leaves the resolv.conf durable", func(t *testing.T) {
+		c := teardownCfg(false)
+		path := resolvConfPathFor(c.RunID)
+		if err := writeResolvConfAt(path); err != nil {
+			t.Fatalf("seed resolv.conf: %v", err)
+		}
+		t.Cleanup(func() { os.Remove(path) })
+		if err := Teardown(context.Background(), &recordRunner{}, c); err != nil {
+			t.Fatalf("Teardown (kept): %v", err)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("kept teardown must LEAVE the resolv.conf %s durable (so netcage start can re-mount it); got stat err %v", path, err)
+		}
+	})
+}
+
+// TestRemoveResolvConf_IsIdempotent pins that RemoveResolvConf is a safe no-op on
+// a missing file and an empty run id, so it can be called on every exit path and
+// by `netcage rm` without guarding.
+func TestRemoveResolvConf_IsIdempotent(t *testing.T) {
+	RemoveResolvConf("")                   // empty run id: no-op, must not panic
+	RemoveResolvConf("no-such-run-id-xyz") // missing file: no-op
 }
 
 func joinAll(calls [][]string) string {
