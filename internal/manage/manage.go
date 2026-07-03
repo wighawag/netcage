@@ -1,8 +1,8 @@
 // Package manage implements netcage's pass-through management verbs
-// (ps/logs/inspect/exec/stop/rm/images) as THIN wrappers over podman, SCOPED to
-// netcage's own containers via the netcage.managed label (ADR-0009). A user
-// manages netcage's containers with podman vocabulary without ever seeing (or
-// acting on) unrelated ones.
+// (ps/logs/inspect/exec/stop/rm/images/commit) as THIN wrappers over podman,
+// SCOPED to netcage's own containers via the netcage.managed label (ADR-0009). A
+// user manages netcage's containers with podman vocabulary without ever seeing
+// (or acting on) unrelated ones.
 //
 // These verbs are inspection/lifecycle ONLY: they never stand up or tear down a
 // jail (that is `run` / `netcage start`) and they never touch a running jail's
@@ -16,7 +16,10 @@
 //   - `rm` removes the WHOLE kept pair (the sidecar with --depend, which
 //     cascades to its `--network container:` dependent tool), leaving no
 //     orphaned sidecar (see
-//     work/notes/findings/podman-network-container-dependency-lifecycle.md).
+//     work/notes/findings/podman-network-container-dependency-lifecycle.md);
+//   - `commit` is a PURE filesystem->image snapshot of the TOOL container: it
+//     never starts the container or touches the netns/firewall/DNS, so it is the
+//     one management verb that is inherently jail-neutral (no revive/verify).
 //
 // The verb argv builders are exposed (and the orchestration goes through a
 // jail.Runner) so the wiring is unit-testable without executing podman, mirroring
@@ -209,6 +212,156 @@ func ExecArgs(flags ExecFlags, name string, cmd []string) []string {
 	return append(args, cmd...)
 }
 
+// CommitFlags is the CURATED, network/isolation-IRRELEVANT subset of podman's
+// `commit` flags netcage honours. Unlike run's ADR-0010 checklist (which governs
+// flags on the JAILED CONTAINER's netns/caps/ports/DNS/lifecycle), commit writes
+// an IMAGE, not the running container: it never starts the container, never
+// touches the netns/firewall/DNS, and cannot open a leak by construction. These
+// flags only affect the produced image's manifest/metadata/config (-m/-a/-c/-f)
+// or a momentary pause during the snapshot (--pause), or output verbosity (-q).
+// `-c`/`--change` bakes IMAGE config (CMD/ENTRYPOINT/ENV/EXPOSE/...) that takes
+// effect only on a FUTURE `netcage run`, which STILL passes through netcage's own
+// run allow-list, so the run-time jail is unchanged by what commit bakes. Every
+// other flag is REFUSED (fail-closed on the unknown, like `run`/`exec`). Exposed
+// (with CommitArgs + ParseCommitArgs) so the flag parse + argv wiring is
+// unit-testable without executing podman, like the other verb argv builders.
+type CommitFlags struct {
+	Message  string   // -m / --message <text>
+	Author   string   // -a / --author <name>
+	Change   []string // -c / --change <instruction> (repeatable)
+	Format   string   // -f / --format <oci|docker>
+	Pause    bool     // --pause[=bool] (podman default is true)
+	PauseSet bool     // whether --pause was given explicitly (so the argv emits it)
+	Quiet    bool     // -q / --quiet
+}
+
+// commitAcceptedFlags is the human-readable accepted-flag list an unknown-flag
+// refusal names, so the message tells the user exactly what `netcage commit`
+// takes (mirrors `run`/`exec`'s fail-closed-on-the-unknown message).
+const commitAcceptedFlags = "-m/--message <text>, -a/--author <name>, -c/--change <instr>, -f/--format <oci|docker>, --pause[=bool], -q/--quiet"
+
+// ParseCommitArgs separates the CURATED commit flags from the two required
+// positionals - the netcage container NAME then the new IMAGE-REF - so a podman
+// user can write `netcage commit -m "msg" -a me <c> my-image:tag`. Flags may be
+// interleaved with the positionals (podman accepts flags before OR between them);
+// the FIRST non-flag token is the container name and the SECOND is the image-ref.
+// An UNKNOWN flag is REFUSED (fail-closed), naming the accepted flags. `--pause`
+// is a boolean with podman's `--pause[=bool]` inline-negation form; the metadata
+// flags take a value (inline `--flag=value` or the next arg).
+func ParseCommitArgs(args []string) (flags CommitFlags, name string, imageRef string, err error) {
+	var positionals []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			// Explicit end-of-flags: the rest are positionals.
+			positionals = append(positionals, args[i+1:]...)
+			break
+		}
+		if len(a) == 0 || a[0] != '-' || a == "-" {
+			positionals = append(positionals, a)
+			continue
+		}
+		// Split an inline --flag=value so the flag case can consume it directly.
+		flag, inlineVal, hasInline := a, "", false
+		if eq := strings.IndexByte(a, '='); eq >= 0 && strings.HasPrefix(a, "--") {
+			flag, inlineVal, hasInline = a[:eq], a[eq+1:], true
+		}
+		takeValue := func(fn string) (string, error) {
+			if hasInline {
+				return inlineVal, nil
+			}
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("commit flag %s needs a value", fn)
+			}
+			i++
+			return args[i], nil
+		}
+		switch flag {
+		case "-m", "--message":
+			if flags.Message, err = takeValue(flag); err != nil {
+				return CommitFlags{}, "", "", err
+			}
+		case "-a", "--author":
+			if flags.Author, err = takeValue(flag); err != nil {
+				return CommitFlags{}, "", "", err
+			}
+		case "-c", "--change":
+			v, verr := takeValue(flag)
+			if verr != nil {
+				return CommitFlags{}, "", "", verr
+			}
+			flags.Change = append(flags.Change, v)
+		case "-f", "--format":
+			if flags.Format, err = takeValue(flag); err != nil {
+				return CommitFlags{}, "", "", err
+			}
+		case "--pause":
+			// Boolean with podman's `--pause[=bool]`: bare means true, `--pause=false`
+			// turns off the default snapshot pause. PauseSet records that it was given so
+			// CommitArgs only emits it when the user chose it (podman defaults to pause).
+			flags.PauseSet = true
+			if hasInline {
+				flags.Pause = inlineVal == "true" || inlineVal == "1"
+			} else {
+				flags.Pause = true
+			}
+		case "-q", "--quiet":
+			flags.Quiet = true
+		default:
+			return CommitFlags{}, "", "", fmt.Errorf("unknown commit flag %q (netcage commit accepts %s); refusing it, like a jail-breaching flag", a, commitAcceptedFlags)
+		}
+	}
+	if len(positionals) < 1 {
+		return CommitFlags{}, "", "", fmt.Errorf("commit requires a netcage container name")
+	}
+	if len(positionals) < 2 {
+		return CommitFlags{}, "", "", fmt.Errorf("commit requires an image-ref to write (the new image name), e.g. `netcage commit %s my-image:tag`", positionals[0])
+	}
+	if len(positionals) > 2 {
+		return CommitFlags{}, "", "", fmt.Errorf("commit takes exactly a container name and an image-ref; got extra positionals %v", positionals[2:])
+	}
+	return flags, positionals[0], positionals[1], nil
+}
+
+// CommitArgs builds `podman commit [curated flags] <tool> <image-ref>`: snapshot
+// the TOOL container's FILESYSTEM into a new image. The curated metadata flags
+// (all image-side, never touching the container's network/netns) are emitted
+// BEFORE the container name, in a canonical order, then the tool, then the
+// image-ref. There is NO --network and NO container start here BY DESIGN: commit
+// is a pure filesystem->image snapshot, the one management verb that is inherently
+// jail-neutral - so it deliberately needs no sidecar-revive / firewall-verify (see
+// Run's commit case). A later reader must NOT add a firewall check here: there is
+// no jail to restore because nothing runs.
+func CommitArgs(flags CommitFlags, toolName, imageRef string) []string {
+	args := []string{"commit"}
+	if flags.Message != "" {
+		args = append(args, "-m", flags.Message)
+	}
+	if flags.Author != "" {
+		args = append(args, "-a", flags.Author)
+	}
+	for _, c := range flags.Change {
+		args = append(args, "-c", c)
+	}
+	if flags.Format != "" {
+		args = append(args, "-f", flags.Format)
+	}
+	if flags.PauseSet {
+		// Only emit --pause when the user chose it (podman defaults to pausing); use
+		// the inline `--pause=false` form so an explicit OFF is preserved.
+		if flags.Pause {
+			args = append(args, "--pause")
+		} else {
+			args = append(args, "--pause=false")
+		}
+	}
+	if flags.Quiet {
+		args = append(args, "-q")
+	}
+	args = append(args, toolName, imageRef)
+	return args
+}
+
 // RmPairArgs builds `podman rm -f --depend <sidecar>`: remove the sidecar, which
 // CASCADES to its `--network container:` dependent tool (the only way to drop the
 // sidecar; podman refuses to remove it while the tool exists). So removing the
@@ -263,6 +416,9 @@ type IO struct {
 //   - rm: guard the named container, then remove the WHOLE pair by its SIDECAR
 //     name (rm -f --depend cascades to the tool), so no orphaned sidecar is left
 //     even when the user names the tool.
+//   - commit: guard the named container, REFUSE a sidecar (commit takes the
+//     tool), resolve the run's TOOL, and `podman commit` its filesystem to a new
+//     image. Snapshot-only: it never starts or networks the container.
 func Run(ctx context.Context, r jail.Runner, verb string, args []string, out IO) error {
 	switch verb {
 	case "ps":
@@ -280,6 +436,8 @@ func Run(ctx context.Context, r jail.Runner, verb string, args []string, out IO)
 		return stream(ctx, r, namedVerbArgs(verb, name), out)
 	case "exec":
 		return runExec(ctx, r, args, out)
+	case "commit":
+		return runCommit(ctx, r, args, out)
 	case "rm":
 		name, _, err := requireName(verb, args)
 		if err != nil {
@@ -355,6 +513,40 @@ func runExec(ctx context.Context, r jail.Runner, args []string, out IO) error {
 	return stream(ctx, r, execArgs, out)
 }
 
+// runCommit is the jail-NEUTRAL, podman-faithful `netcage commit`: it parses the
+// curated commit flags + the two required positionals (the container NAME then
+// the new IMAGE-REF), GUARDS that the named container is netcage-managed, REFUSES
+// a sidecar (commit takes the TOOL, like `netcage start`), resolves the run's
+// TOOL container, and runs `podman commit [flags] <tool> <image-ref>` against it.
+//
+// Forced-egress invariant (why there is NO firewall/jail-health check here):
+// commit is a PURE filesystem->image snapshot. It does NOT start the container,
+// touch the netns/firewall/DNS, or give any container a working un-jailed network
+// - it cannot open a leak by construction. So, unlike `run`/`start`/`exec`, it
+// needs NO sidecar-revive / firewall-verify: there is no jail to restore because
+// nothing runs. It is the one management verb that is inherently jail-neutral.
+// Do NOT add a firewall check here "for consistency" - it would be meaningless.
+// It also works on a STOPPED kept container (the exploratory-machine path: run
+// kept -> play -> quit -> commit); podman commit handles a stopped container
+// as-is, so commit deliberately does not require the tool to be running.
+func runCommit(ctx context.Context, r jail.Runner, args []string, out IO) error {
+	flags, name, imageRef, err := ParseCommitArgs(args)
+	if err != nil {
+		return err
+	}
+	m, err := guardManaged(ctx, r, name)
+	if err != nil {
+		return err
+	}
+	// Commit the TOOL, never the sidecar: the tool holds the played-with filesystem;
+	// the sidecar is just jail plumbing (tun2socks + firewall + DNS). If the user
+	// named the sidecar, REFUSE and point at the tool (mirrors `netcage start`).
+	if m.role == jail.RoleSidecar {
+		return fmt.Errorf("%q is a netcage sidecar (jail plumbing), not a tool container; `netcage commit` snapshots the TOOL container (its played-with filesystem) - name the tool %q instead", name, toolNameFor(m.runID))
+	}
+	return stream(ctx, r, CommitArgs(flags, toolNameFor(m.runID), imageRef), out)
+}
+
 // requireJailHealthy is the exec jail-health guard: it REFUSES exec unless the
 // container's forced-egress jail is fully UP, so a plain `podman exec` never runs
 // before the jail is healthy. It checks BOTH:
@@ -421,6 +613,15 @@ func guardManaged(ctx context.Context, r jail.Runner, name string) (managed, err
 // sidecar because removing it (with --depend) cascades to the tool.
 func sidecarNameFor(runID string) string {
 	return "netcage-run-" + runID + "-sidecar"
+}
+
+// toolNameFor rebuilds the run-attributable TOOL container name from a run id,
+// matching jail's naming convention (netcage-run-<id>-tool). commit resolves the
+// run's tool from the run id (regardless of whether the user named the tool or
+// something else managed by the run) so it always snapshots the played-with tool
+// filesystem, never the sidecar.
+func toolNameFor(runID string) string {
+	return "netcage-run-" + runID + "-tool"
 }
 
 // stream runs a podman argv through the runner, teeing its stdout/stderr live to

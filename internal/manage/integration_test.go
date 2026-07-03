@@ -141,6 +141,102 @@ func waitToolRunning(t *testing.T, name string) {
 	t.Fatalf("container %s did not reach Running within the timeout", name)
 }
 
+// removeImage removes a committed image even on failure, so a commit test cannot
+// orphan an image on the host (podman images are host-global state).
+func removeImage(ref string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = exec.CommandContext(ctx, "podman", "rmi", "-f", ref).Run()
+}
+
+// imageExists reports whether an image ref is present locally (podman image
+// exists <ref>).
+func imageExists(t *testing.T, ref string) bool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, "podman", "image", "exists", ref).Run() == nil
+}
+
+// TestManageCommit_SnapshotsKeptToolToImage is the podman-gated proof for the
+// commit verb: a KEPT run leaves a labelled tool + sidecar (stopped at rest);
+// `netcage commit <tool> <image-ref>` snapshots the STOPPED tool's filesystem
+// into a new image and the image exists afterwards. This is the exploratory-
+// machine path (run kept -> quit -> commit) and proves commit is snapshot-only:
+// it never starts the container or touches the jail (the pair stays stopped).
+// It also proves the sidecar refusal: committing the SIDECAR is refused with a
+// message pointing at the tool, and no image is written.
+//
+// Shared-write isolation (podman is host-global state): the kept run DELIBERATELY
+// leaves the pair AND commit produces a new IMAGE, so a unique run-id names the
+// pair AND a unique image tag names the image, and t.Cleanup removes BOTH the
+// pair (`podman rm -f --depend`) AND the image (`podman rmi -f`) even on failure,
+// so the test cannot orphan a container or an image or collide with a concurrent
+// run.
+func TestManageCommit_SnapshotsKeptToolToImage(t *testing.T) {
+	requirePodman(t)
+
+	runID := "commit" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", "")
+	imageRef := "localhost/netcage-commit-test:" + runID
+	// Register cleanup FIRST so any failure below still removes both the leftover
+	// pair AND the committed image.
+	t.Cleanup(func() { forceRemovePair(runID) })
+	t.Cleanup(func() { removeImage(imageRef) })
+
+	cfg := keptPairCfg(t, runID) // tool runs `true`, so the pair rests STOPPED
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	if _, err := jail.Run(ctx, jail.ExecRunner{}, cfg); err != nil {
+		t.Fatalf("jail.Run (kept): %v", err)
+	}
+	if left := residueFor(t, runID); len(left) != 2 {
+		t.Fatalf("kept run must leave the tool + sidecar; got %d: %v", len(left), left)
+	}
+
+	toolName := "netcage-run-" + runID + "-tool"
+	sidecarName := "netcage-run-" + runID + "-sidecar"
+
+	// --- Committing the SIDECAR is REFUSED (commit takes the TOOL). ---
+	var refuseOut bytes.Buffer
+	err := manage.Run(ctx, jail.ExecRunner{}, "commit",
+		[]string{sidecarName, imageRef + "-sidecar"},
+		manage.IO{Stdout: &refuseOut, Stderr: &refuseOut})
+	if err == nil {
+		t.Fatalf("committing the netcage SIDECAR must be REFUSED; output:\n%s", refuseOut.String())
+	}
+	if !strings.Contains(err.Error(), "tool") {
+		t.Fatalf("the sidecar refusal must direct the user to the TOOL container; got: %v", err)
+	}
+	if imageExists(t, imageRef+"-sidecar") {
+		t.Cleanup(func() { removeImage(imageRef + "-sidecar") })
+		t.Fatalf("a refused sidecar commit must NOT write an image")
+	}
+
+	// --- Committing the (stopped) TOOL snapshots its filesystem to the image. ---
+	// `-m`/`--message` requires the docker image format (podman's default OCI format
+	// has no message field), so pair it with `-f docker` - which also exercises the
+	// -f flag pass-through end to end.
+	var commitOut bytes.Buffer
+	if err := manage.Run(ctx, jail.ExecRunner{}, "commit",
+		[]string{"-m", "netcage commit integration snapshot", "-f", "docker", toolName, imageRef},
+		manage.IO{Stdout: &commitOut, Stderr: &commitOut}); err != nil {
+		t.Fatalf("netcage commit %s %s: %v\noutput:\n%s", toolName, imageRef, err, commitOut.String())
+	}
+	if !imageExists(t, imageRef) {
+		t.Fatalf("netcage commit must produce the image %s; it does not exist\noutput:\n%s", imageRef, commitOut.String())
+	}
+
+	// Snapshot-only: the pair must STILL be present and the tool must NOT have been
+	// started by commit (a kept pair at rest stays stopped through a commit).
+	if left := residueFor(t, runID); len(left) != 2 {
+		t.Fatalf("commit must leave the kept pair intact (snapshot-only); got %d: %v", len(left), left)
+	}
+	state, _ := exec.CommandContext(ctx, "podman", "inspect", "--format", "{{ .State.Running }}", toolName).CombinedOutput()
+	if strings.TrimSpace(string(state)) == "true" {
+		t.Fatalf("commit must NOT start the tool container (it is a filesystem->image snapshot); tool is running")
+	}
+}
+
 // TestManageExec_PodmanFaithfulFlagsIntoHealthyJail is the podman-gated proof for
 // the exec fidelity upgrade: with a RUNNING jailed pair, `netcage exec -w <dir>
 // -e KEY=VAL <tool> sh -c ...` runs the command in the given cwd with the passed

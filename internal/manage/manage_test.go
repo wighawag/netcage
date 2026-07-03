@@ -416,6 +416,215 @@ func TestRun_ExecRefusesWhenJailNotHealthy(t *testing.T) {
 	}
 }
 
+// TestParseCommitArgs_SeparatesCuratedFlagsFromNameAndImageRef pins the podman-
+// faithful parse: the curated commit metadata flags are parsed in ANY order
+// interleaved with the two required positionals (the netcage container NAME then
+// the new IMAGE-REF), value-taking flags consume their value, and boolean flags
+// (`--pause`/`-q`) stand alone. A podman user writes `netcage commit -m "msg" -a
+// me <c> my-image:tag`.
+func TestParseCommitArgs_SeparatesCuratedFlagsFromNameAndImageRef(t *testing.T) {
+	flags, name, imageRef, err := manage.ParseCommitArgs([]string{
+		"-m", "played with apt", "-a", "me", "-c", "CMD=/bin/bash", "-c", "ENV=X=1",
+		"-f", "docker", "--pause", "-q",
+		"netcage-run-abc-tool", "my-image:tag",
+	})
+	if err != nil {
+		t.Fatalf("parse of a valid commit invocation: %v", err)
+	}
+	if flags.Message != "played with apt" {
+		t.Fatalf("-m must set Message; got %q", flags.Message)
+	}
+	if flags.Author != "me" {
+		t.Fatalf("-a must set Author; got %q", flags.Author)
+	}
+	if strings.Join(flags.Change, ",") != "CMD=/bin/bash,ENV=X=1" {
+		t.Fatalf("-c must be repeatable and ordered; got %v", flags.Change)
+	}
+	if flags.Format != "docker" {
+		t.Fatalf("-f must set Format; got %q", flags.Format)
+	}
+	if !flags.Pause {
+		t.Fatalf("--pause must set Pause; got %+v", flags)
+	}
+	if !flags.Quiet {
+		t.Fatalf("-q must set Quiet; got %+v", flags)
+	}
+	if name != "netcage-run-abc-tool" {
+		t.Fatalf("the first non-flag token must be the container name; got %q", name)
+	}
+	if imageRef != "my-image:tag" {
+		t.Fatalf("the second non-flag token must be the image-ref; got %q", imageRef)
+	}
+}
+
+// TestParseCommitArgs_NegatablePause pins podman's `--pause=false` (and
+// `--pause=true`) inline form: commit's default is to pause during the snapshot,
+// so a user must be able to turn it OFF. --no-pause is NOT a podman commit
+// spelling; only the boolean `--pause[=bool]` is.
+func TestParseCommitArgs_NegatablePause(t *testing.T) {
+	flags, _, _, err := manage.ParseCommitArgs([]string{"--pause=false", "netcage-run-abc-tool", "img:tag"})
+	if err != nil {
+		t.Fatalf("parse of --pause=false: %v", err)
+	}
+	if flags.Pause {
+		t.Fatalf("--pause=false must clear Pause; got %+v", flags)
+	}
+	if !flags.PauseSet {
+		t.Fatalf("--pause=false must record that pause was explicitly SET (so the argv emits it); got %+v", flags)
+	}
+}
+
+// TestParseCommitArgs_RefusesUnknownFlagFailClosed pins the fail-closed-on-the-
+// unknown behaviour (like `run`/`exec`): a commit flag netcage has NOT vetted is
+// REFUSED, and the message names the accepted flags so the user knows the curated
+// surface.
+func TestParseCommitArgs_RefusesUnknownFlagFailClosed(t *testing.T) {
+	_, _, _, err := manage.ParseCommitArgs([]string{"--squash", "netcage-run-abc-tool", "img:tag"})
+	if err == nil {
+		t.Fatal("an unknown commit flag must be REFUSED (fail-closed on the unknown)")
+	}
+	if !strings.Contains(err.Error(), "--squash") {
+		t.Fatalf("the refusal must name the offending flag; got: %v", err)
+	}
+	for _, want := range []string{"-m", "-a", "-c", "-f", "--pause", "-q"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal must list the accepted flag %q; got: %v", want, err)
+		}
+	}
+}
+
+// TestParseCommitArgs_RequiresContainerAndImageRef pins that both positionals are
+// required: `netcage commit` with no args, or with only the container name (no
+// image-ref), is refused with a clear message (the image-ref is the new image
+// name to write).
+func TestParseCommitArgs_RequiresContainerAndImageRef(t *testing.T) {
+	if _, _, _, err := manage.ParseCommitArgs(nil); err == nil {
+		t.Fatal("commit with no container name must be refused")
+	}
+	if _, _, _, err := manage.ParseCommitArgs([]string{"netcage-run-abc-tool"}); err == nil {
+		t.Fatal("commit with a container but no image-ref must be refused")
+	}
+}
+
+// TestCommitArgs_SnapshotsTheToolToTheImage pins the argv the commit verb builds:
+// `podman commit [curated flags] <tool> <image-ref>`. The curated metadata flags
+// precede the tool name (podman's order), then the tool, then the image-ref. It
+// commits the TOOL container's FILESYSTEM to a new image; it must NEVER add any
+// network wiring (commit is a pure filesystem->image snapshot, inherently
+// jail-neutral).
+func TestCommitArgs_SnapshotsTheToolToTheImage(t *testing.T) {
+	got := manage.CommitArgs(manage.CommitFlags{
+		Message: "played", Author: "me", Change: []string{"CMD=/bin/bash"},
+		Format: "docker", Pause: true, PauseSet: true, Quiet: true,
+	}, "netcage-run-abc-tool", "my-image:tag")
+	joined := strings.Join(got, " ")
+	if got[0] != "commit" {
+		t.Fatalf("commit argv must start with the podman verb commit; got: %s", joined)
+	}
+	for _, want := range []string{"-m played", "-a me", "-c CMD=/bin/bash", "-f docker", "--pause", "-q"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("commit argv missing %q; got: %s", want, joined)
+		}
+	}
+	// The tool then the image-ref, in that order, at the end.
+	if !strings.Contains(joined, "netcage-run-abc-tool my-image:tag") {
+		t.Fatalf("commit argv must place the tool then the image-ref; got: %s", joined)
+	}
+	// Every flag must precede the container name (podman requires flags before it).
+	nameIdx := indexOf(got, "netcage-run-abc-tool")
+	for _, f := range []string{"-m", "-a", "-c", "-f", "--pause", "-q"} {
+		if idx := indexOf(got, f); idx == -1 || idx >= nameIdx {
+			t.Fatalf("flag %q must appear BEFORE the container name; got: %s", f, joined)
+		}
+	}
+	// Forced-egress / jail-neutral invariant: commit must NEVER wire a network (it
+	// is a filesystem->image snapshot, it never starts or networks the container).
+	if strings.Contains(joined, "--network") {
+		t.Fatalf("commit must NOT set --network (it is a pure filesystem->image snapshot); got: %s", joined)
+	}
+}
+
+// TestCommitArgs_OmitsUnsetFlags pins that a bare `netcage commit <c> <ref>`
+// (no metadata flags) builds a MINIMAL `podman commit <tool> <ref>` with no
+// stray flags, so podman's own defaults apply (default --pause included).
+func TestCommitArgs_OmitsUnsetFlags(t *testing.T) {
+	got := strings.Join(manage.CommitArgs(manage.CommitFlags{}, "netcage-run-abc-tool", "img:tag"), " ")
+	want := "commit netcage-run-abc-tool img:tag"
+	if got != want {
+		t.Fatalf("bare commit must be %q; got %q", want, got)
+	}
+}
+
+// TestRun_CommitResolvesToolAndSnapshotsIt proves the happy path end to end (no
+// podman): `netcage commit <tool> <image-ref>` GUARDS the named container is
+// netcage-managed, resolves the run's TOOL container by run-id, and runs `podman
+// commit <tool> <image-ref>` against it. Naming the tool commits THAT tool.
+func TestRun_CommitResolvesToolAndSnapshotsIt(t *testing.T) {
+	r := &recordRunner{labels: map[string]map[string]string{
+		"netcage-run-abc-tool": {
+			jail.LabelManaged: "true", jail.LabelRole: jail.RoleTool, jail.LabelRunID: "abc",
+		},
+	}}
+	if err := manage.Run(context.Background(), r, "commit",
+		[]string{"-m", "snap", "netcage-run-abc-tool", "my-image:tag"}, manage.IO{}); err != nil {
+		t.Fatalf("commit of a managed tool: %v", err)
+	}
+	joined := joinAll(r.calls)
+	if !strings.Contains(joined, "commit -m snap netcage-run-abc-tool my-image:tag") {
+		t.Fatalf("commit must snapshot the resolved tool to the image-ref; calls:\n%s", joined)
+	}
+	// Jail-neutral: commit must NEVER start the container or wire a network.
+	if strings.Contains(joined, "start ") || strings.Contains(joined, "--network") {
+		t.Fatalf("commit must NOT start or network the container (it is snapshot-only); calls:\n%s", joined)
+	}
+}
+
+// TestRun_CommitRefusesSidecar pins that naming the netcage SIDECAR (role=sidecar)
+// is REFUSED with a message directing the user to the TOOL container (commit takes
+// the tool, mirroring `netcage start`), and NO `podman commit` runs against it.
+func TestRun_CommitRefusesSidecar(t *testing.T) {
+	r := &recordRunner{labels: map[string]map[string]string{
+		"netcage-run-abc-sidecar": {
+			jail.LabelManaged: "true", jail.LabelRole: jail.RoleSidecar, jail.LabelRunID: "abc",
+		},
+	}}
+	err := manage.Run(context.Background(), r, "commit",
+		[]string{"netcage-run-abc-sidecar", "img:tag"}, manage.IO{})
+	if err == nil {
+		t.Fatal("commit of the netcage SIDECAR must be REFUSED (commit takes the tool)")
+	}
+	if !strings.Contains(err.Error(), "tool") {
+		t.Fatalf("the sidecar refusal must direct the user to the TOOL container; got: %v", err)
+	}
+	for _, c := range r.calls {
+		if len(c) > 0 && c[0] == "commit" {
+			t.Fatalf("a sidecar refusal must NOT issue `podman commit`; calls:\n%s", joinAll(r.calls))
+		}
+	}
+}
+
+// TestRun_CommitRefusesNonNetcageContainer pins the label guard for commit: a
+// container that does NOT carry the netcage.managed label is REFUSED before any
+// `podman commit` runs against it.
+func TestRun_CommitRefusesNonNetcageContainer(t *testing.T) {
+	r := &recordRunner{labels: map[string]map[string]string{
+		"some-random-container": {}, // exists but NOT netcage-managed
+	}}
+	err := manage.Run(context.Background(), r, "commit",
+		[]string{"some-random-container", "img:tag"}, manage.IO{})
+	if err == nil {
+		t.Fatal("commit of a non-netcage container must be REFUSED")
+	}
+	if !strings.Contains(err.Error(), "not a netcage-managed container") {
+		t.Fatalf("the refusal must name the reason; got: %v", err)
+	}
+	for _, c := range r.calls {
+		if len(c) > 0 && c[0] == "commit" {
+			t.Fatalf("a non-netcage refusal must NOT issue `podman commit`; calls:\n%s", joinAll(r.calls))
+		}
+	}
+}
+
 // TestRun_NamedVerbAcceptsManagedContainer proves the happy path: a managed
 // container passes the guard and the verb's podman argv runs against it.
 func TestRun_NamedVerbAcceptsManagedContainer(t *testing.T) {
