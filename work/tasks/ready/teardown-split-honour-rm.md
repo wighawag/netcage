@@ -70,6 +70,12 @@ this label to scope its verbs (it `blockedBy` this task).
       leaves both on kept), mirroring the existing jail tests; a podman-gated
       (`integration`) test that a kept run leaves both containers and an ephemeral
       run leaves none.
+- [ ] **Shared-write isolation (podman is host-global state):** the kept-run
+      integration test DELIBERATELY leaves containers behind (that is the feature),
+      so it MUST use unique run-id names AND `t.Cleanup`/`podman rm -f --depend`
+      the leftover pair even on failure, so the test cleans up after ITSELF (the
+      product leaves them; the test must not) and cannot orphan containers or
+      collide with a concurrent run.
 
 ## Blocked by
 

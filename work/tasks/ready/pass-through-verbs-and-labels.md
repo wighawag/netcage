@@ -59,6 +59,12 @@ teardown's remove-both.
       mirroring the existing arg-builder tests) and the non-netcage-container
       refusal; a podman-gated (`integration`) test that `ps` shows a kept
       container and `rm` removes the pair.
+- [ ] **Shared-write isolation (podman is host-global state):** the integration
+      test creates a kept container it then manages, so it MUST use unique run-id
+      names AND `t.Cleanup`/`podman rm -f --depend` any container it created even
+      on failure (the `rm`-removes-the-pair assertion is the happy path; cleanup
+      must also cover the FAILURE path), so it cannot orphan containers on the
+      host or collide with a concurrent run.
 
 ## Blocked by
 

@@ -121,6 +121,13 @@ as of tasking:
       existing `SidecarRunArgs`/`firewallScript` tests), and a podman-gated
       integration test (build tag `integration`) for the raw-bypass leak
       assertion.
+- [ ] **Shared-write isolation (podman is host-global state):** the raw-bypass
+      integration test creates containers OUTSIDE `jail.Run` (a raw `podman start`
+      does NOT run the deferred Teardown), so it MUST use unique run-id container
+      names AND guarantee cleanup via `t.Cleanup`/`podman rm -f --depend` of the
+      pair even on failure, so a failing test cannot orphan containers on the
+      host or collide with a concurrent run. Assert no `netcage-run-*` residue
+      from this test remains after it completes.
 
 ## Blocked by
 

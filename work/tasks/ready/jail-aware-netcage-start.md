@@ -66,6 +66,11 @@ that ALSO restores DNS; a raw `podman start` (no DNS restore) stays fail-closed
       tests; a podman-gated (`integration`) test that a kept container survives a
       run -> `netcage start` cycle with state intact AND passes the restarted-jail
       leak assertion.
+- [ ] **Shared-write isolation (podman is host-global state):** the run->start
+      integration test deliberately keeps a container across the cycle, so it MUST
+      use unique run-id names AND `t.Cleanup`/`podman rm -f --depend` the pair even
+      on failure, so a failing test cannot orphan containers on the host or
+      collide with a concurrent run.
 
 ## Blocked by
 
