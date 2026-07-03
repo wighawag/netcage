@@ -119,6 +119,41 @@ Use a TWO-LAYER guard - do NOT rely on `EXTRA_COMMANDS` alone for fail-closed:
 Bottom line: `EXTRA_COMMANDS` gives self-healing on restart (closing the LAN/UDP
 leak on the happy path); the fail-LOUD guarantee comes from netcage's post-start
 firewall VERIFICATION on the run/start paths, NOT from `EXTRA_COMMANDS` aborting.
+
+## DROP-first ordering bounds the residual on a mid-script failure (spiked)
+
+On the ONE unguarded path (a raw `podman start` outside netcage, where netcage's
+verification layer does not run), a mid-script firewall FAILURE leaves a partial
+chain. The ORDER of the baked rules decides whether that partial chain is more
+open or more closed. Spiked 2026-07-03, injecting a failing rule mid-script:
+
+| Ordering | LAN gw (192.168.1.1:53) on partial apply | Public (proxied) |
+| --- | --- | --- |
+| APPEND-style (RFC1918 drops LAST, current shape) | REACHED (LEAK) | reached |
+| DROP-FIRST (broad DROPs before the narrow trailing ACCEPT) | DROPPED | reached |
+
+So ordering the baked firewall so its broad DROPs (all-egress-UDP drop, the
+RFC1918/link-local drops, the reachback drop) come BEFORE the narrow trailing
+ACCEPTs means a mid-script failure leaves MORE dropped, not more open. It bounds
+the raw-bypass residual with ZERO image change - just a rule-order change in the
+script netcage already generates.
+
+Happy-path (full success) is UNAFFECTED - tested end-to-end: public egress =
+proxy exit IP, LAN dropped, DNS proxy-side. The ONE ordering constraint the spike
+surfaced: the proxy-port reachback ACCEPT (and every split-tunnel direct ACCEPT)
+MUST precede the `169.254.0.0/16` link-local DROP and the RFC1918 drops
+respectively - otherwise the sidecar's own dial to the pasta-mapped proxy
+(`169.254.1.1:1080`) or an allowlisted direct is caught by a broad drop. The
+current `writeSplitTunnelRules` already emits direct-ACCEPTs before the RFC1918
+drops; DROP-first keeps that invariant and adds it for the proxy-port ACCEPT vs
+the link-local drop.
+
+This is DEFENSE-IN-DEPTH on the out-of-contract bypass path, NOT the primary
+guarantee (that is netcage's verification layer). It does not make a raw bypass
+GUARANTEED-closed on failure (only netcage's verify does), but it makes the
+failure mode fail SAFER for free. The GUARANTEED-closed-on-failure option (a
+rebuilt/wrapped sidecar image with the firewall in a custom entrypoint) is
+DECLINED - see ADR `no-custom-sidecar-image-keep-upstream-pin`.
 - The split-tunnel allowlist ACCEPT rules (ADR-0005) are part of the same
   firewall script and must move into `EXTRA_COMMANDS` together, so an allowlisted
   reusable container also re-applies its directs on restart.

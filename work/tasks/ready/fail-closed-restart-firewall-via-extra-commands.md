@@ -39,12 +39,27 @@ finding). So use a TWO-LAYER guard:
    'set -e; ...'` gets from its Go-side exit-code check. (`netcage start` runs the
    same verification - see the start task.)
 
-Order the baked firewall so its first effective actions are the broadest safe
-DROPs (still letting tun2socks reach the proxy + loopback), so a later-rule
-failure leaves MORE dropped, not more open, bounding the residual on the one
-unguarded path (a raw `podman start` outside netcage, which has no netcage
-process to verify - documented as out-of-contract; the supported reuse path is
-`netcage start`, which verifies).
+DROP-FIRST ordering (spiked - do this): order the baked firewall so its broad
+DROPs (all-egress-UDP drop, the RFC1918/link-local drops, the reachback drop)
+come BEFORE the narrow trailing ACCEPTs, so a mid-script failure on the one
+unguarded path (a raw `podman start` outside netcage, no netcage process to
+verify) leaves MORE dropped, not more open. Tested: append-style ordering LEAKED
+the LAN gateway on a partial apply; DROP-first DROPPED it. This bounds the
+residual with ZERO image change. ORDERING CONSTRAINT (also spiked): the
+proxy-port reachback ACCEPT and every split-tunnel direct ACCEPT MUST still
+precede the `169.254.0.0/16` link-local drop / the RFC1918 drops respectively,
+else the sidecar's own dial to the pasta-mapped proxy (`169.254.1.1:1080`) or an
+allowlisted direct is caught by a broad drop (the current `writeSplitTunnelRules`
+already emits direct-ACCEPTs before the RFC1918 drops; keep that, and add the
+same for the proxy-port ACCEPT vs the link-local drop). Full-success happy path
+is unaffected (tested end-to-end).
+
+We do NOT build/wrap a custom sidecar image to make the raw bypass
+guaranteed-closed on failure - that is DECLINED in ADR-0007 (it destroys the
+registry-verifiable digest pin, adds a build/publish pipeline, and fights
+ADR-0006). DROP-first + netcage's verification is the accepted approach; the
+supported reuse path is `netcage start` (which verifies), and a raw bypass is
+out-of-contract.
 
 Add a leak assertion to `verify` that proves the raw-bypass path is fail-closed:
 after a non-ephemeral run leaves a tool container, a raw `podman start <tool>`
@@ -52,18 +67,27 @@ after a non-ephemeral run leaves a tool container, a raw `podman start <tool>`
 (names must not resolve), while public TCP by-IP still exits via the proxy.
 
 This REFINES ADR-0006 (the sidecar still owns its firewall; it now owns it via a
-create-time env instead of a runtime exec, so it survives restart). Record the
-decision as a new ADR in `docs/adr/` (the durable WHY: fail-closed must survive
-podman's dependency auto-revive; `EXTRA_COMMANDS` is the native, image-pin-safe
-mechanism; the DNS forwarder stays a separate process so a raw bypass leaves DNS
-dead = fail-closed).
+create-time env instead of a runtime exec, so it survives restart). The decision
+is ALREADY recorded in two ADRs written during tasking: the fail-closed-on-
+restart mechanism (firewall via `EXTRA_COMMANDS` + netcage verification, DNS
+forwarder stays a separate process) refining ADR-0006, and ADR-0007
+(`no-custom-sidecar-image-keep-the-upstream-digest-pin`) recording that we do NOT
+rebuild the sidecar image and instead use DROP-first + verification. If the
+refining-ADR-0006 detail is not yet its own ADR file when you build, write it;
+otherwise ensure the ADR set reflects what you actually implement.
 
 ## Acceptance criteria
 
 - [ ] The firewall is applied via the sidecar's `EXTRA_COMMANDS` env (set in the
-      sidecar run args), NOT a post-start `podman exec`; its content is the same
-      rule set as today (UDP drop, loopback-UDP accept, reachback narrowing,
-      RFC1918 drops, split-tunnel ACCEPTs).
+      sidecar run args), NOT a post-start `podman exec`; its rule set is today's
+      (UDP drop, loopback-UDP accept, reachback narrowing, RFC1918 drops,
+      split-tunnel ACCEPTs) re-ordered DROP-FIRST (broad DROPs before the narrow
+      trailing ACCEPTs), with the proxy-port and split-tunnel ACCEPTs still
+      before their corresponding broad drops.
+- [ ] A unit test asserts the DROP-first ORDER of the generated firewall script
+      (the broad drops precede the trailing narrow accepts; the proxy-port /
+      direct accepts precede the link-local / RFC1918 drops), so the ordering
+      that bounds the partial-apply residual cannot silently regress.
 - [ ] netcage's run path VERIFIES the firewall after the sidecar is up (an
       `iptables -S` probe of the exact expected rule set) and aborts the jail
       LOUDLY (fail-closed, teardown) if a rule is missing/partial - a
