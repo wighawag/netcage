@@ -23,9 +23,11 @@ import (
 	"github.com/wighawag/netcage/internal/socks5hfixture"
 )
 
-// TestMain builds the netcage-dns helper once (the in-netns DNS forwarder the
-// jail launches via nsenter) and points the jail at it via NETCAGE_DNS_BIN, so
-// the integration tests have the helper without a separate install step.
+// TestMain builds the netcage-dns helper once (the in-jail DNS forwarder the
+// sidecar execs, ADR-0006) and points the jail at it via NETCAGE_DNS_BIN, so the
+// integration tests have the helper without a separate install step. It MUST be
+// a STATIC build (CGO_ENABLED=0): the helper execs inside the musl-based sidecar
+// image, which cannot load a glibc-dynamic binary.
 func TestMain(m *testing.M) {
 	if _, err := exec.LookPath("podman"); err == nil {
 		dir, err := os.MkdirTemp("", "netcage-dns-bin")
@@ -33,6 +35,7 @@ func TestMain(m *testing.M) {
 			defer os.RemoveAll(dir)
 			bin := filepath.Join(dir, "netcage-dns")
 			build := exec.Command("go", "build", "-o", bin, "github.com/wighawag/netcage/cmd/netcage-dns")
+			build.Env = append(os.Environ(), "CGO_ENABLED=0")
 			if out, berr := build.CombinedOutput(); berr == nil {
 				os.Setenv("NETCAGE_DNS_BIN", bin)
 			} else {

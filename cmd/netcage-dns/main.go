@@ -1,9 +1,11 @@
-// Command netcage-dns is the in-netns DNS-to-SOCKS-TCP forwarder helper. The
-// jail launches it INSIDE the shared netns via nsenter so the wrapped tool's
-// resolv.conf (127.0.0.1:53) resolves names proxy-side over TCP, never via the
-// host resolver and never as egress UDP (ADR-0003). It dials the SOCKS proxy at
-// the address it is given (the pasta-mapped host-loopback address for a local
-// proxy, or the real host for a remote one).
+// Command netcage-dns is the in-jail DNS-to-SOCKS-TCP forwarder helper. The
+// jail mounts it into the redirector sidecar and launches it there via
+// `podman exec -d` (ADR-0006) so the wrapped tool's resolv.conf (127.0.0.1:53)
+// resolves names proxy-side over TCP, never via the host resolver and never as
+// egress UDP (ADR-0003). It dials the SOCKS proxy at the address it is given
+// (the pasta-mapped host-loopback address for a local proxy, or the real host
+// for a remote one). Release builds are STATIC (CGO_ENABLED=0) because the
+// sidecar image is musl-based and cannot exec a glibc-dynamic binary.
 package main
 
 import (

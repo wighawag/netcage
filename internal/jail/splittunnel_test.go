@@ -96,86 +96,87 @@ func TestSidecarRunArgs_AllowlistExcludesEachNet(t *testing.T) {
 	}
 }
 
-// TestNftRuleset_AllowlistAcceptsBeforeDropsWithRFC1918Drops: with a non-empty
-// allowlist, nftRuleset emits `ip daddr <net> tcp dport <port> accept` for each
-// entry BEFORE the RFC1918-range drops (the narrowing half of the spike), and the
-// RFC1918 drops appear AFTER as defense-in-depth. A port-less entry accepts all
-// TCP ports to that net; UDP stays hard-dropped throughout.
-func TestNftRuleset_AllowlistAcceptsBeforeDropsWithRFC1918Drops(t *testing.T) {
+// TestFirewallScript_AllowlistAcceptsBeforeDropsWithRFC1918Drops: with a
+// non-empty allowlist, firewallScript emits an ACCEPT for each entry BEFORE the
+// RFC1918-range drops (the narrowing half of the spike), and the RFC1918 drops
+// appear AFTER as defense-in-depth. A port-less entry accepts all TCP ports to
+// that net; UDP stays hard-dropped throughout. (iptables syntax since ADR-0006:
+// the sidecar applies its own firewall.)
+func TestFirewallScript_AllowlistAcceptsBeforeDropsWithRFC1918Drops(t *testing.T) {
 	c := cfg()
 	c.ProxyOnHostLoopback = true
 	c.AllowDirect = []cli.DirectAllow{
 		allow(t, "192.168.1.150", 8080),
 		allow(t, "10.1.2.0/24", 0),
 	}
-	rs := c.nftRuleset("9050")
+	rs := c.firewallScript("9050")
 
-	acceptWithPort := "ip daddr 192.168.1.150/32 tcp dport 8080 accept"
-	acceptAllPorts := "ip daddr 10.1.2.0/24 meta l4proto tcp accept"
+	acceptWithPort := "iptables -A OUTPUT -p tcp -d 192.168.1.150/32 --dport 8080 -j ACCEPT"
+	acceptAllPorts := "iptables -A OUTPUT -p tcp -d 10.1.2.0/24 -j ACCEPT"
 	if !strings.Contains(rs, acceptWithPort) {
-		t.Fatalf("nft ruleset missing per-port accept %q\ngot:\n%s", acceptWithPort, rs)
+		t.Fatalf("firewall script missing per-port accept %q\ngot:\n%s", acceptWithPort, rs)
 	}
 	if !strings.Contains(rs, acceptAllPorts) {
-		t.Fatalf("nft ruleset missing all-TCP-ports accept %q\ngot:\n%s", acceptAllPorts, rs)
+		t.Fatalf("firewall script missing all-TCP-ports accept %q\ngot:\n%s", acceptAllPorts, rs)
 	}
 
 	// The RFC1918 + link-local drops must all be present (defense-in-depth).
 	rfc1918Drops := []string{
-		"ip daddr 10.0.0.0/8 drop",
-		"ip daddr 172.16.0.0/12 drop",
-		"ip daddr 192.168.0.0/16 drop",
-		"ip daddr 169.254.0.0/16 drop",
+		"iptables -A OUTPUT -d 10.0.0.0/8 -j DROP",
+		"iptables -A OUTPUT -d 172.16.0.0/12 -j DROP",
+		"iptables -A OUTPUT -d 192.168.0.0/16 -j DROP",
+		"iptables -A OUTPUT -d 169.254.0.0/16 -j DROP",
 	}
 	for _, want := range rfc1918Drops {
 		if !strings.Contains(rs, want) {
-			t.Fatalf("nft ruleset missing RFC1918/link-local drop %q\ngot:\n%s", want, rs)
+			t.Fatalf("firewall script missing RFC1918/link-local drop %q\ngot:\n%s", want, rs)
 		}
 	}
 
 	// Ordering: every accept must come BEFORE every RFC1918 drop, else a
 	// non-allowlisted host on the same range would shadow the allowed one.
-	lastAccept := strings.LastIndex(rs, "accept\n")
 	firstRFC1918Drop := len(rs)
 	for _, d := range rfc1918Drops {
 		if idx := strings.Index(rs, d); idx >= 0 && idx < firstRFC1918Drop {
 			firstRFC1918Drop = idx
 		}
 	}
-	acceptIdx := strings.Index(rs, acceptWithPort)
-	if acceptIdx < 0 || acceptIdx > firstRFC1918Drop {
-		t.Fatalf("allow accept must precede the RFC1918 drops (accept-before-drop); accept at %d, first drop at %d\n%s", acceptIdx, firstRFC1918Drop, rs)
+	for _, accept := range []string{acceptWithPort, acceptAllPorts} {
+		if idx := strings.Index(rs, accept); idx < 0 || idx > firstRFC1918Drop {
+			t.Fatalf("allow accept must precede the RFC1918 drops (accept-before-drop); accept at %d, first drop at %d\n%s", idx, firstRFC1918Drop, rs)
+		}
 	}
-	_ = lastAccept
 
 	// UDP hard-drop is untouched (ADR-0003): directs are TCP-only.
-	if !strings.Contains(rs, "meta l4proto udp drop") {
+	if !strings.Contains(rs, "iptables -A OUTPUT -p udp -j DROP") {
 		t.Fatalf("UDP must still be hard-dropped even with an allowlist\ngot:\n%s", rs)
 	}
 }
 
-// TestNftRuleset_EmptyAllowlistByteIdenticalToToday: an EMPTY allowlist must
-// produce a ruleset BYTE-IDENTICAL to today's (no accept rules, no RFC1918 drops,
+// TestFirewallScript_EmptyAllowlistByteIdenticalToToday: an EMPTY allowlist must
+// produce a script BYTE-IDENTICAL to today's (no accept rules, no RFC1918 drops,
 // which do not exist in the default jail). This is the off-by-default invariant;
-// the existing TestNftRuleset_* tests guard the content, this guards that an
+// the existing TestFirewallScript_* tests guard the content, this guards that an
 // empty allowlist adds literally nothing.
-func TestNftRuleset_EmptyAllowlistByteIdenticalToToday(t *testing.T) {
+func TestFirewallScript_EmptyAllowlistByteIdenticalToToday(t *testing.T) {
 	c := cfg()
 	c.ProxyOnHostLoopback = true
-	withEmpty := c.nftRuleset("9050")
+	withEmpty := c.firewallScript("9050")
 
 	c.AllowDirect = nil
-	withNil := c.nftRuleset("9050")
+	withNil := c.firewallScript("9050")
 	if withEmpty != withNil {
 		t.Fatalf("empty vs nil allowlist differ; both must be today's ruleset\nempty:\n%s\nnil:\n%s", withEmpty, withNil)
 	}
 
-	// No allowlist artifacts may appear.
+	// No allowlist artifacts may appear (the only ACCEPTs in the default jail are
+	// the loopback-DNS UDP accept and the reachback proxy-port accept).
 	for _, forbidden := range []string{
-		"ip daddr 10.0.0.0/8 drop",
-		"ip daddr 172.16.0.0/12 drop",
-		"ip daddr 192.168.0.0/16 drop",
-		"ip daddr 169.254.0.0/16 drop",
-		"meta l4proto tcp accept",
+		"iptables -A OUTPUT -d 10.0.0.0/8 -j DROP",
+		"iptables -A OUTPUT -d 172.16.0.0/12 -j DROP",
+		"iptables -A OUTPUT -d 192.168.0.0/16 -j DROP",
+		"iptables -A OUTPUT -d 169.254.0.0/16 -j DROP",
+		"iptables -A OUTPUT -p tcp -d 192.168",
 	} {
 		if strings.Contains(withEmpty, forbidden) {
 			t.Fatalf("empty allowlist must NOT add %q (it does not exist in today's jail)\ngot:\n%s", forbidden, withEmpty)

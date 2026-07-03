@@ -7,13 +7,14 @@ import (
 	"github.com/wighawag/netcage/internal/cli"
 )
 
-// TestInteractive_SameSidecarAndNftAsPlainRun pins the topology-IDENTITY
-// invariant at the pure-wiring boundary (no podman): the sidecar args and the nft
-// ruleset for an interactive-flagged config are BYTE-IDENTICAL to a plain run's
-// (interactivity must change ONLY the tool's -it/stdio, never the network jail).
-// The podman-gated integration test proves it stands up for real; this locks that
-// the ONLY difference in the whole jail wiring is the tool container's -it.
-func TestInteractive_SameSidecarAndNftAsPlainRun(t *testing.T) {
+// TestInteractive_SameSidecarAndFirewallAsPlainRun pins the topology-IDENTITY
+// invariant at the pure-wiring boundary (no podman): the sidecar args and the
+// firewall script for an interactive-flagged config are BYTE-IDENTICAL to a
+// plain run's (interactivity must change ONLY the tool's -it/stdio, never the
+// network jail). The podman-gated integration test proves it stands up for real;
+// this locks that the ONLY difference in the whole jail wiring is the tool
+// container's -it.
+func TestInteractive_SameSidecarAndFirewallAsPlainRun(t *testing.T) {
 	base := Config{
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: "9050"},
 		ProxyOnHostLoopback: true,
@@ -27,8 +28,8 @@ func TestInteractive_SameSidecarAndNftAsPlainRun(t *testing.T) {
 	if got, want := strings.Join(iact.SidecarRunArgs(), " "), strings.Join(base.SidecarRunArgs(), " "); got != want {
 		t.Fatalf("interactive sidecar args differ from plain run's; the forced-egress topology must be identical\ninteractive: %s\nplain:       %s", got, want)
 	}
-	if got, want := iact.nftRuleset("9050"), base.nftRuleset("9050"); got != want {
-		t.Fatalf("interactive nft ruleset differs from plain run's; UDP-drop / reachback-narrowing must be identical\ninteractive:\n%s\nplain:\n%s", got, want)
+	if got, want := iact.firewallScript("9050"), base.firewallScript("9050"); got != want {
+		t.Fatalf("interactive firewall script differs from plain run's; UDP-drop / reachback-narrowing must be identical\ninteractive:\n%s\nplain:\n%s", got, want)
 	}
 }
 
@@ -63,7 +64,7 @@ func TestToolRunArgs_InteractiveAddsIT(t *testing.T) {
 // passthrough, no capture), whereas the non-interactive spec leaves Stdin nil and
 // keeps the live-sink capture/tee path. This is the boundary a fake runner would
 // observe; asserting the spec directly keeps it podman-free (jail.Run's real
-// nft/nsenter steps need a host, the spec construction does not).
+// firewall/exec steps need a host, the spec construction does not).
 func TestToolRunSpec_InteractiveWiresStdinBypassesCaptureTee(t *testing.T) {
 	stdin := strings.NewReader("keystrokes")
 	var sink strings.Builder

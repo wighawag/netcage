@@ -19,8 +19,9 @@ import (
 
 // residueFor returns the run-attributable podman container names still present
 // for runID (the enumeration the teardown invariant asserts is empty). The
-// netns + nft ruleset are lifecycle-bound to the sidecar container, so once no
-// netcage-run-<id>-* container remains, neither does any netns/nft for the run.
+// netns + firewall + in-sidecar DNS forwarder are lifecycle-bound to the sidecar
+// container, so once no netcage-run-<id>-* container remains, nothing of the run
+// remains.
 func residueFor(t *testing.T, runID string) []string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -54,7 +55,7 @@ func newKilledFixtureCfg(t *testing.T, runID string, argv []string) jail.Config 
 }
 
 // TestTeardown_NormalExitLeavesNoResidue: a clean run leaves no run-attributable
-// container (and thus no netns/nft) behind.
+// container (and thus no netns/firewall) behind.
 func TestTeardown_NormalExitLeavesNoResidue(t *testing.T) {
 	requirePodman(t)
 	runID := "tdnormal" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", "")
@@ -72,7 +73,7 @@ func TestTeardown_NormalExitLeavesNoResidue(t *testing.T) {
 
 // TestTeardown_ErrorExitLeavesNoResidue: a run that errors mid-flight (here the
 // reachback diagnostic fails because the host-loopback proxy is down, AFTER the
-// sidecar/netns/nft are already up) still tears everything down and surfaces the
+// sidecar/netns/firewall are already up) still tears everything down and surfaces the
 // error.
 func TestTeardown_ErrorExitLeavesNoResidue(t *testing.T) {
 	requirePodman(t)
@@ -80,7 +81,7 @@ func TestTeardown_ErrorExitLeavesNoResidue(t *testing.T) {
 	// Bind a fixture to claim a port, then CLOSE it so the port is dead: the
 	// sidecar still starts (it does not connect at start), but the in-Run
 	// reachback check (story 14) fails -> a real Run error on a path AFTER the
-	// sidecar/netns/nft exist, exercising error-path teardown.
+	// sidecar/netns/firewall exist, exercising error-path teardown.
 	fx := socks5hfixture.New(socks5hfixture.Options{ExitIP: "127.0.0.2"})
 	if err := fx.Start("127.0.0.1:0"); err != nil {
 		t.Fatalf("fixture start: %v", err)
@@ -124,7 +125,7 @@ func TestTeardown_ContextCancelLeavesNoResidue(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		time.Sleep(6 * time.Second) // after the sidecar/nft/tool are up
+		time.Sleep(6 * time.Second) // after the sidecar/firewall/tool are up
 		cancel()
 	}()
 	_, err := jail.Run(ctx, jail.ExecRunner{}, cfg)

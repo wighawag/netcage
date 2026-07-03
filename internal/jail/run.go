@@ -29,16 +29,29 @@ var ErrReachback = errors.New("the proxy on the host's loopback is not reachable
 // Run stands up the forced-egress jail, runs the wrapped tool, and tears
 // everything down. It is the production path behind `netcage run`.
 //
-// Steps (Option A, shared netns):
-//  1. start the tun2socks sidecar (pasta + map-host-loopback for a loopback proxy)
-//  2. apply the nft ruleset in the shared netns (UDP drop + reachback narrowing)
-//  3. start the DNS-to-SOCKS-TCP forwarder in the netns and point resolv.conf at it
+// Steps (Option A, shared netns; every in-netns step goes through podman, never
+// host nsenter, ADR-0006):
+//  1. start the tun2socks sidecar (pasta + map-host-loopback for a loopback
+//     proxy), with the netcage-dns helper mounted in
+//  2. apply the firewall INSIDE the sidecar via podman exec (UDP drop +
+//     reachback narrowing)
+//  3. start the DNS-to-SOCKS-TCP forwarder INSIDE the sidecar via podman exec -d
+//     and point resolv.conf at it
 //  4. run the tool sharing the sidecar netns
-//  5. tear it all down (deferred, best-effort, idempotent)
+//  5. tear it all down (deferred, best-effort, idempotent; the firewall and the
+//     forwarder live in the sidecar container, so removing it removes them)
 func Run(ctx context.Context, r Runner, cfg Config) (Result, error) {
 	if cfg.RunID == "" {
 		cfg.RunID = fmt.Sprintf("%d", time.Now().UnixNano())
 	}
+
+	// Resolve the netcage-dns helper BEFORE starting anything: the sidecar mounts
+	// it (SidecarRunArgs), and failing early beats tearing down a half-built jail.
+	dnsBin, err := dnsHelperPath()
+	if err != nil {
+		return Result{}, err
+	}
+	cfg.dnsHelperPath = dnsBin
 
 	// Teardown is deferred immediately so any later failure (or a cancelled ctx)
 	// still cleans up. Teardown uses a FRESH context (not the run ctx) so it runs
@@ -57,32 +70,23 @@ func Run(ctx context.Context, r Runner, cfg Config) (Result, error) {
 		return Result{}, fmt.Errorf("start tun2socks sidecar: %w%s", err, stderrSuffix(serr))
 	}
 
-	pid, err := sidecarPID(ctx, r, cfg)
-	if err != nil {
-		return Result{}, fmt.Errorf("resolve sidecar pid: %w", err)
+	// 2. firewall INSIDE the sidecar (podman exec, ADR-0006): drop all egress UDP
+	// (ADR-0003) and narrow host-loopback reachback to exactly the proxy port. The
+	// tool->DNS hop is loopback-internal to the netns (127.0.0.1:53), so it needs
+	// no egress rule. The sidecar has CAP_NET_ADMIN and ships iptables.
+	if err := applyFirewall(ctx, r, cfg); err != nil {
+		return Result{}, fmt.Errorf("apply firewall in jail netns: %w", err)
 	}
 
-	// 2. nft ruleset in the shared netns: drop all egress UDP (ADR-0003) and
-	// narrow host-loopback reachback to exactly the proxy port. The tool->DNS hop
-	// is loopback-internal to the netns (127.0.0.1:53), so it needs no egress rule.
-	if err := applyNft(ctx, pid, cfg.nftRuleset(cfg.Proxy.Port)); err != nil {
-		return Result{}, fmt.Errorf("apply nft ruleset in jail netns: %w", err)
-	}
-
-	// 3. DNS-to-SOCKS-TCP forwarder INSIDE the shared netns (via nsenter), bound
-	// on 127.0.0.1:53 so the tool's resolv.conf (127.0.0.1) resolves proxy-side
-	// over TCP. It dials the proxy at the reachable address (the pasta map for a
+	// 3. DNS-to-SOCKS-TCP forwarder INSIDE the sidecar (podman exec -d), bound on
+	// 127.0.0.1:53 so the tool's resolv.conf (127.0.0.1) resolves proxy-side over
+	// TCP. It dials the proxy at the reachable address (the pasta map for a
 	// host-loopback proxy). DNS never egresses as UDP; the host resolver never
-	// sees the name (ADR-0003 + the dns-to-socks-bridge finding).
-	dnsProc, err := startNetnsDNS(ctx, pid, cfg)
-	if err != nil {
-		return Result{}, fmt.Errorf("start in-netns DNS forwarder: %w", err)
+	// sees the name (ADR-0003 + the dns-to-socks-bridge finding). It dies with the
+	// sidecar container at teardown; no host-side process to kill.
+	if err := startSidecarDNS(ctx, r, cfg); err != nil {
+		return Result{}, fmt.Errorf("start in-jail DNS forwarder: %w", err)
 	}
-	defer func() {
-		if dnsProc != nil && dnsProc.Process != nil {
-			_ = dnsProc.Process.Kill()
-		}
-	}()
 	cfg.dnsServer = "127.0.0.1:53"
 
 	// Mount a resolv.conf into the tool pointing at the in-netns forwarder.
@@ -123,7 +127,7 @@ func Run(ctx context.Context, r Runner, cfg Config) (Result, error) {
 	// In INTERACTIVE mode (`netcage run -it`) toolRunSpec instead requests RAW
 	// passthrough (stdin wired, no capture, no tee): podman's `-it` owns the
 	// container PTY, so the jailed shell behaves like a normal `podman run -it`.
-	// The network jail is IDENTICAL either way (same sidecar/netns/nft/forced
+	// The network jail is IDENTICAL either way (same sidecar/netns/firewall/forced
 	// egress/fail-closed above); only the tool's stdio wiring differs.
 	out, errOut, runErr := r.Run(ctx, cfg.toolRunSpec())
 	res := Result{ToolStdout: out, ToolStderr: errOut}
@@ -244,44 +248,33 @@ func stderrSuffix(stderr string) string {
 	return ""
 }
 
-// sidecarPID returns the host-side PID of the sidecar container (for nsenter).
-func sidecarPID(ctx context.Context, r Runner, cfg Config) (string, error) {
-	out, serr, err := runPodman(ctx, r, "inspect", "--format", "{{.State.Pid}}", cfg.sidecarName())
-	if err != nil {
-		return "", fmt.Errorf("%w%s", err, stderrSuffix(serr))
-	}
-	pid := strings.TrimSpace(out)
-	if pid == "" || pid == "0" {
-		return "", errors.New("sidecar has no pid (did it fail to start? check `podman logs`)")
-	}
-	return pid, nil
-}
-
-// applyNft pipes the ruleset into nft inside the shared netns via nsenter (the
-// rootless form proven by spike-pasta-loopback-reachback).
-func applyNft(ctx context.Context, pid, ruleset string) error {
-	cmd := exec.CommandContext(ctx, "nsenter", "-t", pid, "-n", "-U", "--preserve-credentials", "nft", "-f", "-")
-	cmd.Stdin = strings.NewReader(ruleset)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+// applyFirewall runs the firewall script INSIDE the sidecar container via
+// `podman exec` (ADR-0006). The sidecar has CAP_NET_ADMIN and its image ships
+// iptables, so it owns its own netns firewall; the host needs no nft/nsenter,
+// and the whole step goes through the Runner seam (podman only), so netcage can
+// drive a remote podman.
+func applyFirewall(ctx context.Context, r Runner, cfg Config) error {
+	if _, serr, err := runPodman(ctx, r, "exec", cfg.sidecarName(),
+		"sh", "-c", cfg.firewallScript(cfg.Proxy.Port)); err != nil {
+		return fmt.Errorf("%w%s", err, stderrSuffix(serr))
 	}
 	return nil
 }
 
-// startNetnsDNS launches the netcage-dns forwarder inside the shared netns via
-// nsenter, bound on 127.0.0.1:53, dialing the proxy at the reachable address.
-func startNetnsDNS(ctx context.Context, pid string, cfg Config) (*exec.Cmd, error) {
-	bin, err := dnsHelperPath()
-	if err != nil {
-		return nil, err
-	}
+// startSidecarDNS launches the netcage-dns forwarder INSIDE the sidecar via
+// `podman exec -d` (ADR-0006), bound on 127.0.0.1:53 in the shared netns,
+// dialing the proxy at the reachable address. The helper binary was mounted into
+// the sidecar at sidecarDNSHelperPath by SidecarRunArgs. It is
+// container-lifecycle-bound: teardown's `podman rm -f` of the sidecar kills it,
+// so there is no host-side process to track.
+func startSidecarDNS(ctx context.Context, r Runner, cfg Config) error {
 	proxyAddr := cfg.Proxy.Address()
 	if cfg.ProxyOnHostLoopback {
 		proxyAddr = mappedHostLoopback + ":" + cfg.Proxy.Port
 	}
 	args := []string{
-		"-t", pid, "-n", "-U", "--preserve-credentials",
-		bin, "-listen", "127.0.0.1:53", "-proxy", proxyAddr,
+		"exec", "-d", cfg.sidecarName(),
+		sidecarDNSHelperPath, "-listen", "127.0.0.1:53", "-proxy", proxyAddr,
 	}
 	if cfg.DNSUpstream != "" {
 		args = append(args, "-upstream", cfg.DNSUpstream)
@@ -289,14 +282,15 @@ func startNetnsDNS(ctx context.Context, pid string, cfg Config) (*exec.Cmd, erro
 	if cfg.Proxy.Username != "" {
 		args = append(args, "-user", cfg.Proxy.Username, "-pass", cfg.Proxy.Password)
 	}
-	cmd := exec.CommandContext(ctx, "nsenter", args...)
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		return nil, err
+	if _, serr, err := runPodman(ctx, r, args...); err != nil {
+		// The most likely exec failure is a NON-STATIC helper binary: the sidecar
+		// image is musl-based, so a glibc-dynamic netcage-dns cannot exec there.
+		// Release/install.sh builds are static; a hand-built one must be too.
+		return fmt.Errorf("%w%s (is netcage-dns a static binary? build it with CGO_ENABLED=0; the sidecar image cannot exec a glibc-dynamic one)", err, stderrSuffix(serr))
 	}
-	// Give it a moment to bind.
+	// Give it a moment to bind before the tool starts resolving.
 	time.Sleep(300 * time.Millisecond)
-	return cmd, nil
+	return nil
 }
 
 // writeResolvConf writes a temp resolv.conf pointing at the in-netns forwarder
@@ -400,10 +394,10 @@ func checkReachback(ctx context.Context, r Runner, cfg Config) error {
 }
 
 // Teardown removes EVERY run-attributable resource the jail created: the tool
-// container and the sidecar container. The netns and the nft ruleset are
-// lifecycle-bound to the sidecar container (they live in its network namespace),
-// so removing the sidecar destroys them too; once no netcage-run-<id>-*
-// container remains, no netns/nft for the run remains either.
+// container and the sidecar container. The netns, the firewall rules, and the
+// in-sidecar DNS forwarder are lifecycle-bound to the sidecar container (they
+// live in its namespace/process tree), so removing the sidecar destroys them
+// too; once no netcage-run-<id>-* container remains, nothing of the run remains.
 //
 // It is the single teardown entry point wired to ALL exit paths (normal, error,
 // and ctx-cancel/SIGINT, via Run's deferred call on a fresh context). It is:
@@ -417,7 +411,7 @@ func checkReachback(ctx context.Context, r Runner, cfg Config) error {
 func Teardown(ctx context.Context, r Runner, cfg Config) error {
 	var errs []error
 	// Order: tool first (it shares/depends on the sidecar netns), then sidecar
-	// (which takes the netns + nft with it). -i (ignore) makes a missing container
+	// (which takes the netns + firewall + DNS forwarder with it). -i (ignore) makes a missing container
 	// a no-op, which is what gives idempotency.
 	for _, name := range []string{cfg.toolName(), cfg.sidecarName()} {
 		if _, serr, err := runPodman(ctx, r, "rm", "-f", "-i", name); err != nil {

@@ -1,4 +1,5 @@
-# goreleaser config for netcage: Linux-only (the jail needs Linux netns/nft),
+# goreleaser config for netcage: Linux-only binaries (the jail runs against a
+# Linux kernel; on macOS/Windows that is the Podman machine VM / WSL2),
 # static (CGO disabled) binaries covering amd64, arm64, and 32-bit ARM v7/v6 so
 # older Raspberry Pi models are covered (Pi 1 / Zero = armv6, Pi 2 / 3 32-bit =
 # armv7, Pi 3/4/5 64-bit = arm64).
@@ -34,10 +35,12 @@ builds:
       - "7" # Pi 2, Pi 3 (32-bit OS)
       - "6" # Pi 1, Pi Zero / Zero W
 
-  # The in-netns DNS-to-SOCKS-TCP forwarder helper. netcage launches it inside
-  # the jail's netns (ADR-0003); without it the jail cannot run, so it MUST ship
-  # alongside the netcage binary. netcage finds it as a sibling of its own
-  # executable, so the archive places both binaries side by side.
+  # The in-jail DNS-to-SOCKS-TCP forwarder helper. netcage mounts it into the
+  # redirector sidecar and execs it there (ADR-0003/0006); without it the jail
+  # cannot run, so it MUST ship alongside the netcage binary. netcage finds it as
+  # a sibling of its own executable, so the archive places both binaries side by
+  # side. CGO_ENABLED=0 is LOAD-BEARING here: the helper executes inside the
+  # musl-based sidecar image, which cannot load a glibc-dynamic binary.
   - id: netcage-dns
     main: ./cmd/netcage-dns
     binary: netcage-dns

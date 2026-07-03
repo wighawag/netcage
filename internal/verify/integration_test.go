@@ -23,9 +23,11 @@ import (
 	"github.com/wighawag/netcage/internal/verify"
 )
 
-// TestMain builds the netcage-dns helper once (the jail launches it in-netns)
-// and points the jail at it via NETCAGE_DNS_BIN, mirroring the jail package's
-// own integration TestMain so verify's DNS assertion has the helper.
+// TestMain builds the netcage-dns helper once (the sidecar execs it in-jail,
+// ADR-0006) and points the jail at it via NETCAGE_DNS_BIN, mirroring the jail
+// package's own integration TestMain so verify's DNS assertion has the helper.
+// It MUST be a STATIC build (CGO_ENABLED=0): the helper execs inside the
+// musl-based sidecar image, which cannot load a glibc-dynamic binary.
 func TestMain(m *testing.M) {
 	if _, err := exec.LookPath("podman"); err == nil {
 		dir, err := os.MkdirTemp("", "netcage-dns-bin")
@@ -33,6 +35,7 @@ func TestMain(m *testing.M) {
 			defer os.RemoveAll(dir)
 			bin := filepath.Join(dir, "netcage-dns")
 			build := exec.Command("go", "build", "-o", bin, "github.com/wighawag/netcage/cmd/netcage-dns")
+			build.Env = append(os.Environ(), "CGO_ENABLED=0")
 			if out, berr := build.CombinedOutput(); berr == nil {
 				os.Setenv("NETCAGE_DNS_BIN", bin)
 			} else {
@@ -413,7 +416,7 @@ const mappedHostLoopback = "169.254.1.1"
 
 // allowlist169 builds a split-tunnel allowlist that names the pasta-mapped
 // host-loopback address on the given port, so the run is SPLIT-TUNNEL ACTIVE
-// (SidecarRunArgs adds the excluded route, nftRuleset emits the accept + RFC1918
+// (SidecarRunArgs adds the excluded route, firewallScript emits the accept + RFC1918
 // drops). This is how verify proves the three core assertions still hold WITH an
 // allowlist active (story 8), deterministically and without a real LAN host.
 func allowlist169(port string) []cli.DirectAllow {
@@ -438,7 +441,7 @@ func allowlist169(port string) []cli.DirectAllow {
 // loopback (mappedHostLoopback), the one host-service address the jail netns can
 // reach deterministically without a real LAN host (see the task Decisions). The
 // genuine split-tunnel-accept-over-the-real-NIC proof (an RFC1918 peer reached
-// via the nft accept) lives in the jail package's
+// via the firewall accept) lives in the jail package's
 // TestJail_SplitTunnel_DirectReachableRestForcedThroughProxy; here the point is
 // that the COMPOSED report is green only when the directs work AND the jail is
 // still leak-tight outside the allowlist, proven end-to-end against real podman.

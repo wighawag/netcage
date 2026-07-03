@@ -14,10 +14,14 @@
 // Topology (Option A): a tun2socks sidecar container creates a TUN and routes
 // everything to it; the tool container joins the sidecar's netns via
 // `--network container:<sidecar>` so its egress hits the TUN and is forced
-// through the proxy. An nft ruleset in the shared netns drops all UDP egress and
-// narrows host-loopback reachback to exactly the proxy port. A DNS forwarder in
-// the netns resolves names via the proxy over TCP. Everything is labeled
-// run-attributably and torn down on exit.
+// through the proxy. A firewall (iptables, applied INSIDE the sidecar via
+// `podman exec`, ADR-0006) drops all UDP egress in the shared netns and narrows
+// host-loopback reachback to exactly the proxy port. A DNS forwarder (the
+// netcage-dns helper, mounted into the sidecar and exec'd there) resolves names
+// via the proxy over TCP. Everything is labeled run-attributably and torn down
+// on exit. Because every in-netns step goes through podman (never host nsenter),
+// the host needs no nft/nsenter binaries and netcage can drive a remote podman
+// (ADR-0006).
 package jail
 
 import (
@@ -39,8 +43,15 @@ import (
 
 // mappedHostLoopback is the dedicated link-local address pasta maps to host
 // loopback (spike-pasta-loopback-reachback). Chosen so it is not a real LAN host
-// and the nft narrowing rule's daddr is stable.
+// and the firewall narrowing rule's destination is stable.
 const mappedHostLoopback = "169.254.1.1"
+
+// sidecarDNSHelperPath is where the netcage-dns helper is mounted inside the
+// sidecar container (read-only) and exec'd from (ADR-0006: the forwarder runs
+// INSIDE the sidecar via `podman exec -d`, so the host needs no nsenter). The
+// helper must be a STATIC binary (the release builds are CGO_ENABLED=0): the
+// sidecar image is musl-based, so a glibc-dynamic helper fails to exec there.
+const sidecarDNSHelperPath = "/usr/local/bin/netcage-dns"
 
 // Config is a resolved jail run.
 type Config struct {
@@ -59,8 +70,8 @@ type Config struct {
 	// rules, no RFC1918 drops. A NON-EMPTY allowlist adds BOTH halves the spike
 	// proved are jointly required (each alone is insufficient): each net is added
 	// to the sidecar's TUN_EXCLUDED_ROUTES (SidecarRunArgs, the ENABLER) AND an
-	// `ip daddr <net> tcp dport <port> accept` nft rule before RFC1918-range drops
-	// (nftRuleset, the NARROWING). TCP-only; UDP stays hard-dropped (ADR-0003) even
+	// ACCEPT rule before RFC1918-range drops (firewallScript, the NARROWING).
+	// TCP-only; UDP stays hard-dropped (ADR-0003) even
 	// to an allowlisted host. See ADR-0005 + work/notes/findings/
 	// spike-split-tunnel-lan-allowlist.md. Populated from cli.Command.AllowDirect.
 	AllowDirect []cli.DirectAllow
@@ -88,7 +99,7 @@ type Config struct {
 	// -it`) so a human or agent can shell into the jail. It is opt-in and only for
 	// `netcage run -it`; the verify/leak-test probes leave it false so they keep
 	// the capture path. Interactive changes ONLY the stdin/stdout/TTY wiring, never
-	// the network jail (same sidecar + netns + nft + forced egress + fail-closed).
+	// the network jail (same sidecar + netns + firewall + forced egress + fail-closed).
 	Interactive bool
 
 	// ToolStdin is the reader wired to the interactive tool's stdin (os.Stdin for
@@ -106,6 +117,10 @@ type Config struct {
 	// dnsServer is set by Run once the in-netns forwarder is up (its presence
 	// signals the resolv.conf wiring is active).
 	dnsServer string
+	// dnsHelperPath is the HOST path of the netcage-dns helper binary, set by Run
+	// before the sidecar starts so SidecarRunArgs can mount it read-only at
+	// sidecarDNSHelperPath (ADR-0006).
+	dnsHelperPath string
 	// resolvConfPath is a host path to a resolv.conf (nameserver 127.0.0.1)
 	// mounted into the tool, set by Run.
 	resolvConfPath string
@@ -250,27 +265,34 @@ func (c Config) sidecarProxyURL() string {
 func (c Config) sidecarName() string { return "netcage-run-" + c.RunID + "-sidecar" }
 func (c Config) toolName() string    { return "netcage-run-" + c.RunID + "-tool" }
 
-// nftRuleset is the in-netns ruleset: drop all egress UDP except the local
+// firewallScript is the in-netns firewall: drop all egress UDP except the local
 // tool<->forwarder loopback hop, and narrow host-loopback reachback to exactly
-// the proxy port. Applied via nsenter into the shared netns.
-func (c Config) nftRuleset(proxyPort string) string {
+// the proxy port. It is an iptables/ip6tables shell script applied INSIDE the
+// sidecar via `podman exec` (ADR-0006): the pinned redirector image ships
+// iptables (nf_tables-backed) and the sidecar already has CAP_NET_ADMIN, so the
+// sidecar owns its own firewall and the host needs no nft/nsenter. `set -e`
+// makes a half-applied firewall abort the run loudly (a silently missing rule
+// would be a leak).
+func (c Config) firewallScript(proxyPort string) string {
 	// The tool's DNS query AND the forwarder's reply are BOTH loopback UDP
 	// (127.x<->127.x): the tool sends to 127.0.0.1:53 and the forwarder replies
-	// FROM 127.0.0.1:53 to the tool's EPHEMERAL port. So allowing only `dport 53`
+	// FROM 127.0.0.1:53 to the tool's EPHEMERAL port. So allowing only dport 53
 	// drops the reply (its dport is the ephemeral port) and DNS silently fails
 	// closed. Allow ALL loopback UDP instead: it never egresses the netns, so it
 	// is safe, while every OTHER (egress) UDP is still hard-dropped (ADR-0003).
+	// The v6 rules mirror what the previous nft `inet` table covered (its
+	// `meta l4proto udp drop` dropped BOTH families).
 	var b strings.Builder
-	b.WriteString("table inet jail {\n  chain out {\n")
-	b.WriteString("    type filter hook output priority 0; policy accept;\n")
-	b.WriteString("    meta l4proto udp ip daddr 127.0.0.0/8 accept\n") // tool<->forwarder loopback DNS (query + reply)
-	b.WriteString("    meta l4proto udp drop\n")                        // every other (egress) UDP dropped
+	b.WriteString("set -e\n")
+	b.WriteString("iptables -A OUTPUT -p udp -d 127.0.0.0/8 -j ACCEPT\n") // tool<->forwarder loopback DNS (query + reply)
+	b.WriteString("iptables -A OUTPUT -p udp -j DROP\n")                  // every other (egress) IPv4 UDP dropped
+	b.WriteString("ip6tables -A OUTPUT -p udp -d ::1/128 -j ACCEPT\n")    // v6-loopback parity
+	b.WriteString("ip6tables -A OUTPUT -p udp -j DROP\n")                 // every other (egress) IPv6 UDP dropped
 	if c.ProxyOnHostLoopback {
-		b.WriteString(fmt.Sprintf("    ip daddr %s tcp dport %s accept\n", mappedHostLoopback, proxyPort))
-		b.WriteString(fmt.Sprintf("    ip daddr %s drop\n", mappedHostLoopback))
+		b.WriteString(fmt.Sprintf("iptables -A OUTPUT -p tcp -d %s --dport %s -j ACCEPT\n", mappedHostLoopback, proxyPort))
+		b.WriteString(fmt.Sprintf("iptables -A OUTPUT -d %s -j DROP\n", mappedHostLoopback))
 	}
 	c.writeSplitTunnelRules(&b)
-	b.WriteString("  }\n}\n")
 	return b.String()
 }
 
@@ -288,20 +310,19 @@ var rfc1918DropRanges = []string{
 }
 
 // writeSplitTunnelRules appends the split-tunnel accept + RFC1918-drop block to
-// the ruleset, and ONLY for a NON-EMPTY allowlist. This is the NARROWING half of
-// the spike: each allowlist entry gets an `ip daddr <net> tcp dport <port>
-// accept` (or, for a port-less entry, `ip daddr <net> meta l4proto tcp accept`
-// meaning all TCP ports) placed BEFORE the RFC1918-range drops that follow it, so
-// the allowed destination is accepted and every other private-range host is
-// dropped. Both halves (this AND the excluded route) are required; each alone is
-// insufficient (excluded-route-only loses the narrowing, accept-only has no
-// direct route). TCP-only throughout: UDP was already hard-dropped above
-// (ADR-0003), so even an allowlisted host has no UDP path.
+// the firewall script, and ONLY for a NON-EMPTY allowlist. This is the NARROWING
+// half of the spike: each allowlist entry gets an ACCEPT for its net (per-port,
+// or all TCP ports for a port-less entry) placed BEFORE the RFC1918-range drops
+// that follow it, so the allowed destination is accepted and every other
+// private-range host is dropped. Both halves (this AND the excluded route) are
+// required; each alone is insufficient (excluded-route-only loses the narrowing,
+// accept-only has no direct route). TCP-only throughout: UDP was already
+// hard-dropped above (ADR-0003), so even an allowlisted host has no UDP path.
 //
-// For an EMPTY allowlist this writes NOTHING, keeping nftRuleset byte-identical
-// to today's strict jail (today's default jail has NO RFC1918 drops at all; its
-// fail-closed comes from the TUN-only route, so adding them unconditionally would
-// break the empty==today invariant).
+// For an EMPTY allowlist this writes NOTHING, keeping firewallScript
+// byte-identical to today's strict jail (today's default jail has NO RFC1918
+// drops at all; its fail-closed comes from the TUN-only route, so adding them
+// unconditionally would break the empty==today invariant).
 func (c Config) writeSplitTunnelRules(b *strings.Builder) {
 	if len(c.AllowDirect) == 0 {
 		return
@@ -312,14 +333,15 @@ func (c Config) writeSplitTunnelRules(b *strings.Builder) {
 		daddr := a.Network.String()
 		if a.Port == 0 {
 			// Port omitted => all TCP ports to that net (TCP-only; UDP stays dropped).
-			b.WriteString(fmt.Sprintf("    ip daddr %s meta l4proto tcp accept\n", daddr))
+			b.WriteString(fmt.Sprintf("iptables -A OUTPUT -p tcp -d %s -j ACCEPT\n", daddr))
 		} else {
-			b.WriteString(fmt.Sprintf("    ip daddr %s tcp dport %d accept\n", daddr, a.Port))
+			b.WriteString(fmt.Sprintf("iptables -A OUTPUT -p tcp -d %s --dport %d -j ACCEPT\n", daddr, a.Port))
 		}
 	}
-	// RFC1918 / link-local drops after, as defense-in-depth (prd story 7).
+	// RFC1918 / link-local drops after, as defense-in-depth (prd story 7). These
+	// ranges are IPv4-only, matching the previous nft `ip daddr` rules.
 	for _, r := range rfc1918DropRanges {
-		b.WriteString(fmt.Sprintf("    ip daddr %s drop\n", r))
+		b.WriteString(fmt.Sprintf("iptables -A OUTPUT -d %s -j DROP\n", r))
 	}
 }
 
@@ -348,15 +370,21 @@ func (c Config) SidecarRunArgs() []string {
 	if c.ProxyOnHostLoopback {
 		network = "pasta:--map-host-loopback," + mappedHostLoopback
 	}
-	return []string{
+	args := []string{
 		"run", "-d", "--name", c.sidecarName(),
 		"--network", network,
 		"--cap-add", "NET_ADMIN", "--device", "/dev/net/tun",
 		"-e", "CLONE_MAIN=0",
 		"-e", "TUN_EXCLUDED_ROUTES=" + c.excludedRoutes(),
 		"-e", "PROXY=" + c.sidecarProxyURL(),
-		redirector.RunPathImageReference(),
 	}
+	// Mount the netcage-dns helper read-only into the sidecar so the DNS
+	// forwarder runs INSIDE it via `podman exec -d` (ADR-0006), instead of on the
+	// host via nsenter. Run resolves the host path before starting the sidecar.
+	if c.dnsHelperPath != "" {
+		args = append(args, "-v", c.dnsHelperPath+":"+sidecarDNSHelperPath+":ro")
+	}
+	return append(args, redirector.RunPathImageReference())
 }
 
 // excludedRoutes composes the sidecar's TUN_EXCLUDED_ROUTES value: the proxy

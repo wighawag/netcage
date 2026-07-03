@@ -10,8 +10,10 @@
 #                     /usr/local/bin when writable). Both binaries go here so
 #                     netcage finds netcage-dns as its sibling.
 #
-# netcage is Linux-only (its jail is built on Linux netns + nftables). This
-# script refuses to install on non-Linux.
+# netcage runs against a Linux kernel (its jail is built on Linux netns + a
+# TUN sidecar). On macOS/Windows, run this INSIDE the Podman machine VM / WSL2
+# distro (see the README's Platform section). This script refuses to install on
+# a non-Linux uname.
 set -eu
 
 REPO="wighawag/netcage"
@@ -26,7 +28,7 @@ err() {
 
 # --- platform ---------------------------------------------------------------
 os="$(uname -s)"
-[ "$os" = "Linux" ] || err "netcage is Linux-only (got $os). On macOS/Windows it runs only inside a Linux VM; install it there."
+[ "$os" = "Linux" ] || err "netcage needs a Linux kernel (got $os). On macOS run this inside the Podman machine VM (podman machine ssh); on Windows inside your WSL2 distro. See the README's Platform section."
 
 arch="$(uname -m)"
 case "$arch" in

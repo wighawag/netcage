@@ -134,7 +134,7 @@ func TestJail_SplitTunnel_DirectReachableRestForcedThroughProxy(t *testing.T) {
 		"if nc -z -w 4 " + directHost + " " + strconv.Itoa(directPort) + " 2>/dev/null; then echo DIRECT:ok; else echo DIRECT:fail; fi",
 		"if nc -z -w 3 " + blockedHost + " " + strconv.Itoa(directPort) + " 2>/dev/null; then echo BLOCKED:reachable; else echo BLOCKED:dropped; fi",
 		// UDP to the allowed host must be dropped (ADR-0003), even though TCP to it
-		// works. The nft `meta l4proto udp drop` is a silent DROP (no ICMP), so a UDP
+		// works. The firewall's UDP rule is a silent DROP (no ICMP), so a UDP
 		// probe gets NO answer. We send a UDP DNS query straight to the direct host on
 		// :53 (bypassing the jail's own resolv.conf forwarder by naming the server) and
 		// assert it gets NO reply: on the LAN that host answers UDP DNS directly, so a
@@ -173,7 +173,7 @@ func TestJail_SplitTunnel_DirectReachableRestForcedThroughProxy(t *testing.T) {
 	out := res.ToolStdout
 
 	if !strings.Contains(out, "DIRECT:ok") {
-		t.Fatalf("allowlisted direct %s:%d was NOT reachable directly over the LAN (excluded route + nft accept not opening the direct path)\noutput:\n%s", directHost, directPort, out)
+		t.Fatalf("allowlisted direct %s:%d was NOT reachable directly over the LAN (excluded route + firewall accept not opening the direct path)\noutput:\n%s", directHost, directPort, out)
 	}
 	if !strings.Contains(out, "BLOCKED:dropped") {
 		t.Fatalf("a NON-allowlisted host %s on the same range was NOT blocked (RFC1918 defense-in-depth drop missing/ineffective)\noutput:\n%s", blockedHost, out)

@@ -20,7 +20,7 @@ import (
 
 // TestJail_Interactive_IdenticalTopologyForcedEgressAndNoResidue is the
 // podman-gated proof that an INTERACTIVE-flagged run stands up the IDENTICAL jail
-// topology as a plain run: the same sidecar + shared netns + nft ruleset (UDP
+// topology as a plain run: the same sidecar + shared netns + firewall (UDP
 // dropped, reachback narrowed) + forced egress + fail-closed default, so `-it`
 // does NOT weaken the jail. It also proves the run leaves NO residue.
 //
@@ -107,8 +107,8 @@ func TestJail_Interactive_IdenticalTopologyForcedEgressAndNoResidue(t *testing.T
 	}
 
 	// No run-attributable residue (no netcage-run-<id>-* container; the netns +
-	// nft are lifecycle-bound to the sidecar container, so no container means no
-	// netns/nft either).
+	// firewall are lifecycle-bound to the sidecar container, so no container means
+	// no netns/firewall either).
 	out, _ := exec.CommandContext(ctx, "podman", "ps", "-a", "--format", "{{.Names}}").CombinedOutput()
 	if strings.Contains(string(out), "netcage-run-"+runID) {
 		t.Fatalf("interactive run left run-attributable containers behind:\n%s", out)

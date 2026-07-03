@@ -1,6 +1,6 @@
 // Package cli implements netcage's command-line surface: the `run` and `verify`
 // subcommands, the socks5h proxy-URL contract, and the fail-loud startup
-// preflight. It deliberately does NOT stand up the jail (sidecar/netns/nft);
+// preflight. It deliberately does NOT stand up the jail (sidecar/netns/firewall);
 // that is the jail-run-forced-egress task. This package is pure parsing +
 // validation + a reachability seam, so it is unit-testable without any system
 // mutation.

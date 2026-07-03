@@ -154,31 +154,63 @@ func TestToolRunArgs_OmitsWorkdirWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestNftRuleset_DropsUDPExceptLocalDNSAndNarrowsReachback(t *testing.T) {
+// The firewall is applied INSIDE the sidecar via `podman exec` (ADR-0006), so
+// the ruleset is an iptables/ip6tables shell script (the pinned redirector image
+// ships iptables, not nft), not an nft ruleset piped through host nsenter.
+func TestFirewallScript_DropsUDPExceptLocalDNSAndNarrowsReachback(t *testing.T) {
 	c := cfg()
 	c.ProxyOnHostLoopback = true
-	rs := c.nftRuleset("9050")
+	rs := c.firewallScript("9050")
 	for _, want := range []string{
-		"meta l4proto udp ip daddr 127.0.0.0/8 accept",              // tool<->forwarder loopback DNS (query + reply)
-		"meta l4proto udp drop",                                     // all other UDP dropped (ADR-0003)
-		"ip daddr " + mappedHostLoopback + " tcp dport 9050 accept", // exactly the proxy port
-		"ip daddr " + mappedHostLoopback + " drop",                  // nothing else on the host
+		"iptables -A OUTPUT -p udp -d 127.0.0.0/8 -j ACCEPT",                             // tool<->forwarder loopback DNS (query + reply)
+		"iptables -A OUTPUT -p udp -j DROP",                                              // all other IPv4 UDP dropped (ADR-0003)
+		"ip6tables -A OUTPUT -p udp -j DROP",                                             // ... and IPv6 UDP (the nft `inet` table covered both)
+		"iptables -A OUTPUT -p tcp -d " + mappedHostLoopback + " --dport 9050 -j ACCEPT", // exactly the proxy port
+		"iptables -A OUTPUT -d " + mappedHostLoopback + " -j DROP",                       // nothing else on the host
 	} {
 		if !strings.Contains(rs, want) {
-			t.Fatalf("nft ruleset missing %q\ngot:\n%s", want, rs)
+			t.Fatalf("firewall script missing %q\ngot:\n%s", want, rs)
+		}
+	}
+	// The reachback accept must precede the reachback drop (else the proxy port
+	// itself is dropped and the jail fails closed against its own proxy).
+	accept := strings.Index(rs, "--dport 9050 -j ACCEPT")
+	drop := strings.Index(rs, "iptables -A OUTPUT -d "+mappedHostLoopback+" -j DROP")
+	if accept < 0 || drop < 0 || accept > drop {
+		t.Fatalf("reachback accept must precede the reachback drop\ngot:\n%s", rs)
+	}
+	// The script must fail loudly if any rule fails to apply (a silently
+	// half-applied firewall is a leak).
+	if !strings.HasPrefix(rs, "set -e\n") {
+		t.Fatalf("firewall script must start with `set -e` so a failed rule aborts the run\ngot:\n%s", rs)
+	}
+}
+
+func TestFirewallScript_RemoteProxyHasNoReachbackNarrowing(t *testing.T) {
+	c := cfg()
+	c.ProxyOnHostLoopback = false
+	rs := c.firewallScript("1080")
+	if strings.Contains(rs, mappedHostLoopback) {
+		t.Fatalf("remote proxy ruleset must not reference the host-loopback map addr\ngot:\n%s", rs)
+	}
+	// UDP still hard-dropped (both families).
+	for _, want := range []string{"iptables -A OUTPUT -p udp -j DROP", "ip6tables -A OUTPUT -p udp -j DROP"} {
+		if !strings.Contains(rs, want) {
+			t.Fatalf("UDP must still be dropped for a remote proxy (missing %q)\ngot:\n%s", want, rs)
 		}
 	}
 }
 
-func TestNftRuleset_RemoteProxyHasNoReachbackNarrowing(t *testing.T) {
+// TestSidecarRunArgs_MountsDNSHelper: when Run has resolved the netcage-dns
+// helper's host path, the sidecar args mount it read-only at the in-container
+// path the jail execs it from (ADR-0006: the forwarder runs INSIDE the sidecar
+// via podman exec, not on the host via nsenter).
+func TestSidecarRunArgs_MountsDNSHelper(t *testing.T) {
 	c := cfg()
-	c.ProxyOnHostLoopback = false
-	rs := c.nftRuleset("1080")
-	if strings.Contains(rs, mappedHostLoopback) {
-		t.Fatalf("remote proxy ruleset must not reference the host-loopback map addr\ngot:\n%s", rs)
-	}
-	// UDP still hard-dropped.
-	if !strings.Contains(rs, "meta l4proto udp drop") {
-		t.Fatalf("UDP must still be dropped for a remote proxy\ngot:\n%s", rs)
+	c.dnsHelperPath = "/opt/bin/netcage-dns"
+	args := strings.Join(c.SidecarRunArgs(), " ")
+	want := "-v /opt/bin/netcage-dns:" + sidecarDNSHelperPath + ":ro"
+	if !strings.Contains(args, want) {
+		t.Fatalf("sidecar args missing the DNS-helper mount %q\ngot: %s", want, args)
 	}
 }

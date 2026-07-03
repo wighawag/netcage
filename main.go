@@ -65,7 +65,7 @@ func run(args []string) int {
 
 // runRun stands up the jail and runs the wrapped tool, propagating the tool's
 // exit code as netcage's own. A jail SETUP failure (a bad/unpullable image, a
-// tool command not found, or sidecar/nft/reachback) exits non-zero with a clear
+// tool command not found, or sidecar/firewall/reachback) exits non-zero with a clear
 // message; a tool that ran but exited non-zero passes that exit code through (the
 // wrapped tool's result is the run's result). SIGINT cancels ctx, so the jail's
 // deferred Teardown leaves no residue.

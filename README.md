@@ -6,16 +6,15 @@ The forced egress is done by the **network layer**, not by the tool's own proxy 
 
 ## Requirements
 
-netcage is **Linux only** (see [Platform](#platform)). It relies on Linux kernel primitives with no cross-platform equivalent:
+netcage runs on a **Linux kernel** (see [Platform](#platform) for macOS/Windows, which work through Podman's Linux VM). It needs:
 
-- **Linux** with network namespaces and **nftables**.
-- **Rootless [Podman](https://podman.io/) 5.x** using the **pasta** rootless network backend (Podman 5's default on netavark). The host-loopback reachback and the forced-egress jail are built on it (ADR-0002).
+- **Rootless [Podman](https://podman.io/) 5.x** using the **pasta** rootless network backend (Podman 5's default on netavark). The host-loopback reachback and the forced-egress jail are built on it (ADR-0002). Podman is the ONLY runtime tool netcage invokes: the jail's firewall and DNS forwarder run inside the sidecar container via `podman exec` (ADR-0006), so the host needs no `nft`/`nsenter`.
 - **`/dev/net/tun`** available to the rootless user (the redirector sidecar is a TUN device).
 - A running **SOCKS5h proxy** to send egress through (local Tor, `ssh -D`, a remote SOCKS5 endpoint, ...). Only `socks5h://` is accepted; plain `socks5://` resolves DNS locally and is a leak, so it is rejected.
 
 The redirector sidecar and the default dev image are **pinned by digest** and pulled by Podman on first use; there is nothing extra to install or publish. First run pulls them (and caches them).
 
-netcage ships as two binaries: `netcage` and its DNS-forwarder helper `netcage-dns` (the jail launches it in-netns, ADR-0003). The helper must sit next to the `netcage` binary, or on `PATH`, or be pointed at by `NETCAGE_DNS_BIN`. Without it the jail cannot run. Every install method below places both together.
+netcage ships as two binaries: `netcage` and its DNS-forwarder helper `netcage-dns` (the jail mounts it into the sidecar and runs it there, ADR-0003/0006). The helper must sit next to the `netcage` binary, or on `PATH`, or be pointed at by `NETCAGE_DNS_BIN`, and it must be a **static** build (release builds are; it execs inside the musl-based sidecar image). Without it the jail cannot run. Every install method below places both together.
 
 ### Install script (recommended)
 
@@ -36,10 +35,10 @@ The installer is served as a release asset (stable storage). The same script als
 
 ```sh
 go install github.com/wighawag/netcage@latest
-go install github.com/wighawag/netcage/cmd/netcage-dns@latest
+CGO_ENABLED=0 go install github.com/wighawag/netcage/cmd/netcage-dns@latest
 ```
 
-`go install` places both in the same `$GOBIN`, so `netcage` finds `netcage-dns` as its sibling. Install **both**: the second one is required for the jail to run.
+`go install` places both in the same `$GOBIN`, so `netcage` finds `netcage-dns` as its sibling. Install **both**: the second one is required for the jail to run. The `CGO_ENABLED=0` on the helper matters: it executes inside the musl-based sidecar container (ADR-0006), which cannot load a glibc-dynamic binary.
 
 ### Manual download
 
@@ -115,7 +114,32 @@ Guardrails (see ADR-0005): **off by default** (an empty allowlist is byte-identi
 
 ## Platform
 
-netcage is Linux only. macOS and Windows have no network-namespace + nftables jail, so there is no native port. Podman on macOS/Windows runs inside a Linux VM, so netcage can run **inside that VM**, but two seams are VM-boundary-sensitive: `--allow-direct` reaches the *VM's* NIC (not your host LAN), and host-loopback proxy reachback (`ssh -D`/Tor on the host's `127.0.0.1`) is the host loopback, not the VM's. Treat non-Linux as best-effort-via-VM, not supported.
+The jail is built on Linux kernel primitives (network namespaces, a per-container TUN, pasta), so netcage always executes against a Linux kernel. On macOS and Windows that kernel is the Linux VM Podman already requires there; netcage runs **inside it**. That is not an extra layer netcage adds: containers on those platforms live in that VM regardless.
+
+### macOS (podman machine)
+
+Run netcage inside the Podman machine VM:
+
+```sh
+podman machine ssh
+# inside the VM: install netcage (the install script works; the VM is Linux)
+curl -fsSL https://github.com/wighawag/netcage/releases/latest/download/install.sh | sh
+```
+
+Two seams are VM-boundary-sensitive, both about addresses:
+
+- **A proxy on your Mac's `127.0.0.1`** (local Tor, `ssh -D`) is the *Mac's* loopback, not the VM's. From inside the VM, reach the Mac via the VM's host gateway address (commonly `192.168.127.254` under gvproxy; check your machine's routes) and make sure the proxy listens on an interface the VM can reach (e.g. bind `ssh -D` to `0.0.0.0` or use an SSH reverse tunnel into the VM). Then pass that address as `--proxy`.
+- **`--allow-direct`** sees the *VM's* network, not your Mac's LAN. A LAN host may still be routable through the VM's NAT, but the address semantics are the VM's.
+
+`verify` runs inside the VM and proves the same three assertions there; "the host" in its assertions is the VM.
+
+### Windows (WSL2)
+
+Podman on Windows runs in a WSL2 distribution, which is a full Linux kernel with everything the jail needs. Install and run netcage **inside your WSL2 distro** (the install script works there). The same two address seams apply: a proxy on Windows' `127.0.0.1` is reachable from WSL2 via the Windows host address (see `/etc/resolv.conf`'s nameserver or `ip route show default` in the distro, or enable WSL2's mirrored networking mode, which shares localhost), and `--allow-direct` sees the WSL2 network.
+
+### Native ports
+
+There is no VM-free native jail for macOS/Windows and none is planned: those platforms have no container to jail outside the Linux VM, and the kernel primitives (`netns`, TUN-per-container, pasta) plus `verify`'s guarantees do not transfer. Since every jail step now flows through podman alone (ADR-0006), a future native netcage *binary* driving the VM's podman remotely is possible; the jail itself stays in the VM either way.
 
 ## Design
 
@@ -126,6 +150,7 @@ The security rationale lives in the ADRs under [`docs/adr/`](docs/adr/):
 - **0003** UDP is hard-blocked (DNS goes proxy-side; other UDP is dropped).
 - **0004** the default dev image is a pinned buildpack-deps base.
 - **0005** the split-tunnel LAN allowlist is a guardrailed hole in forced egress.
+- **0006** the sidecar owns its firewall + DNS forwarder; netcage never uses host nsenter (podman is the only host dependency).
 
 ## Development
 
