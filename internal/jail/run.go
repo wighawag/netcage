@@ -426,14 +426,29 @@ func checkReachback(ctx context.Context, r Runner, cfg Config) error {
 	return err
 }
 
-// Teardown removes EVERY run-attributable resource the jail created: the tool
-// container and the sidecar container. The netns, the firewall rules, and the
-// in-sidecar DNS forwarder are lifecycle-bound to the sidecar container (they
-// live in its namespace/process tree), so removing the sidecar destroys them
-// too; once no netcage-run-<id>-* container remains, nothing of the run remains.
+// Teardown enforces the jail LIFECYCLE chosen by cfg.Ephemeral (the
+// podman-fidelity split, ADR-0009):
+//
+//   - EPHEMERAL (cfg.Ephemeral true: the netcage `--rm` flag + every internal
+//     one-shot) removes BOTH run-attributable containers, the tool and the
+//     sidecar. The netns, the firewall rules, and the in-sidecar DNS forwarder
+//     are lifecycle-bound to the sidecar container (they live in its
+//     namespace/process tree), so removing it destroys them too; once no
+//     netcage-run-<id>-* container remains, nothing of the run remains.
+//   - KEPT (cfg.Ephemeral false: a plain `netcage run`) removes NEITHER, LEAVING
+//     the stopped tool + its stopped sidecar behind (podman-run fidelity). This
+//     is safe because the sidecar's firewall is baked into its EXTRA_COMMANDS
+//     (ADR-0008), so the pair is fail-closed at rest and on any restart (LAN/UDP
+//     dropped, DNS dead) even against a raw `podman start` outside netcage. The
+//     tool container carries the netcage.managed label so it stays identifiable.
+//     "Sidecar gone, tool kept" is not reachable (the `--network container:` edge
+//     blocks removing the sidecar while the tool exists, and `--depend` cascades
+//     to the tool - see the finding), so leave-both is the only coherent kept
+//     end-state.
 //
 // It is the single teardown entry point wired to ALL exit paths (normal, error,
-// and ctx-cancel/SIGINT, via Run's deferred call on a fresh context). It is:
+// and ctx-cancel/SIGINT, via Run's deferred call on a fresh context). On the
+// removal (ephemeral) path it is:
 //
 //   - idempotent: removing an already-gone container is not an error (podman rm
 //     -f -i ignores a missing container), so a second call is a clean no-op;
@@ -442,6 +457,12 @@ func checkReachback(ctx context.Context, r Runner, cfg Config) error {
 //   - error-surfacing: any genuine removal failure is aggregated and returned
 //     (no silent partial teardown).
 func Teardown(ctx context.Context, r Runner, cfg Config) error {
+	// KEPT run: leave BOTH containers behind (the podman-fidelity feature). The
+	// leftover pair is fail-closed via the baked EXTRA_COMMANDS firewall (ADR-0008)
+	// and labelled netcage-managed, so it is safe and identifiable at rest.
+	if !cfg.Ephemeral {
+		return nil
+	}
 	var errs []error
 	// Order: tool first (it shares/depends on the sidecar netns), then sidecar
 	// (which takes the netns + firewall + DNS forwarder with it). -i (ignore) makes a missing container

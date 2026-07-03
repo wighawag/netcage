@@ -157,6 +157,7 @@ func TestVerify_ExitIPIsProxys(t *testing.T) {
 	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
 
 	cfg := jail.Config{
+		Ephemeral:           true, // internal one-shot: remove-both, no residue
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
 		Image:               "docker.io/library/alpine:latest",
@@ -196,6 +197,7 @@ func TestVerify_DNSResolvesProxySideNotHost(t *testing.T) {
 	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
 
 	cfg := jail.Config{
+		Ephemeral:           true, // internal one-shot: remove-both, no residue
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
 		DNSUpstream:         upstreamName + ":" + resolverPort,
@@ -248,6 +250,7 @@ func TestVerify_DNSResolvesOverTCPForGlibc(t *testing.T) {
 	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
 
 	cfg := jail.Config{
+		Ephemeral:           true, // internal one-shot: remove-both, no residue
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
 		DNSUpstream:         upstreamName + ":" + resolverPort,
@@ -320,6 +323,7 @@ func TestVerify_FailsClosedWhenProxyKilled(t *testing.T) {
 	fx.Close()
 
 	cfg := jail.Config{
+		Ephemeral:           true, // internal one-shot: remove-both, no residue
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
 		Image:               "docker.io/library/alpine:latest",
@@ -364,6 +368,7 @@ func TestVerify_FullReportGreenAndExitsZero(t *testing.T) {
 	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
 	base := func() jail.Config {
 		return jail.Config{
+			Ephemeral:           true, // internal one-shot: remove-both, no residue
 			Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 			ProxyOnHostLoopback: true,
 			Image:               "docker.io/library/alpine:latest",
@@ -476,6 +481,7 @@ func TestVerify_SplitTunnelReportGreenOnlyWhenLeakTightAndDirectReachable(t *tes
 	allow := allowlist169(proxyPort)
 	base := func() jail.Config {
 		return jail.Config{
+			Ephemeral:           true, // internal one-shot: remove-both, no residue
 			Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 			ProxyOnHostLoopback: true,
 			Image:               "docker.io/library/alpine:latest",
@@ -549,6 +555,7 @@ func exitIPAssertion(ctx context.Context, t *testing.T, echoPort string) verify.
 	defer fx.Close()
 	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
 	cfg := jail.Config{
+		Ephemeral:           true, // internal one-shot: remove-both, no residue
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
 		Image:               "docker.io/library/alpine:latest",
@@ -593,6 +600,7 @@ func failClosedAssertion(ctx context.Context, t *testing.T) verify.Assertion {
 	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
 	fx.Close() // kill the proxy BEFORE the probe
 	cfg := jail.Config{
+		Ephemeral:           true, // internal one-shot: remove-both, no residue
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
 		Image:               "docker.io/library/alpine:latest",
@@ -622,6 +630,7 @@ func exitIPAssertionAllow(ctx context.Context, t *testing.T, echoPort string, al
 	defer fx.Close()
 	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
 	cfg := jail.Config{
+		Ephemeral:           true, // internal one-shot: remove-both, no residue
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
 		Image:               "docker.io/library/alpine:latest",
@@ -671,6 +680,7 @@ func failClosedAssertionAllow(ctx context.Context, t *testing.T) verify.Assertio
 	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
 	fx.Close() // kill the proxy BEFORE the probe
 	cfg := jail.Config{
+		Ephemeral:           true, // internal one-shot: remove-both, no residue
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
 		Image:               "docker.io/library/alpine:latest",

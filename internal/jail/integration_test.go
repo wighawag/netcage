@@ -139,6 +139,7 @@ func TestJail_ForcedEgress_ExitIPIsProxys(t *testing.T) {
 	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
 
 	cfg := jail.Config{
+		Ephemeral:           true, // internal one-shot: remove-both, no residue
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
 		Image:               "docker.io/library/alpine:latest",
@@ -196,6 +197,7 @@ func TestJail_DefaultDevImage_ForcedEgressAndNoResidue(t *testing.T) {
 
 	runID := "defimg" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", "")
 	cfg := jail.Config{
+		Ephemeral:           true, // internal one-shot: remove-both, no residue
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
 		// The default dev image the CLI injects when no positional image is passed.
@@ -242,6 +244,7 @@ func TestJail_TeardownLeavesNoResidue(t *testing.T) {
 
 	runID := "teardown" + strings.ReplaceAll(time.Now().Format("150405.000"), ".", "")
 	cfg := jail.Config{
+		Ephemeral:           true, // internal one-shot: remove-both, no residue
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
 		Image:               "docker.io/library/alpine:latest",
@@ -274,6 +277,7 @@ func TestJail_PropagatesToolExitCode(t *testing.T) {
 	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
 
 	cfg := jail.Config{
+		Ephemeral:           true, // internal one-shot: remove-both, no residue
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
 		Image:               "docker.io/library/alpine:latest",
@@ -309,6 +313,7 @@ func TestJail_StreamsToolOutputLiveThroughRun(t *testing.T) {
 	var live safeBuf
 	const marker = "NETCAGE-LIVE-MARKER"
 	cfg := jail.Config{
+		Ephemeral:           true, // internal one-shot: remove-both, no residue
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
 		Image:               "docker.io/library/alpine:latest",
@@ -382,6 +387,7 @@ func TestJail_UnpullableImageIsSetupError_NotToolExit(t *testing.T) {
 	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
 
 	cfg := jail.Config{
+		Ephemeral:           true, // internal one-shot: remove-both, no residue
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
 		Image:               "docker.io/library/netcage-nonexistent-image-xyz:doesnotexist",
@@ -416,6 +422,7 @@ func TestJail_CommandNotFoundIsSetupError_NotToolExit(t *testing.T) {
 	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
 
 	cfg := jail.Config{
+		Ephemeral:           true, // internal one-shot: remove-both, no residue
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
 		Image:               "docker.io/library/alpine:latest",

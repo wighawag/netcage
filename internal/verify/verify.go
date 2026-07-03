@@ -220,6 +220,9 @@ func RunCommandVerify(ctx context.Context, proxy cli.ProxyConfig) Report {
 		ProxyOnHostLoopback: isHostLoopback(proxy.Host),
 		Image:               "docker.io/library/alpine:latest",
 		ToolArgv:            []string{"sh", "-c", "wget -qO- -T 10 " + ipEchoURL + " 2>&1 || true"},
+		// An internal one-shot probe: EPHEMERAL (remove both tool + sidecar), so
+		// verify leaves no residue. Only a user `netcage run` without --rm is kept.
+		Ephemeral: true,
 	}
 	// A glibc DNS probe: resolve a public name with getent (glibc getaddrinfo),
 	// which HONOURS resolv.conf's `options use-vc` and queries DNS over TCP. This
@@ -230,6 +233,7 @@ func RunCommandVerify(ctx context.Context, proxy cli.ProxyConfig) Report {
 		Proxy:               proxy,
 		ProxyOnHostLoopback: isHostLoopback(proxy.Host),
 		Image:               devimage.ImageReference(),
+		Ephemeral:           true, // internal one-shot: remove both, no residue
 		ToolArgv: []string{
 			"sh", "-c",
 			// print an A record via glibc getaddrinfo; empty output on failure
