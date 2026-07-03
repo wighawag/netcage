@@ -295,12 +295,23 @@ func (c Config) toolName() string    { return "netcage-run-" + c.RunID + "-tool"
 // `netcage start`) scope on - a label, not the `netcage-run-<id>-*` name
 // convention - so a left-behind pair is unambiguously netcage-managed even after
 // the run process is gone.
+//
+// They are EXPORTED (LabelManaged / LabelRole / LabelRunID / RoleTool /
+// RoleSidecar) so the pass-through verbs (internal/manage) filter on the SAME
+// constants netcage stamps here, keeping a single source of truth for the
+// discriminator (no re-meaning of the label key in a second place).
 const (
-	labelManaged = "netcage.managed"
-	labelRole    = "netcage.role"
-	labelRunID   = "netcage.run-id"
-	roleTool     = "tool"
-	roleSidecar  = "sidecar"
+	LabelManaged = "netcage.managed"
+	LabelRole    = "netcage.role"
+	LabelRunID   = "netcage.run-id"
+	RoleTool     = "tool"
+	RoleSidecar  = "sidecar"
+
+	labelManaged = LabelManaged
+	labelRole    = LabelRole
+	labelRunID   = LabelRunID
+	roleTool     = RoleTool
+	roleSidecar  = RoleSidecar
 )
 
 // managedLabelArgs returns the podman `--label k=v` args stamping a container as

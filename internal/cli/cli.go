@@ -90,11 +90,19 @@ func ParseProxy(raw string) (ProxyConfig, error) {
 // allow-list are rejected: jail-breaching flags with an explanatory message,
 // anything else as an unknown flag.
 type Command struct {
-	Name     string // "run" or "verify"
+	Name     string // "run", "verify", or a management verb (ps/logs/inspect/exec/stop/rm/images)
 	Proxy    ProxyConfig
 	Image    string   // required for run (first positional); unused for verify
 	ToolArgv []string // the tool command + args (positionals after the image)
 	Mounts   []string // -v/--volume pass-through values (run)
+
+	// ManageArgv holds a management verb's positional arguments verbatim: the
+	// netcage container NAME for logs/inspect/stop/rm, the name + command for exec,
+	// and nothing for ps/images. The management verbs are inspection/lifecycle
+	// pass-throughs to podman (scoped by the netcage.managed label in the manage
+	// package); they do NOT egress, so they carry no proxy and are NOT subject to
+	// the run flag allow-list. Empty for run/verify.
+	ManageArgv []string
 
 	// Interactive / TTY record the -i / -t (and -it/-ti) booleans. This package
 	// only PARSES them; `main.go`'s runRun consumes them to run the jailed tool
@@ -126,6 +134,29 @@ type Command struct {
 	// split-tunnel-jail-wiring task consumes it to open the narrow direct path.
 	AllowDirect []DirectAllow // --allow-direct entries, repeatable (run)
 }
+
+// managementVerbs is the set of pass-through management verbs (inspection /
+// lifecycle only), routed to the manage package instead of the jail. They are
+// deliberately NOT jail verbs: none stands up or tears down a jail, none egresses,
+// so none requires a proxy. `start` is intentionally ABSENT here: it is the
+// jail-aware revive verb built in its own task, not a thin pass-through.
+var managementVerbs = map[string]bool{
+	"ps":      true,
+	"logs":    true,
+	"inspect": true,
+	"exec":    true,
+	"stop":    true,
+	"rm":      true,
+	"images":  true,
+}
+
+// IsManagementVerb reports whether name is one of the pass-through management
+// verbs (so the caller skips the proxy preflight and routes it to the manage
+// package rather than the jail).
+func IsManagementVerb(name string) bool { return managementVerbs[name] }
+
+// IsManagement reports whether this parsed command is a management verb.
+func (c Command) IsManagement() bool { return IsManagementVerb(c.Name) }
 
 // ProxyOnHostLoopback reports whether the proxy listens on the host's loopback
 // (the local Tor / ssh -D case), so the jail reaches it via the pasta map with
@@ -163,6 +194,12 @@ func (d DialReachability) Check(address string) error {
 
 // Preflight runs the startup checks with a real TCP dial.
 func (c *Command) Preflight() error {
+	// Management verbs do not egress and carry no proxy, so there is nothing to
+	// preflight: a proxy-down check would be wrong (requiring --proxy to `ps` /
+	// `logs` makes no sense). Skip it for them.
+	if c.IsManagement() {
+		return nil
+	}
 	return c.PreflightWith(DialReachability{})
 }
 
@@ -210,13 +247,21 @@ func Parse(args []string) (*Command, error) {
 // unit-testable without mutating the real process environment.
 func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Command, error) {
 	if len(args) == 0 {
-		return nil, errors.New("no subcommand: expected `run` or `verify`")
+		return nil, errors.New("no subcommand: expected `run`, `verify`, or a management verb (ps/logs/inspect/exec/stop/rm/images)")
 	}
 	name := args[0]
+	// Management verbs (ps/logs/inspect/exec/stop/rm/images) are thin podman
+	// pass-throughs scoped by the netcage.managed label: they do NOT egress, so
+	// they carry NO proxy (no --proxy, no preflight) and are NOT run through the
+	// run flag allow-list. Their positionals (a container name, plus the command
+	// for exec) pass through to the manage package verbatim.
+	if IsManagementVerb(name) {
+		return &Command{Name: name, ManageArgv: args[1:]}, nil
+	}
 	switch name {
 	case "run", "verify":
 	default:
-		return nil, fmt.Errorf("unknown subcommand %q: expected `run` or `verify`", name)
+		return nil, fmt.Errorf("unknown subcommand %q: expected `run`, `verify`, or a management verb (ps/logs/inspect/exec/stop/rm/images)", name)
 	}
 
 	rest := args[1:]
