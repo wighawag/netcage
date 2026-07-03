@@ -104,6 +104,120 @@ func keptPairCfg(t *testing.T, runID string) jail.Config {
 	}
 }
 
+// longLivedPairCfg builds a KEPT jail.Config whose tool sleeps, so `jail.Run`
+// leaves BOTH the sidecar and the tool RUNNING (unlike keptPairCfg's `true`, which
+// exits and leaves them stopped). Used to exec into a HEALTHY jail. Ephemeral so a
+// ctx-cancel removes both with no residue.
+func longLivedPairCfg(t *testing.T, runID string) jail.Config {
+	t.Helper()
+	fx := socks5hfixture.New(socks5hfixture.Options{ExitIP: "127.0.0.2"})
+	if err := fx.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("fixture start: %v", err)
+	}
+	t.Cleanup(func() { fx.Close() })
+	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
+	return jail.Config{
+		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
+		ProxyOnHostLoopback: true,
+		Image:               "docker.io/library/alpine:latest",
+		ToolArgv:            []string{"sleep", "300"},
+		RunID:               runID,
+		Ephemeral:           true, // ctx-cancel removes both: no residue
+	}
+}
+
+// waitToolRunning polls until the named container reports .State.Running=true (or
+// fails the test after a timeout), so the exec runs against a jail that is up.
+func waitToolRunning(t *testing.T, name string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		out, _ := exec.Command("podman", "inspect", "--format", "{{ .State.Running }}", name).CombinedOutput()
+		if strings.TrimSpace(string(out)) == "true" {
+			return
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	t.Fatalf("container %s did not reach Running within the timeout", name)
+}
+
+// TestManageExec_PodmanFaithfulFlagsIntoHealthyJail is the podman-gated proof for
+// the exec fidelity upgrade: with a RUNNING jailed pair, `netcage exec -w <dir>
+// -e KEY=VAL <tool> sh -c ...` runs the command in the given cwd with the passed
+// env, INSIDE the existing jailed netns (a plain podman exec, never a fresh
+// --network). It also proves the jail-health guarantee: exec into a container
+// whose sidecar is STOPPED (a kept pair at rest) is REFUSED with a "run `netcage
+// start` first" message, so a down jail never yields a working un-jailed exec.
+//
+// Shared-write isolation (podman is host-global): unique run-ids name both pairs
+// and t.Cleanup does `podman rm -f --depend` even on failure, so the test cannot
+// orphan containers or collide with a concurrent run.
+func TestManageExec_PodmanFaithfulFlagsIntoHealthyJail(t *testing.T) {
+	requirePodman(t)
+
+	// --- Part 1: a RUNNING jail accepts `netcage exec -w -e` and honours them. ---
+	runID := "execok" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", "")
+	t.Cleanup(func() { forceRemovePair(runID) })
+	cfg := longLivedPairCfg(t, runID)
+	toolName := "netcage-run-" + runID + "-tool"
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		// The tool sleeps; jail.Run blocks until ctx-cancel tears it down. A non-nil
+		// error here after cancel is the expected interruption, not a test failure.
+		_, _ = jail.Run(runCtx, jail.ExecRunner{}, cfg)
+	}()
+	t.Cleanup(func() { cancelRun(); <-runDone })
+
+	waitToolRunning(t, toolName)
+
+	execCtx, cancelExec := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelExec()
+	var execOut bytes.Buffer
+	// -w sets the cwd, -e sets an env var; the command echoes both so we can assert
+	// each reached the podman exec argv and took effect.
+	err := manage.Run(execCtx, jail.ExecRunner{}, "exec",
+		[]string{"-w", "/tmp", "-e", "NETCAGE_EXEC_MARK=exec-cwd-env-ok", toolName,
+			"sh", "-c", "pwd; echo $NETCAGE_EXEC_MARK"},
+		manage.IO{Stdout: &execOut, Stderr: &execOut})
+	if err != nil {
+		t.Fatalf("netcage exec -w -e into a healthy jail: %v\noutput:\n%s", err, execOut.String())
+	}
+	gotOut := execOut.String()
+	if !strings.Contains(gotOut, "/tmp") {
+		t.Fatalf("-w /tmp must set the exec cwd; pwd output missing /tmp:\n%s", gotOut)
+	}
+	if !strings.Contains(gotOut, "exec-cwd-env-ok") {
+		t.Fatalf("-e NETCAGE_EXEC_MARK=... must set the env in the exec'd process; output missing it:\n%s", gotOut)
+	}
+
+	// --- Part 2: a STOPPED-sidecar kept pair REFUSES exec (jail-health guard). ---
+	stoppedID := "execdown" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", "")
+	t.Cleanup(func() { forceRemovePair(stoppedID) })
+	stoppedCfg := keptPairCfg(t, stoppedID) // tool runs `true`, so the pair rests STOPPED
+	keptCtx, cancelKept := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancelKept()
+	if _, err := jail.Run(keptCtx, jail.ExecRunner{}, stoppedCfg); err != nil {
+		t.Fatalf("jail.Run (kept, stopped at rest): %v", err)
+	}
+	stoppedTool := "netcage-run-" + stoppedID + "-tool"
+	var downOut bytes.Buffer
+	err = manage.Run(keptCtx, jail.ExecRunner{}, "exec",
+		[]string{stoppedTool, "echo", "should-not-run"},
+		manage.IO{Stdout: &downOut, Stderr: &downOut})
+	if err == nil {
+		t.Fatalf("exec into a container whose jail sidecar is STOPPED must be REFUSED; output:\n%s", downOut.String())
+	}
+	if !strings.Contains(err.Error(), "netcage start") {
+		t.Fatalf("the down-jail refusal must tell the user to run `netcage start` first; got: %v", err)
+	}
+	if strings.Contains(downOut.String(), "should-not-run") {
+		t.Fatalf("the command must NOT have run against a down jail; output:\n%s", downOut.String())
+	}
+}
+
 // TestManageVerbs_PsShowsKeptPairAndRmRemovesIt is the podman-gated proof: a KEPT
 // run leaves a labelled tool + sidecar; `netcage ps` lists the pair (label-scoped)
 // and `netcage rm <tool>` removes BOTH (no orphaned sidecar).
