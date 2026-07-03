@@ -30,10 +30,19 @@ Semantics (podman-faithful, mirrors the existing verbs):
   container is REFUSED before any podman `commit` runs against it.
 - **Pass through the safe metadata flags** verbatim: `-m`/`--message`,
   `-a`/`--author`, `-c`/`--change`, `-f`/`--format`, `--pause` (and its negation),
-  `-q`/`--quiet`. Per netcage's own vetting checklist (ADR-0010) these are ALL
-  network/isolation-IRRELEVANT (they only affect the image manifest / metadata /
-  a momentary pause), so they are safe to allow. The `<image-ref>` is the
-  new image name (required positional, after the container).
+  `-q`/`--quiet`. These are safe to allow because commit writes an IMAGE, not the
+  running container: `-m`/`-a`/`-f`/`--pause`/`-q` only affect the image manifest /
+  metadata / a momentary pause during the snapshot. NOTE the subtlety for
+  `-c`/`--change` (it can set `CMD`/`ENTRYPOINT`/`ENV`/`EXPOSE`/`VOLUME`/`USER`/...
+  in the new image's config): this is NOT justified by ADR-0010's vetting
+  checklist directly - that checklist governs RUN flags on the JAILED CONTAINER
+  (its netns/caps/ports/DNS/lifecycle), whereas `--change` writes IMAGE config that
+  takes effect only on a FUTURE run. It is safe because image config is
+  declarative and any future `netcage run` of the image STILL passes through
+  netcage's run allow-list (an image `EXPOSE` does not publish a port; a `-p` at
+  run time is still denied; a baked `ENV`/`CMD` is exactly what `run` already lets
+  a user set). So the run-time jail is unchanged by what commit bakes. The
+  `<image-ref>` is the new image name (required positional, after the container).
 - **Works on a stopped OR running container.** The exploratory flow commits a
   STOPPED kept container (you quit, then bake); podman `commit` handles stopped
   as-is. A running container is fine too (podman's default `--pause` gives a
