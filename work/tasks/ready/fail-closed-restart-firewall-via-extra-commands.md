@@ -67,14 +67,22 @@ after a non-ephemeral run leaves a tool container, a raw `podman start <tool>`
 (names must not resolve), while public TCP by-IP still exits via the proxy.
 
 This REFINES ADR-0006 (the sidecar still owns its firewall; it now owns it via a
-create-time env instead of a runtime exec, so it survives restart). The decision
-is ALREADY recorded in two ADRs written during tasking: the fail-closed-on-
-restart mechanism (firewall via `EXTRA_COMMANDS` + netcage verification, DNS
-forwarder stays a separate process) refining ADR-0006, and ADR-0007
-(`no-custom-sidecar-image-keep-the-upstream-digest-pin`) recording that we do NOT
-rebuild the sidecar image and instead use DROP-first + verification. If the
-refining-ADR-0006 detail is not yet its own ADR file when you build, write it;
-otherwise ensure the ADR set reflects what you actually implement.
+create-time env instead of a runtime exec, so it survives restart). ADR context,
+as of tasking:
+
+- **ADR-0007 (`no-custom-sidecar-image-keep-the-upstream-digest-pin`) ALREADY
+  EXISTS** in `docs/adr/`. It records the DECLINE decision (we do NOT rebuild the
+  sidecar image) and names DROP-first + netcage verification as the accepted
+  approach. Do NOT rewrite it; align your implementation with it.
+- **You MUST WRITE a NEW ADR** for the fail-closed-on-RESTART MECHANISM itself
+  (the durable WHY, refining ADR-0006): the firewall moves from a runtime `podman
+  exec` into the sidecar's create-time `EXTRA_COMMANDS` so it survives podman's
+  dependency auto-revive; `EXTRA_COMMANDS` cannot fail-close the sidecar, so the
+  fail-loud guarantee comes from netcage's post-(re)start firewall VERIFICATION;
+  the DNS forwarder stays a separate process (a raw bypass leaves DNS dead =
+  fail-closed). This is a distinct, hard-to-reverse security decision and meets
+  the ADR gate. (ADR-0007 references this mechanism but is scoped to the
+  image-rebuild decline; the mechanism deserves its own ADR.)
 
 ## Acceptance criteria
 
@@ -104,8 +112,10 @@ otherwise ensure the ADR set reflects what you actually implement.
       rule accumulation across restarts).
 - [ ] Firewall rules do NOT accumulate across repeated sidecar restarts (the
       netns is fresh each start; assert a fixed rule count after N cycles).
-- [ ] A new ADR in `docs/adr/` records the fail-closed-on-restart decision and
-      that it refines ADR-0006.
+- [ ] A NEW ADR in `docs/adr/` records the fail-closed-on-RESTART MECHANISM
+      (firewall via `EXTRA_COMMANDS` + netcage verification + DNS-forwarder-
+      stays-separate) and that it refines ADR-0006. (ADR-0007, the
+      decline-custom-image decision, already exists - do not duplicate it.)
 - [ ] Tests mirror the repo's style: unit tests for the sidecar-run-args wiring
       (the `EXTRA_COMMANDS` value is built without executing podman, like the
       existing `SidecarRunArgs`/`firewallScript` tests), and a podman-gated
@@ -165,11 +175,14 @@ otherwise ensure the ADR set reflects what you actually implement.
 > a leftover container never gets a working un-jailed network; the existing
 > leak-test stays green.
 >
-> RECORD the durable decision as an ADR in `docs/adr/` (this is a hard-to-reverse,
-> surprising-without-context security decision with a real trade-off -> it meets
-> the ADR gate): the firewall now lives in the sidecar's create-time env so it
-> survives podman's dependency auto-revive, refining ADR-0006. Note any in-scope
-> choice you make (e.g. how you assert rule-count stability) in the done record.
+> RECORD the durable decision as a NEW ADR in `docs/adr/` (hard-to-reverse,
+> surprising-without-context, real trade-off -> meets the ADR gate): the firewall
+> now lives in the sidecar's create-time `EXTRA_COMMANDS` so it survives podman's
+> dependency auto-revive, with netcage's post-start VERIFICATION as the fail-loud
+> layer, refining ADR-0006. NOTE: ADR-0007 (decline a custom sidecar image)
+> ALREADY EXISTS and is a DIFFERENT decision - do not rewrite or duplicate it;
+> this new ADR is the restart-MECHANISM one. Note any in-scope choice you make
+> (e.g. how you assert rule-count stability) in the done record.
 >
 > Done = the firewall is baked into `EXTRA_COMMANDS`, `verify` is green on the
 > full jail, the new raw-bypass leak assertion passes (LAN dropped + DNS dead on a

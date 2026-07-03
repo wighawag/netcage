@@ -76,10 +76,10 @@ this label to scope its verbs (it `blockedBy` this task).
 - `fail-closed-restart-firewall-via-extra-commands` - the leftover sidecar is
   only safe to leave because its firewall self-heals on restart; this task must
   not land before that hardening.
-- `pass-through-verbs-and-labels` - the left-behind pair must carry the
-  `netcage.managed` label (this task's acceptance asserts the leftover is
-  labelled), which that task introduces; serialised also because both edit the
-  container create args.
+
+(This task INTRODUCES the `netcage.managed` label itself, so it does NOT depend
+on the verbs task; the dependency runs the other way - `pass-through-verbs-and-
+labels` `blockedBy` THIS task and consumes the label.)
 
 ## Prompt
 
@@ -108,11 +108,15 @@ this label to scope its verbs (it `blockedBy` this task).
 > Where to look / seams: the jail Config tool-run-args builder (drop the forced
 > `--rm` on the kept path; keep it on the ephemeral path); the teardown routine
 > (parameterise remove-both vs leave-both by whether the run is ephemeral);
-> `internal/verify` and any internal probe runs (they MUST stay ephemeral). The
-> CLI deny-set for `--rm`/`--name` stays (netcage owns the tool container's
-> name+lifecycle); decide and RECORD how a user requests ephemeral (a netcage-
-> level `--rm` that maps to the ephemeral path, distinct from smuggling podman's
-> raw `--rm`), noting the choice in the done record / an ADR if it meets the gate.
+> `internal/verify` and any internal probe runs (they MUST stay ephemeral). REMOVE
+> `--rm` from the CLI deny-set (`denyReasons`) and make `netcage run --rm` a
+> NETCAGE-owned flag meaning the ephemeral run (remove both tool + sidecar) -
+> netcage owns its semantics and does NOT pass it to podman's raw `--rm`. `--name`
+> STAYS in the deny-set (netcage owns the run-attributable name). Also INTRODUCE
+> the `netcage.managed` (+ role + run id) label on the tool and sidecar create
+> args here, since this is the first task that leaves containers behind that must
+> be identifiable; the verbs task consumes it. Record any non-obvious in-scope
+> choice in the done record / an ADR if it meets the gate.
 >
 > Preserve the forced-egress invariant: the jail is torn down (or left fail-closed
 > via the baked firewall) on every path; a leftover container never runs

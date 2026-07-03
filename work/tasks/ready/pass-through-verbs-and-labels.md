@@ -70,9 +70,9 @@ teardown's remove-both.
 ## Prompt
 
 > Goal: add netcage management verbs (`ps`/`logs`/`inspect`/`exec`/`stop`/`rm`/
-> `images`) as thin, label-scoped pass-throughs to podman, and LABEL every
-> netcage-managed container so the verbs (and the later `netcage start`) can
-> filter to netcage's own containers.
+> `images`) as thin pass-throughs to podman, SCOPED via the `netcage.managed`
+> label (introduced by the blocking teardown task) so the verbs only touch
+> netcage's own containers.
 >
 > FIRST, check this task against current reality (launch snapshot - may have
 > DRIFTED): confirm the CLI still dispatches only `run` and `verify` (the
@@ -90,9 +90,10 @@ teardown's remove-both.
 > both stopped. These verbs let a user inspect/manage them with podman vocabulary.
 >
 > Where to look / seams: the CLI subcommand dispatch (add the verb routes; keep
-> proxy-preflight OFF them); the container create args (add the `netcage.managed`
-> + role + run-id labels); a small helper that builds a label-filtered podman
-> argv per verb. Test at the argv-builder seam (assert the built podman command
+> proxy-preflight OFF them); the `netcage.managed` label on the container create
+> args is ALREADY added by the blocking teardown task - CONSUME it (do not
+> re-introduce it; if it is somehow absent, that task drifted -> needs-attention);
+> a small helper that builds a label-filtered podman argv per verb. Test at the argv-builder seam (assert the built podman command
 > for each verb, including the label filter) without running podman, mirroring the
 > existing `SidecarRunArgs`/`ToolRunArgs` wiring tests; add one podman-gated
 > integration test.
