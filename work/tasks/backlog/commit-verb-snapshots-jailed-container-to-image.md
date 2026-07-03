@@ -1,7 +1,7 @@
 ---
 title: Add `netcage commit <container> <image-ref>` - snapshot a netcage-managed (jailed) container's filesystem to an image, podman-faithful and forced-egress-safe
 slug: commit-verb-snapshots-jailed-container-to-image
-blockedBy: []
+blockedBy: [exec-verb-podman-faithful-interactive-and-jail-safe]
 covers: []
 ---
 
@@ -80,8 +80,13 @@ check for consistency" where none is meaningful.
 
 ## Blocked by
 
-- None. It builds on the shipped v0.4.0 `manage` package + label + `start`'s
-  tool-resolution, all on main; it adds a new verb without touching their logic.
+- `exec-verb-podman-faithful-interactive-and-jail-safe` - NOT a functional
+  dependency (commit needs nothing exec adds), but both edit `internal/manage`
+  (verb dispatch + the arg builders), so they are serialised to avoid a merge
+  conflict and so commit follows exec's "management verb curates its podman flags
+  + is jail-safe" precedent. Otherwise commit builds only on the shipped v0.4.0
+  `manage` package + label + `start`'s tool-resolution (all on main); it adds a
+  new verb without touching their logic.
 
 ## Prompt
 
