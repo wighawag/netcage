@@ -212,6 +212,86 @@ func TestToolRunArgs_OmitsWorkdirWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestToolRunArgs_WiresEnvUserEntrypoint pins the drift-bug fix: -e/--env,
+// -u/--user and --entrypoint were PARSED into the CLI command but never reached
+// the tool container (silently dropped). They must now appear in the podman run
+// args so the env is set, the tool runs as that user, and the entrypoint is
+// overridden. Repeatable -e accumulates in order.
+func TestToolRunArgs_WiresEnvUserEntrypoint(t *testing.T) {
+	c := cfg()
+	c.Env = []string{"KEY=VALUE", "OTHER=2"}
+	c.User = "1000:1000"
+	c.Entrypoint = "/bin/sh"
+	args := c.ToolRunArgs()
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"-e KEY=VALUE", "-e OTHER=2",
+		"-u 1000:1000",
+		"--entrypoint /bin/sh",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("tool args must wire the parsed-but-dropped flag %q\ngot: %s", want, joined)
+		}
+	}
+	// The env/user/entrypoint flags must precede the image (podman run flags come
+	// before the positional IMAGE), else they are mis-read as the tool argv.
+	imgIdx := indexOf(args, c.Image)
+	for _, flag := range []string{"-e", "-u", "--entrypoint"} {
+		if i := indexOf(args, flag); i < 0 || i > imgIdx {
+			t.Fatalf("%s must appear as a run flag BEFORE the image; args: %s", flag, joined)
+		}
+	}
+}
+
+// TestToolRunArgs_OmitsEnvUserEntrypointWhenUnset checks the drift-fix wiring is
+// conditional: with no env/user/entrypoint set, none of those flags appears (the
+// image's own env/user/entrypoint are left intact, like plain `podman run`).
+func TestToolRunArgs_OmitsEnvUserEntrypointWhenUnset(t *testing.T) {
+	c := cfg()
+	args := c.ToolRunArgs()
+	// Only the RUN-FLAG region (before the image) may contain these flags; the tool
+	// argv after the image legitimately carries its own -u (nuclei -u https://...),
+	// so scan the flag region, not the whole joined string.
+	imgIdx := indexOf(args, c.Image)
+	for _, flag := range []string{"-e", "-u", "--entrypoint"} {
+		if i := indexOf(args, flag); i >= 0 && i < imgIdx {
+			t.Fatalf("unset env/user/entrypoint must add no %s run flag\ngot: %s", flag, strings.Join(args, " "))
+		}
+	}
+}
+
+// TestToolRunArgs_PassesThroughVettedFlags proves the widened, vetted allow-list
+// flags (Config.PassThroughFlags, populated from cli.Command.PassThroughFlags)
+// reach the tool container's podman run args verbatim, in order, BEFORE the image
+// (ADR-0010). These flags cannot touch network/netns/caps/devices/privilege/
+// ports/DNS, so passing them through does not weaken forced egress.
+func TestToolRunArgs_PassesThroughVettedFlags(t *testing.T) {
+	c := cfg()
+	c.PassThroughFlags = []string{"--memory", "512m", "--label", "a=b", "--read-only"}
+	args := c.ToolRunArgs()
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"--memory 512m", "--label a=b", "--read-only"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("tool args must pass through vetted flag %q\ngot: %s", want, joined)
+		}
+	}
+	// Every pass-through token must precede the image (they are run flags).
+	imgIdx := indexOf(args, c.Image)
+	if i := indexOf(args, "--memory"); i < 0 || i > imgIdx {
+		t.Fatalf("pass-through flags must appear BEFORE the image; args: %s", joined)
+	}
+}
+
+// indexOf returns the first index of tok in args, or -1.
+func indexOf(args []string, tok string) int {
+	for i, a := range args {
+		if a == tok {
+			return i
+		}
+	}
+	return -1
+}
+
 // The firewall is applied INSIDE the sidecar via `podman exec` (ADR-0006), so
 // the ruleset is an iptables/ip6tables shell script (the pinned redirector image
 // ships iptables, not nft), not an nft ruleset piped through host nsenter.

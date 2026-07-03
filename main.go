@@ -102,8 +102,16 @@ func runRun(ctx context.Context, cmd *cli.Command) int {
 		ToolArgv:            cmd.ToolArgv,
 		Mounts:              cmd.Mounts,
 		Workdir:             cmd.Workdir,
-		Interactive:         interactive,
-		AllowDirect:         cmd.AllowDirect,
+		// Env/User/Entrypoint were parsed by the CLI but historically dropped here
+		// (silently); wire them through so `-e`/`-u`/`--entrypoint` actually reach the
+		// tool container. PassThroughFlags carries the widened, vetted allow-list flags
+		// (ADR-0010) verbatim.
+		Env:              cmd.Env,
+		User:             cmd.User,
+		Entrypoint:       cmd.Entrypoint,
+		PassThroughFlags: cmd.PassThroughFlags,
+		Interactive:      interactive,
+		AllowDirect:      cmd.AllowDirect,
 		// The netcage-owned --rm maps to an EPHEMERAL run (remove both tool +
 		// sidecar on exit). Without it the run is KEPT: the stopped tool + sidecar
 		// are left behind (podman-run fidelity), fail-closed via the baked firewall.
@@ -181,11 +189,15 @@ env var (flag wins; if neither is set the run refuses, fail-closed). Only
 socks5h:// is accepted (plain socks5:// leaks DNS and is rejected).
 
 allowed run flags: -i, -t, -it/-ti, --rm, -v/--volume host:container[:opts],
--w/--workdir <dir>, -e/--env KEY=VALUE, -u/--user <user>, --entrypoint <path>.
---rm is netcage-owned: it makes the run EPHEMERAL (both the tool container and
-its sidecar are removed on exit). WITHOUT --rm the stopped tool container and its
-sidecar are LEFT behind (inspectable/restartable like ` + "`podman run`" + `), kept
-fail-closed by the jail's baked firewall. jail-breaching flags (--network,
--p/--publish, --dns, --privileged, --cap-add, --device, --name) are rejected:
-netcage owns the network and isolation to keep the jail leak-proof. Any other
-flag is rejected by default.`
+-w/--workdir <dir>, -e/--env KEY=VALUE, -u/--user <user>, --entrypoint <path>,
+and the vetted network-irrelevant pass-throughs --memory, --cpus, --memory-swap,
+-l/--label, --tmpfs, --read-only, --hostname, --pull, --platform, --env-file,
+--ulimit, --shm-size. --rm is netcage-owned: it makes the run EPHEMERAL (both the
+tool container and its sidecar are removed on exit). WITHOUT --rm the stopped
+tool container and its sidecar are LEFT behind (inspectable/restartable like
+` + "`podman run`" + `), kept fail-closed by the jail's baked firewall. jail-breaching
+flags (--network, -p/--publish, --dns, --privileged, --cap-add, --device,
+--name, --add-host) are rejected: netcage owns the network and isolation to keep
+the jail leak-proof (--add-host is refused because it pins hostname->IP and
+sidesteps proxy-side DNS). Any other flag is rejected by default (fail-closed on
+the unknown).`

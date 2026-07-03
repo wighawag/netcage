@@ -82,11 +82,13 @@ netcage run --proxy socks5h://127.0.0.1:9050 -it alpine sh
 
 ### Allowed run flags
 
-`-i`, `-t`, `-it`/`-ti`, `--rm`, `-v`/`--volume host:container[:opts]`, `-w`/`--workdir <dir>`, `-e`/`--env KEY=VALUE`, `-u`/`--user <user>`, `--entrypoint <path>`, and `--allow-direct` (see below).
+`-i`, `-t`, `-it`/`-ti`, `--rm`, `-v`/`--volume host:container[:opts]`, `-w`/`--workdir <dir>`, `-e`/`--env KEY=VALUE`, `-u`/`--user <user>`, `--entrypoint <path>`, the vetted network-irrelevant pass-throughs `--memory`, `--cpus`, `--memory-swap`, `-l`/`--label`, `--tmpfs`, `--read-only`, `--hostname`, `--pull`, `--platform`, `--env-file`, `--ulimit`, `--shm-size`, and `--allow-direct` (see below).
+
+The allow-list is **curated and fail-closed**: a flag is allowed only if it cannot alter the container network/netns, add capabilities/devices/privilege, publish/bind ports, affect DNS/resolv, or collide with a netcage-owned name/lifecycle field (`--name`/`--rm`/`--network`). See [ADR-0010](docs/adr/0010-widened-run-flag-allowlist-is-vetted-network-irrelevant.md).
 
 **`--rm` is netcage-owned:** it makes the run **ephemeral** (both the tool container and its sidecar are removed on exit). **WITHOUT `--rm`** the stopped tool container and its sidecar are **left behind** (inspectable/restartable like `podman run`), kept fail-closed by the jail's baked firewall so a leftover container never has a working un-jailed network. netcage interprets its own `--rm`; it never passes a raw podman `--rm` through.
 
-**Jail-breaching flags are rejected** (`--network`, `-p`/`--publish`, `--dns`, `--privileged`, `--cap-add`, `--device`, `--name`): netcage owns the container network and isolation to keep the jail leak-proof. Any other flag is rejected by default.
+**Jail-breaching flags are rejected** (`--network`, `-p`/`--publish`, `--dns`, `--privileged`, `--cap-add`, `--device`, `--name`, `--add-host`): netcage owns the container network and isolation to keep the jail leak-proof. `--add-host` is refused because it pins a hostname->IP that sidesteps proxy-side DNS. Any other (unknown) flag is rejected by default (fail-closed on the unknown).
 
 ## verify: prove it does not leak
 
