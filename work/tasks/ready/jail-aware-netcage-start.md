@@ -22,9 +22,12 @@ Sequence (proven sufficient by spiking - see the finding):
      REVIVE**: bring the (stopped) sidecar up. Podman also auto-revives it as the
      tool's `--network container:` dependency, and the baked `EXTRA_COMMANDS`
      firewall re-applies automatically (proven idempotent across restarts, no
-     rule accumulation). Then re-exec the `netcage-dns` forwarder INTO the sidecar
-     (it is a separate process, NOT part of `EXTRA_COMMANDS`, so a restart leaves
-     it dead until this step restores it), then start/attach the tool.
+     rule accumulation). VERIFY the firewall is fully applied after the sidecar
+     is up (the same `iptables -S` probe the run path uses - `netcage start` is a
+     netcage-driven path, so it gets the fail-loud layer too; abort loudly if
+     partial). Then re-exec the `netcage-dns` forwarder INTO the sidecar (it is a
+     separate process, NOT part of `EXTRA_COMMANDS`, so a restart leaves it dead
+     until this step restores it), then start/attach the tool.
    - **Different `--proxy` / `--allow-direct` -> REFUSE** with a clear message
      ("this container was jailed with a different proxy/allowlist; remove it and
      run again, or start it with the same jail config"). Do NOT silently revive a
@@ -44,6 +47,9 @@ that ALSO restores DNS; a raw `podman start` (no DNS restore) stays fail-closed
 - [ ] `netcage start <name>` on a kept netcage tool container REVIVES the sidecar,
       re-execs the DNS forwarder, and re-enters the tool with its state intact
       (a file written in a prior run is still there).
+- [ ] `netcage start` VERIFIES the firewall after reviving the sidecar (same
+      `iptables -S` probe as the run path) and aborts loudly if partial - the
+      fail-loud layer applies to `start`, not just `run`.
 - [ ] A verify-style leak assertion holds on the RESTARTED container: exit-IP is
       the proxy's, DNS resolves proxy-side, a LAN/RFC1918 host is DROPPED, and it
       is fail-closed on proxy-kill - i.e. `start` restores a full, leak-tight jail.

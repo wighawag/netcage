@@ -2,7 +2,7 @@
 title: Widen the fail-closed run-flag allow-list with vetted network-irrelevant flags (and fix the env/user/entrypoint pass-through that is silently dropped)
 slug: widen-run-flag-allowlist
 prd: podman-fidelity-and-lifecycle
-blockedBy: []
+blockedBy: [teardown-split-honour-rm]
 covers: [4, 5]
 ---
 
@@ -26,10 +26,13 @@ Add (vetted per the checklist): `--memory`, `--cpus`, `--memory-swap`,
 container's podman run args.
 
 Keep REFUSED (jail/isolation-relevant): the existing deny-set (`--network`,
-`-p`/`--publish`, `--dns`, `--privileged`, `--cap-add`, `--device`, `--name`,
-`--rm`) with their current messages, PLUS `--add-host` (it can pin a hostname->IP
-that sidesteps proxy-side DNS - refused for now, with a message saying so), and
-anything unlisted (unknown-flag refusal).
+`-p`/`--publish`, `--dns`, `--privileged`, `--cap-add`, `--device`, `--name`)
+with their current messages, PLUS `--add-host` (it can pin a hostname->IP that
+sidesteps proxy-side DNS - refused for now, with a message saying so), and
+anything unlisted (unknown-flag refusal). NOTE: `--rm` is NO LONGER in the
+deny-set - the `teardown-split-honour-rm` task (this task's blocker) removed it
+and made it a netcage-owned ephemeral-run flag; do NOT re-add `--rm` to the
+deny-set.
 
 ALSO fix a live drift bug: `-e`/`--env`, `-u`/`--user`, and `--entrypoint` are
 already PARSED into the CLI command but are NEVER wired into the jail config /
@@ -60,9 +63,12 @@ the parser; this task makes them functional).
 
 ## Blocked by
 
-- None - can start immediately. This task lives entirely in the CLI parse +
-  jail-config-wiring surface, file-orthogonal to the teardown/start jail-package
-  work, so it can proceed in parallel.
+- `teardown-split-honour-rm` - that task removes `--rm` from the CLI deny-set
+  (`denyReasons`) and makes it a netcage-owned ephemeral flag; this task also
+  edits `denyReasons` (adds `--add-host`, widens the allow-list). Serialised
+  after it to avoid a merge conflict on the same map and so `--rm` is not
+  re-added here. Otherwise this task is CLI-surface-local and independent of the
+  jail-package work.
 
 ## Prompt
 

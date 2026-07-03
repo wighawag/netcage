@@ -70,15 +70,55 @@ still forced through the proxy. The LAN leak is closed.
   host and must NOT egress DNS - proving the leftover container is fail-closed
   outside netcage. This is the acceptance seam for the hardening.
 
-## Caveat / still to confirm during build
+## RESOLVED by spike: EXTRA_COMMANDS CANNOT fail-close the sidecar (do not rely on it for the failure path)
 
-- `EXTRA_COMMANDS` runs under `sh -c` WITHOUT `set -e` (the entrypoint does not
-  add it), so a partially-applied firewall would NOT abort the sidecar the way
-  the current `podman exec ... sh -c 'set -e; ...'` does. The baked script MUST
-  begin with `set -e` itself (and be verified to abort the sidecar start on a
-  rule failure) so a half-applied firewall fails the sidecar loudly rather than
-  leaking. Confirm the entrypoint's `run || exit 1` actually kills the container
-  when `EXTRA_COMMANDS` exits non-zero.
+Spiked 2026-07-03 against the pinned image. The entrypoint's `run()` calls
+`sh -c "$EXTRA_COMMANDS"` as a CHILD subshell and does NOT check its exit status
+before proceeding to `exec tun2socks`. Consequences, all TESTED:
+
+- A DELIBERATELY-FAILING firewall (`set -e` + a bad `iptables` invocation) prints
+  its error but the sidecar STAYS UP and tun2socks starts anyway (the `[STACK]`
+  line is reached). `set -e` aborts only the SUBSHELL, not PID 1.
+- `kill -TERM 1` / `kill -9 1` from inside `EXTRA_COMMANDS` does NOT abort the
+  container (PID 1 = entrypoint.sh ignores the signal, then `exec tun2socks`
+  replaces it). `exec sleep infinity` inside the subshell only replaces the
+  subshell, not PID 1, so tun2socks still starts.
+- So a HALF-APPLIED firewall via `EXTRA_COMMANDS` would leave tun2socks running
+  with a partial firewall = a LEAK, and `EXTRA_COMMANDS` has no way to stop it.
+
+The HAPPY path is rock-solid: a VALID firewall via `EXTRA_COMMANDS` re-applies
+fully (8/8 rules) on every restart, tested across 5 `podman restart` cycles.
+iptables rules do not accumulate (fresh netns each start).
+
+### The fail-loud design (what the build MUST do)
+
+Use a TWO-LAYER guard - do NOT rely on `EXTRA_COMMANDS` alone for fail-closed:
+
+1. **`EXTRA_COMMANDS` self-heals the firewall on every (re)start** (the proven
+   happy-path mechanism) - this is what closes the raw-`podman start` LAN/UDP
+   leak on a bypass restart.
+2. **netcage's own run/start path VERIFIES the firewall after the sidecar is up**
+   (a `podman exec ... iptables -S` probe asserting the exact expected rule set),
+   and ABORTS the jail loudly (fail-closed, tear down) if the rules are missing
+   or partial. This is the Go-side exit-code check that the CURRENT code already
+   gets for free from `podman exec`; it MUST be preserved as an explicit
+   post-(re)start verification now that the firewall moved into `EXTRA_COMMANDS`.
+   Both `netcage run` and `netcage start` run this verification.
+3. The ONLY unguarded path is a raw `podman start` OUTSIDE netcage (no netcage
+   process to verify). There, the happy-path `EXTRA_COMMANDS` re-applies the full
+   firewall (proven), and a hypothetical firewall FAILURE on that path leaves
+   tun2socks running with a partial firewall. To bound THAT residual: the baked
+   firewall should be ORDERED so its FIRST effective action is the broadest DROP
+   it can be while still letting tun2socks reach the proxy + loopback (so a
+   later-rule failure leaves MORE dropped, not more open), and netcage documents
+   that the SUPPORTED reuse path is `netcage start` (which verifies), not a raw
+   `podman start`. A raw bypass is best-effort-closed, never guaranteed - which is
+   acceptable because the supported path IS guaranteed and a bypass is already
+   out-of-contract.
+
+Bottom line: `EXTRA_COMMANDS` gives self-healing on restart (closing the LAN/UDP
+leak on the happy path); the fail-LOUD guarantee comes from netcage's post-start
+firewall VERIFICATION on the run/start paths, NOT from `EXTRA_COMMANDS` aborting.
 - The split-tunnel allowlist ACCEPT rules (ADR-0005) are part of the same
   firewall script and must move into `EXTRA_COMMANDS` together, so an allowlisted
   reusable container also re-applies its directs on restart.

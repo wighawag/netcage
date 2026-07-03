@@ -21,12 +21,30 @@ that routes public TCP through the proxy but leaves LAN/RFC1918 + UDP reachable
 
 The firewall script (UDP drop + loopback-UDP accept + host-loopback reachback
 narrowing + RFC1918 drops + the split-tunnel ACCEPT rules) is unchanged in
-CONTENT; only WHERE it is applied moves (runtime exec -> create-time env). It
-must begin with `set -e` in the baked string, because the image runs
-`EXTRA_COMMANDS` under a plain `sh -c` without `set -e`, and the entrypoint's
-`run || exit 1` must be confirmed to abort (kill) the sidecar if the firewall
-exits non-zero, so a half-applied firewall fails the sidecar LOUDLY instead of
-leaking.
+CONTENT; only WHERE it is applied moves (runtime exec -> create-time env).
+
+CRITICAL (spiked, do NOT skip): `EXTRA_COMMANDS` CANNOT fail-close the sidecar.
+The image entrypoint runs `sh -c "$EXTRA_COMMANDS"` as a child subshell and does
+NOT check its exit before `exec tun2socks`, so a failing/half-applied firewall
+leaves tun2socks running with a partial firewall (a LEAK), and neither `set -e`
+nor `kill 1` from inside `EXTRA_COMMANDS` can abort it (all TESTED - see the
+finding). So use a TWO-LAYER guard:
+
+1. `EXTRA_COMMANDS` self-heals the firewall on every (re)start (the proven
+   happy-path mechanism that closes the raw-restart LAN/UDP leak).
+2. netcage's OWN run path VERIFIES the firewall AFTER the sidecar is up (a
+   `podman exec ... iptables -S` probe asserting the exact expected rule set) and
+   ABORTS the jail LOUDLY (fail-closed, tear down) if the rules are missing or
+   partial. This preserves the fail-loud guarantee the current `podman exec ...
+   'set -e; ...'` gets from its Go-side exit-code check. (`netcage start` runs the
+   same verification - see the start task.)
+
+Order the baked firewall so its first effective actions are the broadest safe
+DROPs (still letting tun2socks reach the proxy + loopback), so a later-rule
+failure leaves MORE dropped, not more open, bounding the residual on the one
+unguarded path (a raw `podman start` outside netcage, which has no netcage
+process to verify - documented as out-of-contract; the supported reuse path is
+`netcage start`, which verifies).
 
 Add a leak assertion to `verify` that proves the raw-bypass path is fail-closed:
 after a non-ephemeral run leaves a tool container, a raw `podman start <tool>`
@@ -46,8 +64,12 @@ dead = fail-closed).
       sidecar run args), NOT a post-start `podman exec`; its content is the same
       rule set as today (UDP drop, loopback-UDP accept, reachback narrowing,
       RFC1918 drops, split-tunnel ACCEPTs).
-- [ ] The baked script starts with `set -e`, and a deliberately-failing rule
-      makes the SIDECAR fail to start (loud), never a half-applied firewall.
+- [ ] netcage's run path VERIFIES the firewall after the sidecar is up (an
+      `iptables -S` probe of the exact expected rule set) and aborts the jail
+      LOUDLY (fail-closed, teardown) if a rule is missing/partial - a
+      deliberately-broken firewall must FAIL the run, never run a half-applied
+      firewall. (This is the fail-loud layer; `EXTRA_COMMANDS` alone cannot abort
+      the sidecar - proven in the finding.)
 - [ ] Full netcage `run` still passes the existing leak-test (`verify` green):
       exit-IP is the proxy's, DNS is proxy-side, fail-closed on proxy-kill, and
       the split-tunnel directs (when set) still work.
@@ -99,9 +121,13 @@ dead = fail-closed).
 > The proven mechanism + the exact spike results are in
 > `work/notes/findings/sidecar-firewall-via-extra-commands-survives-restart.md`
 > and `work/notes/findings/podman-network-container-dependency-lifecycle.md`. READ
-> THEM FIRST - they carry the tested facts (the LAN/UDP leak on a raw restart, the
-> `EXTRA_COMMANDS`-fixes-it result, the no-rule-accumulation result, and the
-> `set -e`/`run || exit 1` caveat you must confirm).
+> THEM FIRST - they carry the tested facts: the LAN/UDP leak on a raw restart, the
+> `EXTRA_COMMANDS`-fixes-it (happy-path) result, the no-rule-accumulation result,
+> and the DECISIVE caveat - `EXTRA_COMMANDS` CANNOT fail-close the sidecar (the
+> entrypoint does not check its exit; `set -e`/`kill 1` were both spiked and do
+> NOT abort tun2socks), so the fail-LOUD guarantee MUST come from netcage's own
+> post-start firewall VERIFICATION (the two-layer guard), not from the baked
+> script aborting.
 >
 > Where to look / seams to test at: the sidecar-run-args builder (assert the
 > `EXTRA_COMMANDS` value is present and equals the firewall script, without

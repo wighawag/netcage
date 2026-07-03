@@ -27,17 +27,31 @@ Split the two concerns that are conflated today:
   residue).
 
 Internal one-shots MUST keep the ephemeral (remove-both) behaviour explicitly -
-only a plain user `run` without `--rm` changes. `--rm` stays in the deny-set as a
-USER flag netcage owns (the user does not pass podman's `--rm`; netcage decides
-tool-container lifecycle), OR is re-interpreted as a netcage-level "ephemeral
-this run" flag - decide and record which (the invariant is: netcage owns the
-tool container's name + lifecycle; a user cannot smuggle a raw podman `--rm`).
+only a plain user `run` without `--rm` changes.
+
+**`--rm` becomes a netcage-owned USER flag (decided): REMOVE it from the
+deny-set** and make `netcage run --rm` mean "ephemeral this run" at the netcage
+level. netcage OWNS what `--rm` does - it is NOT smuggled through to podman's raw
+`--rm`; netcage decides the tool container's lifecycle (name + removal) and maps
+its own `--rm` to the ephemeral teardown (remove both tool + sidecar). So if
+netcage needs to do something extra on the ephemeral path (its own teardown, its
+own labelling), it takes care of it. The invariant is unchanged: netcage owns the
+tool container's name + lifecycle; the user never passes a raw podman `--rm`/
+`--name`, they pass the netcage `--rm` which netcage interprets.
+
+**This task INTRODUCES the `netcage.managed` label** (+ role + run id) on the
+tool and sidecar create args, because it is the first task to leave containers
+behind that must be identifiable at rest. The pass-through-verbs task consumes
+this label to scope its verbs (it `blockedBy` this task).
 
 ## Acceptance criteria
 
+- [ ] netcage-created containers (tool + sidecar) carry a stable
+      `netcage.managed` label (+ role + run id) set at create time (introduced
+      here).
 - [ ] A plain `netcage run <img>` (no `--rm`) LEAVES a stopped tool container and
       its stopped sidecar behind after exit; a subsequent `podman ps -a` shows
-      both, labelled netcage-managed.
+      both, carrying the `netcage.managed` label.
 - [ ] `netcage run --rm <img>` (or the netcage ephemeral path) removes BOTH the
       tool and the sidecar on exit - no residue (as today).
 - [ ] Every INTERNAL one-shot (verify probes, reachback/direct probes, any
@@ -47,9 +61,10 @@ tool container's name + lifecycle; a user cannot smuggle a raw podman `--rm`).
       rest and on restart (the baked firewall from the blocking task drops
       LAN/UDP; DNS is dead until netcage restores it). A raw `podman start` of the
       leftover tool never yields a working un-jailed network.
-- [ ] The tool container's name/lifecycle stays netcage-owned; a user cannot pass
-      a raw podman `--rm`/`--name` (deny-set unchanged), and the netcage-level
-      ephemeral choice is recorded.
+- [ ] `netcage run --rm` is ACCEPTED (removed from the deny-set) and means the
+      netcage-level ephemeral run (removes both tool + sidecar); `--name` stays
+      deny-set (netcage owns the run-attributable name). The user's `--rm` is
+      netcage's flag, never smuggled to podman's raw `--rm`.
 - [ ] Tests: unit tests for the tool-run-args (no forced `--rm` on the kept path;
       `--rm` on the ephemeral path) and teardown (removes both on ephemeral;
       leaves both on kept), mirroring the existing jail tests; a podman-gated
@@ -61,6 +76,10 @@ tool container's name + lifecycle; a user cannot smuggle a raw podman `--rm`).
 - `fail-closed-restart-firewall-via-extra-commands` - the leftover sidecar is
   only safe to leave because its firewall self-heals on restart; this task must
   not land before that hardening.
+- `pass-through-verbs-and-labels` - the left-behind pair must carry the
+  `netcage.managed` label (this task's acceptance asserts the leftover is
+  labelled), which that task introduces; serialised also because both edit the
+  container create args.
 
 ## Prompt
 

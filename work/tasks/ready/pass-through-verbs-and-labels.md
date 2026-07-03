@@ -1,5 +1,5 @@
 ---
-title: Add netcage pass-through verbs (ps/logs/inspect/exec/stop/rm/images) scoped to netcage-managed containers, and label them
+title: Add netcage pass-through verbs (ps/logs/inspect/exec/stop/rm/images) scoped to netcage-managed containers (via the netcage.managed label)
 slug: pass-through-verbs-and-labels
 prd: podman-fidelity-and-lifecycle
 blockedBy: [teardown-split-honour-rm]
@@ -11,12 +11,14 @@ covers: [6]
 Give netcage the familiar podman management verbs, scoped to netcage-managed
 containers, plus the label that makes that scoping possible:
 
-- **Label netcage-managed containers.** Every container netcage creates (the
-  tool AND the sidecar) gets a stable label (e.g. `netcage.managed=true` plus a
-  role label `netcage.role=tool|sidecar` and the run id) at CREATE time, so they
-  are discoverable and filterable. (Today they are only identifiable by the
-  `netcage-run-<id>-*` name convention; a label is the robust discriminator the
-  verbs and `netcage start` filter on.)
+- **Consume the `netcage.managed` label.** The `netcage.managed` (+ role + run
+  id) label on netcage-created containers is INTRODUCED by the
+  `teardown-split-honour-rm` task (the first to leave containers behind); this
+  task CONSUMES it as the robust discriminator the verbs filter on (a label, not
+  the `netcage-run-<id>-*` name convention). If for any reason that task's label
+  is not yet present when you build this, add it to the container create args
+  here - but the two tasks are serialised (`blockedBy`) so it should already
+  exist.
 - **Pass-through verbs**: `netcage ps` / `logs` / `inspect` / `exec` / `stop` /
   `rm` / `images` as THIN pass-throughs to podman, FILTERED to netcage-managed
   containers (via the label) so a user manages netcage's containers with podman
@@ -36,8 +38,9 @@ teardown's remove-both.
 
 ## Acceptance criteria
 
-- [ ] netcage-created containers (tool + sidecar) carry a stable
-      `netcage.managed` label (+ role + run id) set at create time.
+- [ ] The verbs filter on the `netcage.managed` label (introduced by the
+      blocking teardown task); a container carrying it is in scope, one without it
+      is out of scope.
 - [ ] `netcage ps` lists only netcage-managed containers (filtered by label);
       `netcage images` shows the images netcage uses; `logs`/`inspect`/`exec`/
       `stop` operate on a named netcage-managed container and REFUSE (clear
