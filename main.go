@@ -24,6 +24,7 @@ import (
 
 	"github.com/wighawag/netcage/internal/cli"
 	"github.com/wighawag/netcage/internal/detectproxy"
+	"github.com/wighawag/netcage/internal/forward"
 	"github.com/wighawag/netcage/internal/jail"
 	"github.com/wighawag/netcage/internal/manage"
 	"github.com/wighawag/netcage/internal/setupdefault"
@@ -221,17 +222,29 @@ func runStart(ctx context.Context, cmd *cli.Command) int {
 	return res.ToolExit
 }
 
-// runForward is the not-yet-wired dispatch for the `netcage forward <container>
-// <port>` host-access verb (ADR-0014). The CLI PARSE layer is complete and
-// validated (loopback-by-default bind, the guardrailed 0.0.0.0 opt-in, no
-// --proxy, fail-closed on the unknown), but the forward MECHANISM (a host-side
-// socat forwarding into the netcage-managed container's netns) is a SEPARATE
-// task. Until that lands, recognising the verb here and failing loudly with a
-// clear pointer is correct: it proves the parse surface reaches dispatch without
-// pretending the forward works.
-func runForward(_ context.Context, cmd *cli.Command) int {
-	fmt.Fprintf(os.Stderr, "netcage: forward: not yet wired (parsed %s:%d -> %s; the forward mechanism is a separate task)\n", cmd.ForwardBind, cmd.ForwardPort, cmd.ForwardContainer)
-	return 1
+// runForward stands up the `netcage forward <container> <port>` host-access verb
+// (ADR-0014): a label-scoped, loopback-by-default, single-port, lifetime-bounded
+// host->jail forward, with a warned `--bind 0.0.0.0` LAN opt-in, that NEVER
+// touches the egress firewall. It resolves the named container to a
+// netcage-managed tool (refusing a non-netcage or stopped jail loudly), warns
+// before a 0.0.0.0 exposure, prints the start line, and holds the forward for the
+// verb's lifetime. ctx is SIGINT/SIGTERM-cancellable (wired in run), so Ctrl-C
+// tears the relay down cleanly, leaving no listener and no host state behind
+// (a clean Ctrl-C is exit 0). The forward is a plain host process: a reboot ends
+// it and nothing revives it. To re-establish after a reboot: `netcage start
+// <container>`, relaunch the server if it was a tool-run process, then `netcage
+// forward` again (nothing about host-access persists).
+func runForward(ctx context.Context, cmd *cli.Command) int {
+	err := forward.Run(ctx, jail.ExecRunner{}, forward.Config{
+		Container: cmd.ForwardContainer,
+		Port:      cmd.ForwardPort,
+		Bind:      cmd.ForwardBind,
+	}, forward.IO{Stdout: os.Stdout, Stderr: os.Stderr})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "netcage: forward: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 // runVerify runs the leak-test against the configured proxy and exits per the
