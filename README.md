@@ -179,6 +179,31 @@ netcage forward --bind 0.0.0.0 netcage-run-<id>-tool 3001
 
 **Nothing about host access persists.** After a reboot, re-establish it explicitly: `netcage start <container>` (revive the jail), relaunch the server if it was a tool-run process, then `netcage forward <container> <port>` again.
 
+## ports: list a jail's open TCP listeners
+
+Before you `forward` a port you often need to know WHICH ports the jailed tool is listening on. `netcage ports <container>` lists the in-jail **TCP LISTEN** sockets, **image-independently**: it reads `/proc/net/tcp*` from inside the shared netns via the **sidecar** (`podman exec <sidecar> cat /proc/net/tcp*`), so it works even for a minimal or distroless tool image that ships no `ss`/`netstat`/`nc` (the same reason `forward` execs the sidecar, not the tool). It only **reads** `/proc`: it carries no `--proxy`, does no egress, and adds no firewall rule.
+
+```sh
+netcage ports netcage-run-<id>-tool
+# ADDRESS    PORT   SCOPE
+# 127.0.0.1  53     loopback        (netcage DNS forwarder)
+# 0.0.0.0    3001   all-interfaces
+```
+
+Each listener is reported with its bind **address**, **port**, and **scope**: `loopback` (bound `127.0.0.0/8` or `::1`, reachable only inside the netns, the exact `forward` case) vs `all-interfaces` (`0.0.0.0`/`::`). netcage's own in-jail DNS forwarder on `127.0.0.1:53` is **shown** (annotated as `netcage DNS forwarder`), never silently filtered, so the list can't hide a real listener. IPv4 and IPv6 listeners are both reported. Only **LISTEN** sockets appear (not established connections, not UDP, ADR-0003). A non-netcage or stopped container is refused loudly (label-scoped, ADR-0009); see [ADR-0015](docs/adr/0015-ports-verb-lists-jail-listeners-via-sidecar-proc-with-a-json-reuse-contract.md).
+
+`--json` emits a **stable, documented reuse contract** (like `detect-proxy --json`) so a tool can consume it without screen-scraping the table. It is an array of `{address, port, loopbackOnly}`, IPv4 and IPv6 in the **same array**, addresses rendered `127.0.0.1` / `0.0.0.0` / `::1` / `::`:
+
+```sh
+netcage ports netcage-run-<id>-tool --json
+# [
+#   { "address": "127.0.0.1", "port": 53,   "loopbackOnly": true  },
+#   { "address": "0.0.0.0",   "port": 3001, "loopbackOnly": false }
+# ]
+```
+
+The field names `address` (string), `port` (int), and `loopbackOnly` (bool) are the contract; the array is sorted stably (by port, then address) and an empty result is `[]`. A caller (e.g. an agent) uses this to show a pick-list and then `netcage forward` the chosen port, without the user knowing the port in advance.
+
 ## Split tunnel: reach one local service directly
 
 `--allow-direct <IP|CIDR>[:port]` (repeatable) opens a **narrow, guardrailed hole** in the forced egress for specific **RFC1918 / link-local** destinations, so a jailed tool can reach a trusted local service (e.g. a local model at `192.168.1.150:8080`) DIRECTLY over the LAN, while ALL other egress stays forced through the proxy, fail-closed.

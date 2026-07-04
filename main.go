@@ -27,6 +27,7 @@ import (
 	"github.com/wighawag/netcage/internal/forward"
 	"github.com/wighawag/netcage/internal/jail"
 	"github.com/wighawag/netcage/internal/manage"
+	"github.com/wighawag/netcage/internal/ports"
 	"github.com/wighawag/netcage/internal/setupdefault"
 	"github.com/wighawag/netcage/internal/verify"
 )
@@ -83,16 +84,27 @@ func run(args []string) int {
 	}
 }
 
-// runPorts is a STUB for the `netcage ports <container> [--json]` read verb: the
-// CLI parse + validation layer (this task) recognises the verb and produces a
-// well-formed Command (PortsContainer + JSON), but the listener ENUMERATION
-// mechanism (read /proc/net/tcp* via the sidecar) and its human/JSON rendering
-// are a SEPARATE wiring task that owns the real dispatch. Until then this stub
-// fails loudly rather than silently falling through to runRun (which would try to
-// stand up a jail). It carries no proxy and is not preflighted (cli.IsProxyless).
-func runPorts(_ context.Context, cmd *cli.Command) int {
-	fmt.Fprintf(os.Stderr, "netcage: ports: not yet wired (container %q, json=%v): the enumeration mechanism is a separate task\n", cmd.PortsContainer, cmd.JSON)
-	return 1
+// runPorts executes the `netcage ports <container> [--json]` read verb: a
+// label-scoped, image-independent enumeration of the jail's TCP LISTEN sockets
+// via the SIDECAR's /proc/net/tcp* (ADR-0015). It resolves the named container to
+// a netcage-managed run (refusing a non-netcage or stopped jail loudly), reads
+// the in-jail listeners through the netns-sharing sidecar (so it works for a tool
+// image with no ss/netstat/nc, ADR-0006), and renders either a human table or the
+// documented --json reuse contract on stdout. It carries no proxy and does NO
+// egress / adds NO firewall rule (it only reads /proc): a pure read, like
+// detect-proxy (cli.IsProxyless, not preflighted). The --json array goes to
+// stdout so a caller (e.g. anon-pi) can capture it cleanly; diagnostics/refusals
+// go to stderr with a clear message and a non-zero exit.
+func runPorts(ctx context.Context, cmd *cli.Command) int {
+	err := ports.Run(ctx, jail.ExecRunner{}, ports.Config{
+		Container: cmd.PortsContainer,
+		JSON:      cmd.JSON,
+	}, ports.IO{Stdout: os.Stdout, Stderr: os.Stderr})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "netcage: ports: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 // runManage routes a pass-through management verb (ps/logs/inspect/exec/stop/rm/
