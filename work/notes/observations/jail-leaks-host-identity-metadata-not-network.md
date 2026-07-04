@@ -355,6 +355,37 @@ lifecycle, same non-behaviour).
   `podman --root /var/tmp/<netcage-storage> system reset --force` (NOT `rm -rf`,
   which fails on the id-mapped overlay `diff/` tree). Doc only, no code.
 
+## Update 2026-07-04 - Leak 6 (host clock/boot fingerprint): leaks, maskable-but-deferred
+
+The transcript also showed "System Uptime ~4.5 days". Investigated: it is the
+HOST's uptime, and it is one of a FAMILY of shared-kernel `/proc` clock signals.
+Live-probed (throwaway `--root`, no residue):
+
+- `/proc/uptime`: jailed `397616.46` vs host `397616.47` - the HOST uptime.
+- `/proc/stat` `btime`: jailed `1782755714` == host `1782755714` - byte-identical
+  BOOT EPOCH, the strongest correlator (semi-stable machine id + ties container
+  to host boot).
+- `/proc/loadavg`: jailed `0.79 0.89 0.88` == host - host activity signal.
+
+Maskable? Yes per-field (a `-v fake:/proc/uptime:ro` bind made the tool read
+`100.00`). But DEFERRED, NOT done, because:
+1. It is the tip of a family (`uptime`, `btime`, `loadavg`, process start times,
+   the system clock). Masking `/proc/uptime` alone leaves `btime` wide open, and
+   an uptime that contradicts `btime` is itself a tell - so a lone mask is
+   arguably WORSE (looks handled, isn't).
+2. Single-`/proc`-file binds are brittle (break tools; a static fake never
+   advances = suspicious; a correct one must tick = more machinery).
+3. The proper fix is a TIME NAMESPACE (`CLONE_NEWTIME`) or a sandbox kernel
+   (gVisor/Kata) - the same "different isolation model" ADR-0013 already puts
+   out of scope for the hardware/kernel residual.
+
+Disposition: SAME class as the hardware/kernel residual (shared-kernel `/proc`).
+Recorded in ADR-0013's accepted-residual section (the clock/boot-time family +
+the time-namespace note), and captured as a future hardening idea at
+`work/notes/ideas/time-namespace-clock-boot-fingerprint.md`. No lone per-field
+mask shipped. Provenance: live probes on this host 2026-07-04, throwaway
+`--root`, `system reset` + `unshare rm -rf` after, zero residue.
+
 ## Update 2026-07-04 - Leak 5 INVESTIGATED + FIX PROVEN: pasta copies the host NIC NAME (not MAC); rename with `-I`
 
 Investigated the NIC leak end-to-end with live probes (throwaway `--root`, no
