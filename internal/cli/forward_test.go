@@ -30,6 +30,62 @@ func TestParse_ForwardParsesContainerPortAndDefaultBind(t *testing.T) {
 	}
 }
 
+// TestParse_ForwardRemapParsesHostAndJailPort asserts the remap form
+// `netcage forward <container> <hostPort>:<jailPort>` binds the host port and
+// connects to a DIFFERENT in-jail port: `8080:3001` => host 8080, jail 3001
+// (ForwardHostPort is the host bind port, ForwardPort stays the jail/connect
+// port). The bare single-port form defaults ForwardHostPort to the jail port, so
+// downstream is uniform (host==jail is the zero-remap special case).
+func TestParse_ForwardRemapParsesHostAndJailPort(t *testing.T) {
+	// The bare form: host defaults to the jail port (backward compatible).
+	bare, err := cli.ParseWithEnv([]string{"forward", "c", "3001"}, noEnv)
+	if err != nil {
+		t.Fatalf("bare form must parse: %v", err)
+	}
+	if bare.ForwardPort != 3001 || bare.ForwardHostPort != 3001 {
+		t.Fatalf("bare 3001: ForwardHostPort=%d ForwardPort=%d, want both 3001 (host defaults to jail)", bare.ForwardHostPort, bare.ForwardPort)
+	}
+	// The remap form: host 8080 -> jail 3001.
+	remap, err := cli.ParseWithEnv([]string{"forward", "c", "8080:3001"}, noEnv)
+	if err != nil {
+		t.Fatalf("remap form 8080:3001 must parse: %v", err)
+	}
+	if remap.ForwardHostPort != 8080 {
+		t.Fatalf("8080:3001: ForwardHostPort = %d, want 8080", remap.ForwardHostPort)
+	}
+	if remap.ForwardPort != 3001 {
+		t.Fatalf("8080:3001: ForwardPort (jail/connect) = %d, want 3001", remap.ForwardPort)
+	}
+}
+
+// TestParse_ForwardRemapRejectsBadSides asserts BOTH sides of the remap are
+// validated 1..65535 and that extra colons are refused loudly: a non-numeric or
+// out-of-range host side, a bad jail side, or two-or-more colons (`1:2:3`) is a
+// usage error. A bare bad port stays refused too (unchanged).
+func TestParse_ForwardRemapRejectsBadSides(t *testing.T) {
+	for _, p := range []string{"x:3001", "70000:3001", "0:3001", "8080:x", "8080:99999", "8080:0", "1:2:3", ":3001", "8080:"} {
+		if _, err := cli.ParseWithEnv([]string{"forward", "c", p}, noEnv); err == nil {
+			t.Fatalf("port spec %q accepted; want a loud usage error (both sides 1-65535, at most one colon)", p)
+		}
+	}
+}
+
+// TestParse_ForwardRemapWithBind asserts --bind still parses alongside the remap
+// with unchanged semantics: `--bind 0.0.0.0 c 8080:3001` binds host 0.0.0.0:8080
+// and connects to jail 3001.
+func TestParse_ForwardRemapWithBind(t *testing.T) {
+	cmd, err := cli.ParseWithEnv([]string{"forward", "--bind", "0.0.0.0", "c", "8080:3001"}, noEnv)
+	if err != nil {
+		t.Fatalf("--bind alongside remap must parse: %v", err)
+	}
+	if cmd.ForwardBind != "0.0.0.0" {
+		t.Fatalf("ForwardBind = %q, want 0.0.0.0", cmd.ForwardBind)
+	}
+	if cmd.ForwardHostPort != 8080 || cmd.ForwardPort != 3001 {
+		t.Fatalf("host/jail = %d/%d, want 8080/3001", cmd.ForwardHostPort, cmd.ForwardPort)
+	}
+}
+
 // TestParse_ForwardCarriesNoProxy asserts `forward` is a NETCAGE-ONLY host-access
 // verb that carries NO proxy at all: it stands up an INBOUND loopback forward,
 // not an egress, so it needs neither --proxy nor a resolved proxy source (like

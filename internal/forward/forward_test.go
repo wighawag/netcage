@@ -161,6 +161,68 @@ func TestListenArgs_BindDefaultVsAllInterfaces(t *testing.T) {
 	}
 }
 
+// TestListenArgs_RemapSplitsHostBindFromConnectPort pins the remap: the HOST
+// listener binds the HOST port while the EXEC connect side reaches the DIFFERENT
+// in-jail port. For 8080:3001 the listener is TCP-LISTEN:8080 and the connector
+// targets 127.0.0.1 3001. For the bare (zero-remap) case host==jail, so both are
+// the same port (backward compatible).
+func TestListenArgs_RemapSplitsHostBindFromConnectPort(t *testing.T) {
+	// Remap: host 8080, jail 3001.
+	remap := strings.Join(forward.ListenArgs(forward.Config{
+		SidecarContainer: "netcage-run-abc-sidecar", HostPort: 8080, Port: 3001, Bind: "127.0.0.1",
+	}), " ")
+	if !strings.Contains(remap, "TCP-LISTEN:8080") {
+		t.Fatalf("remap must bind the HOST port 8080; got: %s", remap)
+	}
+	if strings.Contains(remap, "TCP-LISTEN:3001") {
+		t.Fatalf("remap must NOT bind the jail port on the host listener; got: %s", remap)
+	}
+	if !strings.Contains(remap, "127.0.0.1 3001") {
+		t.Fatalf("remap connect side must reach the in-jail JAIL port 127.0.0.1:3001; got: %s", remap)
+	}
+	if strings.Contains(remap, "127.0.0.1 8080") {
+		t.Fatalf("remap connect side must NOT reach the host port in-jail; got: %s", remap)
+	}
+	// Bare zero-remap: host==jail, both the same port.
+	bare := strings.Join(forward.ListenArgs(forward.Config{
+		SidecarContainer: "netcage-run-abc-sidecar", HostPort: 3001, Port: 3001, Bind: "127.0.0.1",
+	}), " ")
+	if !strings.Contains(bare, "TCP-LISTEN:3001") || !strings.Contains(bare, "127.0.0.1 3001") {
+		t.Fatalf("bare form must bind and connect the same port 3001; got: %s", bare)
+	}
+}
+
+// TestRun_RemapStartLineNamesBothPorts proves the running line names BOTH the
+// host bind port and the (different) in-jail port honestly: for 8080:3001 it
+// prints http://127.0.0.1:8080 -> <c>:3001, so the operator sees the mapping
+// they actually got and does not assume the ports are equal.
+func TestRun_RemapStartLineNamesBothPorts(t *testing.T) {
+	r := managedTool("abc")
+	var out strings.Builder
+	err := forward.Run(context.Background(), r,
+		forward.Config{Container: "netcage-run-abc-tool", HostPort: 8080, Port: 3001, Bind: "127.0.0.1"},
+		forward.IO{Stdout: &out, Stderr: &out})
+	if err != nil {
+		t.Fatalf("remap forward into a healthy jail: %v", err)
+	}
+	printed := out.String()
+	if !strings.Contains(printed, "127.0.0.1:8080") {
+		t.Fatalf("the start line must name the HOST bind port 8080; got: %s", printed)
+	}
+	if !strings.Contains(printed, ":3001") {
+		t.Fatalf("the start line must name the in-jail JAIL port 3001; got: %s", printed)
+	}
+	// The one socat listener binds the host port, not the jail port.
+	for _, c := range r.calls {
+		if len(c) > 0 && c[0] == "socat" {
+			j := strings.Join(c, " ")
+			if !strings.Contains(j, "TCP-LISTEN:8080") {
+				t.Fatalf("the listener must bind the host port 8080; got: %s", j)
+			}
+		}
+	}
+}
+
 // TestRun_RefusesNonNetcageContainer proves the label-scoping refusal: a named
 // container that does NOT carry the netcage.managed label is REFUSED loudly, and
 // NO socat listener is ever stood up (no host state touched).
