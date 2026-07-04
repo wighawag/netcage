@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -162,6 +163,21 @@ type Command struct {
 	// Mounts/Workdir/Env/User/Entrypoint which it shapes.
 	PassThroughFlags []string
 
+	// ForwardContainer / ForwardPort / ForwardBind carry the parsed, validated
+	// `netcage forward <container> <port>` host-access verb (ADR-0014): the
+	// netcage-managed container NAME whose in-jail server to expose, the single TCP
+	// PORT to forward (validated 1..65535, so the wiring task consumes an
+	// already-checked port, mirroring DirectAllow.Port), and the RESOLVED host bind
+	// address. ForwardBind is `127.0.0.1` by DEFAULT (loopback-only, the bare verb)
+	// and is `0.0.0.0` ONLY when the operator passes the guardrailed `--bind
+	// 0.0.0.0` opt-in; a specific-interface bind is Out of Scope (prd) and refused
+	// at parse. All three are the ZERO value for every other subcommand. This
+	// package only PARSES + VALIDATES the surface; the forward MECHANISM (the
+	// socat-into-netns forward) is a separate task that consumes these fields.
+	ForwardContainer string // forward: the netcage-managed container name
+	ForwardPort      int    // forward: the TCP port to expose (1..65535)
+	ForwardBind      string // forward: resolved host bind (127.0.0.1 default, or 0.0.0.0)
+
 	// AllowDirect is the validated split-tunnel LAN allowlist: --allow-direct
 	// values (repeatable) parsed into private-only DirectAllow entries (network +
 	// optional port). EMPTY by default (no flag) == today's strict jail. This
@@ -252,7 +268,7 @@ func (d DialReachability) Check(address string) error {
 // is LOOKING FOR a proxy rather than egressing through one. A proxy-reachability
 // preflight on a verb that has no proxy would be nonsensical.
 func (c Command) IsProxyless() bool {
-	return c.IsManagement() || c.Name == "detect-proxy" || c.Name == "setup-default"
+	return c.IsManagement() || c.Name == "detect-proxy" || c.Name == "setup-default" || c.Name == "forward"
 }
 
 // Preflight runs the startup checks with a real TCP dial.
@@ -291,8 +307,8 @@ func (c *Command) PreflightWith(r Reachability) error {
 // --name STAYS denied because netcage owns the run-attributable name.
 var denyReasons = map[string]string{
 	"--network":    "netcage owns the container network (it sets --network container:<sidecar> so all egress is forced through the socks5h proxy); overriding it would breach the jail and leak",
-	"-p":           "publishing ports (-p/--publish) would open an inbound path around the jail; netcage owns the container's networking to keep it leak-proof",
-	"--publish":    "publishing ports (-p/--publish) would open an inbound path around the jail; netcage owns the container's networking to keep it leak-proof",
+	"-p":           "publishing ports (-p/--publish) would open an inbound path around the jail; netcage owns the container's networking to keep it leak-proof. To view an in-jail server on the host, use `netcage forward <container> <port>` (loopback by default)",
+	"--publish":    "publishing ports (-p/--publish) would open an inbound path around the jail; netcage owns the container's networking to keep it leak-proof. To view an in-jail server on the host, use `netcage forward <container> <port>` (loopback by default)",
 	"--dns":        "netcage owns DNS (it forces resolution through the socks5h proxy via the in-netns forwarder); a user --dns would leak DNS to a host-reachable resolver, defeating the jail",
 	"--privileged": "a privileged container can escape the network jail and the isolation netcage depends on; refused to keep the jail leak-proof",
 	"--cap-add":    "added capabilities (e.g. NET_ADMIN) let the tool re-route around the forced-egress jail; netcage owns the container's capabilities to keep it leak-proof",
@@ -357,7 +373,7 @@ func Parse(args []string) (*Command, error) {
 // unit-testable without mutating the real process environment.
 func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Command, error) {
 	if len(args) == 0 {
-		return nil, errors.New("no subcommand: expected `run`, `verify`, `detect-proxy`, `setup-default`, `start`, or a management verb (ps/logs/inspect/exec/stop/rm/images)")
+		return nil, errors.New("no subcommand: expected `run`, `verify`, `detect-proxy`, `setup-default`, `start`, `forward`, or a management verb (ps/logs/inspect/exec/stop/rm/images)")
 	}
 	name := args[0]
 	// Management verbs (ps/logs/inspect/exec/stop/rm/images) are thin podman
@@ -389,10 +405,20 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 	if name == "setup-default" {
 		return parseSetupDefault(args[1:])
 	}
+	// `forward` is a NETCAGE-ONLY host-access verb (ADR-0014): it stands up ONE
+	// host `<bind>:<port>` -> in-jail `<port>` INBOUND forward on demand. It is
+	// LOOPBACK-by-default and does NOT egress, so like detect-proxy/setup-default it
+	// carries NO --proxy (a --proxy is a usage error), is NOT subject to the run
+	// allow-list, and is NOT preflighted (IsProxyless). Its tiny surface
+	// (<container> <port> + the guardrailed --bind) is parsed here, separate from
+	// the run/verify/start proxy-resolution path below.
+	if name == "forward" {
+		return parseForward(args[1:])
+	}
 	switch name {
 	case "run", "verify", "start":
 	default:
-		return nil, fmt.Errorf("unknown subcommand %q: expected `run`, `verify`, `start`, `detect-proxy`, `setup-default`, or a management verb (ps/logs/inspect/exec/stop/rm/images/commit)", name)
+		return nil, fmt.Errorf("unknown subcommand %q: expected `run`, `verify`, `start`, `detect-proxy`, `setup-default`, `forward`, or a management verb (ps/logs/inspect/exec/stop/rm/images/commit)", name)
 	}
 
 	rest := args[1:]
@@ -636,6 +662,93 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 	}
 
 	return cmd, nil
+}
+
+// parseForward parses the `netcage forward <container> <port>` host-access verb
+// (ADR-0014). Its guardrails are enforced HERE, at the parse layer:
+//
+//   - Exactly two positionals: the netcage-managed container NAME and the single
+//     TCP PORT (1..65535). Zero / one / three positionals, or a non-numeric /
+//     out-of-range port, is a loud usage error.
+//   - The sole flag `--bind <addr>` (and `--bind=<addr>`) defaults to the
+//     loopback `127.0.0.1`; the ONLY other accepted value is `0.0.0.0` (the
+//     guardrailed LAN opt-in). Any other bind (a specific interface, ::1,
+//     localhost, ...) is refused loudly: a specific-interface bind is Out of
+//     Scope (prd), so it is refused now rather than silently accepted.
+//   - NO --proxy (it does not egress; a --proxy is a usage error, not a
+//     silently-ignored flag), and any unknown flag is refused (fail-closed on the
+//     unknown), consistent with the other verbs.
+//
+// It does NOT stand up the forward: the MECHANISM (socat into the netns) is a
+// separate task that consumes ForwardContainer/ForwardPort/ForwardBind.
+func parseForward(rest []string) (*Command, error) {
+	cmd := &Command{Name: "forward", ForwardBind: "127.0.0.1"}
+	var positionals []string
+	for i := 0; i < len(rest); i++ {
+		a := rest[i]
+		switch {
+		case a == "--bind":
+			v, ok := next(rest, &i)
+			if !ok {
+				return nil, errors.New("--bind requires a value (127.0.0.1 for loopback, or 0.0.0.0 to expose on the LAN)")
+			}
+			bind, berr := resolveForwardBind(v)
+			if berr != nil {
+				return nil, berr
+			}
+			cmd.ForwardBind = bind
+		case strings.HasPrefix(a, "--bind="):
+			bind, berr := resolveForwardBind(strings.TrimPrefix(a, "--bind="))
+			if berr != nil {
+				return nil, berr
+			}
+			cmd.ForwardBind = bind
+		case a == "--proxy" || strings.HasPrefix(a, "--proxy="):
+			return nil, errors.New("forward takes no --proxy: it stands up an INBOUND loopback forward, not an egress (it does not proxy anything)")
+		case strings.HasPrefix(a, "-") && a != "-":
+			return nil, fmt.Errorf("unknown flag %q: forward accepts only --bind (127.0.0.1 default, or 0.0.0.0 for the guardrailed LAN opt-in) plus the positionals <container> <port>", a)
+		default:
+			positionals = append(positionals, a)
+		}
+	}
+	if len(positionals) != 2 {
+		return nil, fmt.Errorf("forward takes exactly <container> <port>, got %d positional(s) %v", len(positionals), positionals)
+	}
+	cmd.ForwardContainer = positionals[0]
+	port, perr := parseForwardPort(positionals[1])
+	if perr != nil {
+		return nil, perr
+	}
+	cmd.ForwardPort = port
+	return cmd, nil
+}
+
+// resolveForwardBind validates a --bind value against the two accepted binds and
+// returns the resolved address. Loopback (127.0.0.1) is the default the bare verb
+// uses; 0.0.0.0 is the guardrailed LAN opt-in (ADR-0014). Every other value (a
+// specific interface, ::1, localhost, a host:port, a malformed string) is refused
+// loudly: a specific-interface bind is Out of Scope (prd).
+func resolveForwardBind(v string) (string, error) {
+	switch v {
+	case "127.0.0.1", "0.0.0.0":
+		return v, nil
+	default:
+		return "", fmt.Errorf("--bind %q is not allowed: forward accepts only 127.0.0.1 (loopback, the default) or 0.0.0.0 (the guardrailed all-interfaces LAN opt-in); a specific-interface bind is out of scope", v)
+	}
+}
+
+// parseForwardPort parses and validates the forward's single TCP port, mirroring
+// the --allow-direct port validation (1..65535). It returns the port as an int so
+// the wiring task consumes an already-checked value.
+func parseForwardPort(s string) (int, error) {
+	p, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("forward port %q is not a number: expected a TCP port 1-65535", s)
+	}
+	if p < 1 || p > 65535 {
+		return 0, fmt.Errorf("forward port %d is out of range: expected a TCP port 1-65535", p)
+	}
+	return p, nil
 }
 
 // parseDetectProxy parses the `detect-proxy` verb's tiny surface: the boolean
