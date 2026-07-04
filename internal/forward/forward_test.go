@@ -20,6 +20,9 @@ type recordRunner struct {
 	labels  map[string]map[string]string // container name -> label key -> value
 	running map[string]bool              // container name -> .State.Running
 	specs   []jail.RunSpec
+	// noConnector, when true, makes the `command -v nc` capability probe FAIL, so a
+	// test can drive the fail-fast path (sidecar image without a runnable nc).
+	noConnector bool
 }
 
 func (r *recordRunner) Run(_ context.Context, spec jail.RunSpec) (string, string, error) {
@@ -42,6 +45,15 @@ func (r *recordRunner) Run(_ context.Context, spec jail.RunSpec) (string, string
 			return "", "no such container", errNotFound
 		}
 		return lbls[jail.LabelManaged] + "\t" + lbls[jail.LabelRole] + "\t" + lbls[jail.LabelRunID], "", nil
+	}
+	// The `podman exec <sidecar> sh -c "command -v nc"` connector capability probe:
+	// fail it when noConnector is set (sidecar image lacks a runnable nc), so the
+	// fail-fast path is exercised; otherwise it succeeds.
+	if len(spec.Args) >= 1 && spec.Args[0] == "exec" && strings.Contains(strings.Join(spec.Args, " "), "command -v nc") {
+		if r.noConnector {
+			return "", "nc: not found", errNotFound
+		}
+		return "/usr/bin/nc", "", nil
 	}
 	// Any other call (the socat listener) succeeds cleanly.
 	return "", "", nil
@@ -80,7 +92,7 @@ func managedTool(runID string) *recordRunner {
 // <connector> ... <port>`. It must NEVER add a firewall rule, be TCP only, name
 // exactly the one port, and bind the DEFAULT loopback when bind is 127.0.0.1.
 func TestListenArgs_IsHostSocatLoopbackListenerIntoNetnsConnect(t *testing.T) {
-	args := forward.ListenArgs(forward.Config{ToolContainer: "netcage-run-abc-tool", Port: 3001, Bind: "127.0.0.1"})
+	args := forward.ListenArgs(forward.Config{SidecarContainer: "netcage-run-abc-sidecar", Port: 3001, Bind: "127.0.0.1"})
 	joined := strings.Join(args, " ")
 
 	if args[0] != "socat" {
@@ -98,8 +110,14 @@ func TestListenArgs_IsHostSocatLoopbackListenerIntoNetnsConnect(t *testing.T) {
 	if !strings.Contains(joined, "podman") || !strings.Contains(joined, "--root "+jail.GraphRoot()) {
 		t.Fatalf("the connect side must be `podman --root <graphroot> exec`; got: %s", joined)
 	}
-	if !strings.Contains(joined, "exec -i netcage-run-abc-tool") {
-		t.Fatalf("the connect side must `podman exec -i` into the tool container; got: %s", joined)
+	// The connector execs into the SIDECAR (netcage-pinned image, ships nc), NOT the
+	// tool (arbitrary image, may lack nc). Both share the netns, so 127.0.0.1:<port>
+	// is the same in-jail server (finding: forward-connector-must-use-sidecar-nc-not-tool).
+	if !strings.Contains(joined, "exec -i netcage-run-abc-sidecar") {
+		t.Fatalf("the connect side must `podman exec -i` into the SIDECAR container; got: %s", joined)
+	}
+	if strings.Contains(joined, "exec -i netcage-run-abc-tool") {
+		t.Fatalf("the connector must NOT exec into the tool image (it may lack nc); it must use the sidecar; got: %s", joined)
 	}
 	if !strings.Contains(joined, "127.0.0.1 3001") {
 		t.Fatalf("the connect side must reach the in-jail server at 127.0.0.1:<port>; got: %s", joined)
@@ -133,11 +151,11 @@ func TestListenArgs_IsHostSocatLoopbackListenerIntoNetnsConnect(t *testing.T) {
 // resolved bind is written verbatim into the listener, so 0.0.0.0 binds all
 // interfaces and 127.0.0.1 (the default) binds loopback only.
 func TestListenArgs_BindDefaultVsAllInterfaces(t *testing.T) {
-	loop := strings.Join(forward.ListenArgs(forward.Config{ToolContainer: "netcage-run-abc-tool", Port: 8080, Bind: "127.0.0.1"}), " ")
+	loop := strings.Join(forward.ListenArgs(forward.Config{SidecarContainer: "netcage-run-abc-sidecar", Port: 8080, Bind: "127.0.0.1"}), " ")
 	if !strings.Contains(loop, "bind=127.0.0.1") || strings.Contains(loop, "bind=0.0.0.0") {
 		t.Fatalf("default must bind loopback only; got: %s", loop)
 	}
-	lan := strings.Join(forward.ListenArgs(forward.Config{ToolContainer: "netcage-run-abc-tool", Port: 8080, Bind: "0.0.0.0"}), " ")
+	lan := strings.Join(forward.ListenArgs(forward.Config{SidecarContainer: "netcage-run-abc-sidecar", Port: 8080, Bind: "0.0.0.0"}), " ")
 	if !strings.Contains(lan, "bind=0.0.0.0") {
 		t.Fatalf("--bind 0.0.0.0 must bind all interfaces; got: %s", lan)
 	}
@@ -279,6 +297,8 @@ func TestRun_TeardownLeavesNoResidue(t *testing.T) {
 			// the relay itself
 		case c[0] == "podman" && len(c) > 1 && c[1] == "inspect":
 			// the label guard + running probe
+		case c[0] == "podman" && len(c) > 1 && c[1] == "exec":
+			// the read-only `command -v nc` connector capability probe (no state)
 		default:
 			t.Fatalf("the forward must add no persistent state / firewall rule / rm; unexpected call: %s", joined)
 		}
@@ -287,6 +307,28 @@ func TestRun_TeardownLeavesNoResidue(t *testing.T) {
 			if strings.Contains(joined, forbidden) {
 				t.Fatalf("the forward must add no firewall/publish/rm state; found %q in: %s", forbidden, joined)
 			}
+		}
+	}
+}
+
+// TestRun_FailsFastWhenSidecarHasNoConnector proves the fail-fast guard: when the
+// sidecar's `nc` connector is not runnable (a changed/broken pinned image), Run
+// REFUSES loudly and stands up NO socat listener, rather than binding the host
+// socket and letting every per-connection `fork` child exit 127 in a retry storm
+// (the symptom of the tool-image-has-no-nc bug this fix addresses).
+func TestRun_FailsFastWhenSidecarHasNoConnector(t *testing.T) {
+	r := managedTool("abc")
+	r.noConnector = true // the sidecar's nc probe fails
+	var out strings.Builder
+	err := forward.Run(context.Background(), r,
+		forward.Config{Container: "netcage-run-abc-tool", Port: 3001, Bind: "127.0.0.1"},
+		forward.IO{Stdout: &out, Stderr: &out})
+	if err == nil {
+		t.Fatal("forward must FAIL FAST when the sidecar has no runnable nc connector")
+	}
+	for _, c := range r.calls {
+		if len(c) > 0 && c[0] == "socat" {
+			t.Fatalf("a fail-fast forward must NOT bind a host socket (no socat listener); calls:\n%s", joinAll(r.calls))
 		}
 	}
 }

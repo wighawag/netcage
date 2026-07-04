@@ -51,19 +51,27 @@ import (
 
 // Config is a resolved forward: the user-named container to forward into, the
 // single TCP port to expose, and the resolved host bind address (127.0.0.1 by
-// default, or the guardrailed 0.0.0.0). ToolContainer is the resolved
-// run-attributable TOOL container name the connect side execs into (filled in by
-// Run after the label guard); ListenArgs consumes it. Container is what the user
-// typed (used for the guard + messages).
+// default, or the guardrailed 0.0.0.0). SidecarContainer is the resolved
+// run-attributable SIDECAR container name the connect side execs into (filled in
+// by Run after the label guard); ListenArgs consumes it. Container is what the
+// user typed (used for the guard + messages).
 type Config struct {
 	Container string // the user-supplied container name (guarded by label)
 	Port      int    // the single TCP port to expose (validated 1..65535 at parse)
 	Bind      string // resolved host bind: 127.0.0.1 (default) or 0.0.0.0
 
-	// ToolContainer is the resolved netcage-managed TOOL container name the socat
-	// connect side execs into. Run resolves it from the label guard; ListenArgs (a
-	// pure builder) takes it directly so it is unit-testable without a Runner.
-	ToolContainer string
+	// SidecarContainer is the resolved netcage-managed SIDECAR container name the
+	// socat connect side execs into. The connector runs `nc` there, NOT in the tool
+	// container: the tool image is ARBITRARY and may ship no nc/socat (the real
+	// anon-pi image has neither), whereas the SIDECAR is the netcage-PINNED
+	// redirector image (xjasonlyu/tun2socks, ADR-0001/0007) which ships busybox nc,
+	// so the connector is guaranteed for ANY tool image. The tool joins the
+	// sidecar's netns (--network container:<sidecar>), so 127.0.0.1:<port> is the
+	// SAME in-jail server from either container. See
+	// work/notes/findings/forward-connector-must-use-sidecar-nc-not-tool.md. Run
+	// resolves it from the label guard; ListenArgs (a pure builder) takes it
+	// directly so it is unit-testable without a Runner.
+	SidecarContainer string
 }
 
 // IO carries the sinks the verb writes its start line / warning to, and streams
@@ -89,21 +97,23 @@ const allInterfacesBind = "0.0.0.0"
 // userspace host relay that adds NO firewall rule (the egress-untouched
 // invariant) and is TCP-only (ADR-0003).
 //
-// The connector is the SPIKE-PROVEN plain shape: `podman --root <graphroot> exec
-// -i <tool> nc 127.0.0.1 <port>` (the tool image's busybox `nc`). It is a SINGLE
-// command with NO shell wrapper, because socat's `EXEC:` does NOT invoke a shell
-// and does NOT honour quotes: it whitespace-splits the address and execvp's the
-// raw tokens. An earlier `EXEC:...sh -c 'nc ... || socat ...'` connector was
-// therefore BROKEN (socat passed the literal `'exec`, `||`, `2>/dev/null`, and
-// quote chars to podman, so the connector died and the host reached nothing);
-// it was live-caught and reverted to this plain form (both `EXEC:` + plain `nc`
-// and `SYSTEM:` + a plain command work; ANY nested `sh -c '...'` through socat
-// does not - see work/notes/observations/forward-socat-exec-nested-quote-
-// connector-broken.md and the spike finding's Shape B). The cross-image fallback
-// for a tool that lacks `nc` is NOT an inline shell chain (that reintroduces the
-// bug) but the documented mounted-static-relay-helper follow-up (mirroring how
-// netcage-dns is mounted into the sidecar, ADR-0006); a tool image with neither
-// `nc` nor the helper fails LOUD at connect time (a relay error, not a leak).
+// The connector is the plain shape `podman --root <graphroot> exec -i <SIDECAR>
+// nc 127.0.0.1 <port>`. Two load-bearing choices:
+//
+//   - It execs into the SIDECAR, not the tool. The tool joins the sidecar's netns
+//     (--network container:<sidecar>), so 127.0.0.1:<port> is the same in-jail
+//     server either way, but the tool IMAGE is arbitrary and may ship no nc (the
+//     anon-pi image has neither nc nor socat), whereas the sidecar is the
+//     netcage-PINNED redirector image which ships busybox nc. Execing the sidecar
+//     therefore makes the connector work for ANY tool image (finding:
+//     forward-connector-must-use-sidecar-nc-not-tool).
+//   - It is a SINGLE command with NO shell wrapper, because socat's `EXEC:` does
+//     NOT invoke a shell and does NOT honour quotes: it whitespace-splits the
+//     address and execvp's the raw tokens. An earlier `EXEC:...sh -c 'nc ... ||
+//     socat ...'` connector was BROKEN (socat passed the literal `'exec`, `||`,
+//     quote chars to podman); ANY nested `sh -c '...'` through socat breaks (see
+//     work/notes/observations/forward-socat-exec-nested-quote-connector-broken.md).
+//
 // The graphroot is embedded explicitly because socat spawns podman as a CHILD,
 // outside the ExecRunner --root injection seam.
 func ListenArgs(cfg Config) []string {
@@ -112,11 +122,11 @@ func ListenArgs(cfg Config) []string {
 		bind = loopbackBind
 	}
 	port := strconv.Itoa(cfg.Port)
-	// The connect command runs INSIDE the tool container's netns (shared with the
-	// sidecar), so 127.0.0.1:<port> is the in-jail server. Plain `nc`, no shell
-	// wrapper, so socat's no-shell/no-quote EXEC parsing execvp's clean tokens.
+	// The connect command runs in the SIDECAR, which shares the tool's netns, so
+	// 127.0.0.1:<port> is the in-jail server. Plain `nc`, no shell wrapper, so
+	// socat's no-shell/no-quote EXEC parsing execvp's clean tokens.
 	connect := fmt.Sprintf("podman --root %s exec -i %s nc 127.0.0.1 %s",
-		jail.GraphRoot(), cfg.ToolContainer, port)
+		jail.GraphRoot(), cfg.SidecarContainer, port)
 	listen := fmt.Sprintf("TCP-LISTEN:%s,bind=%s,fork,reuseaddr", port, bind)
 	return []string{"socat", listen, "EXEC:" + connect}
 }
@@ -130,6 +140,11 @@ func ListenArgs(cfg Config) []string {
 //  2. Resolves the run's TOOL container (a forward reaches the in-jail server,
 //     which lives in the tool's shared netns) and REFUSES a stopped jail loudly
 //     (the server cannot be reached, so failing loud beats appearing to work).
+//     The CONNECTOR execs into the SIDECAR (which shares that netns and, being
+//     the netcage-pinned image, is guaranteed to ship `nc`), and a FAIL-FAST
+//     probe confirms the sidecar's `nc` is runnable BEFORE the host socket is
+//     bound, so a missing connector is one clear error, not a per-connection
+//     `exit 127` storm.
 //  3. WARNS, before forwarding, when the bind is 0.0.0.0 - naming the container,
 //     the port, and that any LAN host can reach the jailed tool's server (the
 //     guardrailed anonymity opt-in, ADR-0013). The loopback default warns not at
@@ -147,7 +162,15 @@ func Run(ctx context.Context, r jail.Runner, cfg Config, out IO) error {
 	if err := requireToolRunning(ctx, r, toolName); err != nil {
 		return err
 	}
-	cfg.ToolContainer = toolName
+	// The connector execs into the SIDECAR (shares the tool's netns, ships nc as the
+	// pinned image), not the tool (arbitrary image, may lack nc).
+	cfg.SidecarContainer = sidecarNameFor(runID)
+	// FAIL-FAST before binding the host socket: if the sidecar's `nc` is not
+	// runnable, every socat `fork` child would exit 127 and the listener would spew
+	// a retry storm while appearing to "work". Probe once and fail loud instead.
+	if err := requireConnector(ctx, r, cfg.SidecarContainer); err != nil {
+		return err
+	}
 
 	bind := cfg.Bind
 	if bind == "" {
@@ -243,10 +266,34 @@ func requireToolRunning(ctx context.Context, r jail.Runner, toolName string) err
 	return nil
 }
 
-// toolNameFor rebuilds the run-attributable TOOL container name from a run id,
-// matching jail's naming convention (netcage-run-<id>-tool). The forward reaches
-// the TOOL's netns (shared with the sidecar), so it always resolves to the tool,
-// even when the user named the sidecar.
+// requireConnector FAIL-FASTs the forward when the sidecar's `nc` connector is
+// not runnable, BEFORE the host socket is bound. Without this, socat's per-
+// connection `fork` would spawn a connector child that exits 127 for EVERY
+// inbound connection, leaving the listener up and spewing a retry storm while the
+// forward reaches nothing (the exact symptom of the tool-image-has-no-nc bug).
+// One `podman exec <sidecar> nc -h`-style probe (nc with no target exits without
+// blocking) confirms the binary exists; a missing connector is reported as one
+// clear error naming the fix, not a storm. The pinned sidecar image ships nc, so
+// this should only fail if that image ever changes (then the mounted-static-relay
+// follow-up in the finding applies).
+func requireConnector(ctx context.Context, r jail.Runner, sidecarName string) error {
+	// `command -v nc` is a pure existence check that neither connects nor blocks; a
+	// zero exit means the connector binary is present in the sidecar.
+	_, _, err := r.Run(ctx, jail.RunSpec{Name: "podman", Args: []string{"exec", sidecarName, "sh", "-c", "command -v nc"}})
+	if err != nil {
+		return fmt.Errorf("cannot forward: the sidecar %q has no runnable `nc` connector (%w); the pinned redirector image should ship it - this indicates a changed/broken sidecar image", sidecarName, err)
+	}
+	return nil
+}
+
+// toolNameFor / sidecarNameFor rebuild the run-attributable container names from a
+// run id, matching jail's naming convention (netcage-run-<id>-<role>). The
+// forward REQUIRES the tool running (it serves) but execs the CONNECTOR into the
+// sidecar (shares the netns, pinned image ships nc), so it needs both names.
 func toolNameFor(runID string) string {
 	return "netcage-run-" + runID + "-tool"
+}
+
+func sidecarNameFor(runID string) string {
+	return "netcage-run-" + runID + "-sidecar"
 }
