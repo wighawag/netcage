@@ -3,7 +3,7 @@ title: Document what a netcage jail does and does NOT hide, plus -v username hyg
 slug: docs-what-is-hidden-and-storage-hygiene
 prd: jail-host-identity-hardening
 blockedBy: [relocate-graphroot-to-var-tmp-single-store]
-covers: [5, 8, 9]
+covers: [6, 9, 10]
 ---
 
 ## What to build
@@ -31,7 +31,7 @@ This is a docs-only task (no code), but it depends on the graphroot task having 
 
 ## Prompt
 
-> Goal: document what a netcage jail hides and does not hide, `-v` username hygiene, and the working clear-storage command, so the residual host fingerprint is documented rather than surprising. This is stories 5/8/9 of the jail host-identity hardening prd.
+> Goal: document what a netcage jail hides and does not hide, `-v` username hygiene, and the working clear-storage command, so the residual host fingerprint is documented rather than surprising. This is stories 6/9/10 of the jail host-identity hardening prd.
 >
 > Where to look: the README's run/verify sections (that is where the guarantee is described today). Read ADR-0013 (`docs/adr/0013-host-identity-hardening-scope.md`) for the authoritative scope and `work/notes/observations/jail-leaks-host-identity-metadata-not-network.md` for the tested detail. Reflect the graphroot path that `relocate-graphroot-to-var-tmp-single-store` actually chose (read its done record / the code) so the clear-storage command is exact.
 >

@@ -3,7 +3,7 @@ title: Relocate podman graphroot to a username-free /var/tmp path, injected once
 slug: relocate-graphroot-to-var-tmp-single-store
 prd: jail-host-identity-hardening
 blockedBy: []
-covers: [3, 4, 4a]
+covers: [3, 4, 5]
 ---
 
 ## What to build

@@ -40,13 +40,13 @@ Concretely (detail lives in the observation + moves to tasks/ADRs at tasking tim
 2. As an operator, I want the jailed tool's hostname to be a fixed neutral value, so `/etc/hostname` and the container's own name do not reveal or mirror my host.
 3. As an operator, I want Podman's storage paths (visible in the container's `/proc/self/mountinfo`) to NOT contain my username, so a tool cannot recover my host account name.
 4. As an operator, I want that storage relocation to behave exactly like today's home-folder storage (persistent across runs + reboots, holds my kept containers and image cache, self-heals if wiped), so the anonymization does not cost me the kept-run behaviour.
-4a. As an operator, I want ALL netcage subcommands (run, start, and the pass-through verbs ps/logs/etc.) to use the SAME relocated store, so `netcage ps`/`logs`/`start` still find the containers a `netcage run` created (a split store would make them invisible).
-5. As an operator, I want clear docs that if I mount a project with `-v` from under my home directory, that source path still reveals my username, and that mounting from outside `$HOME` avoids it, so I can make an informed choice.
-6. As an operator, I want the in-netns network interface to NOT be named after my host NIC (which, as `enx<MAC>`, re-exposes my NIC MAC), so a tool reading `/sys/class/net` cannot recover my host MAC from the interface name.
-7. As an operator, I want the interface rename to not affect egress (traffic still forced through the proxy, fail-closed), so the anonymization is free of connectivity cost.
-8. As an operator, I want documentation of what netcage does and does NOT hide (network egress: guaranteed; hostname/username/NIC-name: hidden; host hardware + kernel version: NOT hidden because the kernel is shared), so I am not surprised by the residual fingerprint.
-9. As an operator, I want a documented way to clear netcage's relocated storage that actually works (`podman ... system reset --force`, since a plain `rm -rf` fails on the id-mapped overlay tree), so I can reset without hitting permission errors.
-10. As a maintainer, I want the scope decision recorded as an ADR so future changes do not silently erode or over-claim the host-identity boundary.
+5. As an operator, I want ALL netcage subcommands (run, start, and the pass-through verbs ps/logs/etc.) to use the SAME relocated store, so `netcage ps`/`logs`/`start` still find the containers a `netcage run` created (a split store would make them invisible).
+6. As an operator, I want clear docs that if I mount a project with `-v` from under my home directory, that source path still reveals my username, and that mounting from outside `$HOME` avoids it, so I can make an informed choice.
+7. As an operator, I want the in-netns network interface to NOT be named after my host NIC (which, as `enx<MAC>`, re-exposes my NIC MAC), so a tool reading `/sys/class/net` cannot recover my host MAC from the interface name.
+8. As an operator, I want the interface rename to not affect egress (traffic still forced through the proxy, fail-closed), so the anonymization is free of connectivity cost.
+9. As an operator, I want documentation of what netcage does and does NOT hide (network egress: guaranteed; hostname/username/NIC-name: hidden; host hardware + kernel version: NOT hidden because the kernel is shared), so I am not surprised by the residual fingerprint.
+10. As an operator, I want a documented way to clear netcage's relocated storage that actually works (`podman ... system reset --force`, since a plain `rm -rf` fails on the id-mapped overlay tree), so I can reset without hitting permission errors.
+11. As a maintainer, I want the scope decision recorded as an ADR so future changes do not silently erode or over-claim the host-identity boundary.
 
 ### Autonomy notes (the two gate axes)
 

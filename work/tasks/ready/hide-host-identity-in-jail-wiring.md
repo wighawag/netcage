@@ -2,8 +2,8 @@
 title: Hide host identity in the tool container's jail wiring (/etc/hosts + fixed hostname + pasta interface rename)
 slug: hide-host-identity-in-jail-wiring
 prd: jail-host-identity-hardening
-blockedBy: []
-covers: [1, 2, 6, 7]
+blockedBy: [relocate-graphroot-to-var-tmp-single-store]
+covers: [1, 2, 7, 8]
 ---
 
 ## What to build
@@ -29,7 +29,7 @@ All three are proven to work under the real `--network container:<sidecar>` topo
 
 ## Blocked by
 
-- None — can start immediately.
+- `relocate-graphroot-to-var-tmp-single-store` — serialised (no logical dependency) because both tasks edit `internal/jail/jail.go` (this task's arg-builders `ToolRunArgs`/`SidecarRunArgs`; the graphroot task's `ExecRunner` type/construction), so building them in sequence avoids a merge conflict in that file. Rebase this task's small arg-builder edits on top of the graphroot change.
 
 ## Prompt
 
