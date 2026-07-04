@@ -105,6 +105,45 @@ netcage verify --proxy socks5h://127.0.0.1:9050
 
 It exits non-zero if any assertion fails, so CI can gate on it. Run it during development/CI, not per use.
 
+## What netcage hides and what it does NOT
+
+netcage's one **guarantee** is **network egress confinement**: every TCP and DNS packet is forced through the proxy, fail-closed, and `verify` proves it. On top of that guarantee it also hides a few host-identity signals a jailed tool could otherwise fingerprint you with; and some signals it deliberately does **not** hide, because a container shares the host kernel (it is not a VM). Knowing the boundary means the residual fingerprint is documented, not surprising. The full rationale is in [ADR-0013](docs/adr/0013-host-identity-hardening-scope.md).
+
+**Hidden (in addition to the network guarantee):**
+
+- **Host machine name.** The tool container gets a synthesized localhost-only `/etc/hosts` and a fixed neutral `--hostname`, so a tool reading `/etc/hosts` or `hostname` does not learn your machine's name.
+- **Operator username.** Podman's storage graphroot is relocated to a username-free path (`/var/tmp/netcage-storage`), so the overlay source paths in the container's `/proc/self/mountinfo` no longer embed `/home/<you>`.
+- **Host NIC name / MAC.** The in-netns interface is given a fixed name (`netcage0`) instead of being named after your host's default-route NIC (whose systemd `enx<MAC>` name re-exposes the NIC MAC).
+
+**NOT hidden (accepted residual):**
+
+- **Host hardware and kernel version** (`/proc/cpuinfo`, `/proc/meminfo`, `uname`, and the boot-time / uptime clock signals in `/proc`). The kernel is **shared**: a container is not a VM, `/proc/cpuinfo` reports the physical CPUs regardless of cgroup limits, and faking these breaks tools. Hiding them needs a different isolation model (gVisor/Kata), which is out of scope.
+- **Environment baked into the tool / wrapper image** (e.g. `ANON_PI_STAGE`, `SEARXNG_HOME`). This env comes from the image's own Dockerfile, not from netcage, so stripping it is that image's concern. netcage's own `netcage-run-<id>-*` container names and `netcage.managed` labels are deliberate and low-sensitivity (ADR-0009).
+
+### Keep your username out of `-v` mount paths
+
+A `-v` bind mount's **source path is preserved as-is** in the container's mount table, so mounting a project from under your home directory still reveals your username in that path:
+
+```sh
+netcage run --proxy socks5h://127.0.0.1:9050 -it -v ~/dev/foo:/work   # leaks /home/<you>/dev/foo in the mount table
+```
+
+The source path is **your own choice**, so netcage cannot neutralize it without hiding what you asked to mount. If you care, mount the project from a path **outside `$HOME`**:
+
+```sh
+netcage run --proxy socks5h://127.0.0.1:9050 -it -v /srv/work/foo:/work   # source path carries no username
+```
+
+### Clearing netcage's storage
+
+netcage's relocated storage lives at **`/var/tmp/netcage-storage`** (the graphroot: image cache + kept containers). To clear it, use podman's own reset, which removes the store cleanly:
+
+```sh
+podman --root /var/tmp/netcage-storage system reset --force
+```
+
+**Do not `rm -rf` it.** The rootless overlay `diff/` tree is owned by id-mapped subuids, so a plain `rm -rf /var/tmp/netcage-storage` fails with permission errors. Clearing the store costs only a re-pull of images on the next run (podman self-heals a missing graphroot), but it also discards any kept containers, exactly as losing the home store would.
+
 ## start: resume a kept jailed container
 
 A plain `netcage run` (no `--rm`) leaves a stopped tool container and its sidecar behind. `netcage start <name>` **resumes** that container with its full forced-egress jail restored, so a named reusable jailed container is a **durable environment**:
