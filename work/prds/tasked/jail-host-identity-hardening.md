@@ -53,28 +53,7 @@ Concretely (detail lives in the observation + moves to tasks/ADRs at tasking tim
 - **`humanOnly`:** not set on this prd. The tasking is straightforward and the design is already resolved in the observation; a human MAY drive it but an agent tasking it would not be guessing. (Individual tasks set their own build-nature gate; none of these look like secrets/release/security-boundary work - they are jail-wiring + docs + an ADR.)
 - **`needsAnswers`:** not set. The design forks were all resolved in the maintainer session recorded in the observation (rootful rejected; masking + `setup` verb dropped; `/var/tmp` chosen; pasta `-I` proven). One small open choice remains but is NOT blocking (see Open questions in Further Notes - it is a default-value pick with a safe default, not an unresolved premise).
 
-## Implementation Decisions
-
-All of these are recorded with tested provenance in `work/notes/observations/jail-leaks-host-identity-metadata-not-network.md`; summarised here to seed tasking:
-
-- **`/etc/hosts` + `--hostname`:** synthesize a minimal `/etc/hosts` (`127.0.0.1 localhost` + `::1 localhost`) and mount it `:ro` into the tool container, mirroring the existing resolv.conf mount seam (`resolvConfPath`). Set a fixed `--hostname` (e.g. a neutral constant or the run id) on the tool container. `internal/jail` (`ToolRunArgs` / `Run`). PROVEN under the real `--network container:<sidecar>` topology: BOTH the `/etc/hosts :ro` mount AND `--hostname` are accepted there (unlike `--dns`, which podman refuses under `--network container:`) - so no refusal risk to design around.
-- **Graphroot relocation:** netcage selects a username-free graphroot under `/var/tmp` (leave the runroot default - co-locating and wiping both produced `acquiring lock ... file exists` noise in probes). Storage self-heals if missing (podman re-inits + re-pulls images on demand; note: it does NOT restore kept containers, so this is persistence-preserving, not ephemeral).
-  - **CRITICAL - inject at ONE seam, covering EVERY podman invocation.** `--root`/`--runroot` are podman GLOBAL flags that must precede the subcommand (`podman --root X run ...`, never `podman run --root X`). netcage builds podman args in MANY places: `internal/jail` (`SidecarRunArgs`, `ToolRunArgs`, `SidecarStartArgs`, `ToolStartArgs`, and the `runPodman` inspect/exec/rm/run/verify/teardown call sites in `run.go`/`start.go`) AND `internal/manage` (the pass-through verbs `ps`/`logs`/`start`, which build `jail.RunSpec{Name:"podman",...}` independently). ALL must share ONE store. So the store selection MUST be applied at the shared exec/Runner seam (where `Name:"podman"`+Args become the process) or via a `CONTAINERS_STORAGE_CONF`/`storage.conf` env - NOT bolted onto individual arg-builders (which would miss some and SPLIT the store). If `internal/manage`'s verbs used the default home store while `run` used `/var/tmp`, `netcage ps`/`logs`/`start` would not find netcage's own containers (a correctness break, not just a leak). The interactive raw-passthrough exec path (`ExecRunner.Run` interactive branch) must be covered too.
-  - **Mechanism choice (resolve at tasking):** a global-flag injection at the Runner seam vs a `CONTAINERS_STORAGE_CONF`-pointed `storage.conf` (which also propagates graphroot to any child podman). Prefer whichever the codebase's single-seam story (ADR-0006: netcage is a pure podman client through the Runner) accommodates most cleanly.
-- **pasta `-I`:** netcage already composes pasta opts as `--network pasta:<opt>,...` in `SidecarRunArgs` (`"pasta"` or `"pasta:--map-host-loopback,"+addr`). Add `-I,<stable-name>` (e.g. `netcage0`) to that arg. PROVEN: interface becomes `netcage0`, host `enx...` name gone, default route still works.
-- **Scope ADR:** records the two guarantees, the per-leak dispositions, and the shared-kernel residual as an accepted non-goal.
-- **Docs:** `-v`-username guidance; the `podman system reset` clear-storage incantation (not `rm -rf`); the what-is/isn't-hidden statement.
-
-> Trimmed at tasking-time into the tasks + the scope ADR.
-
-## Testing Decisions
-
-- **`/etc/hosts`/hostname:** assert the tool container's `/etc/hosts` contains no host hostname (localhost-only) and `hostname` returns the fixed value. Integration-level (a real jailed run reading its own `/etc/hosts`), plus a unit assertion that `ToolRunArgs` emits the sanitized-hosts mount + `--hostname`.
-- **Graphroot:** unit-assert the store selection is applied UNIFORMLY at the shared seam so EVERY podman invocation (jail run/start/teardown/verify AND the internal/manage pass-through verbs AND the interactive exec path) carries the same graphroot under `/var/tmp` and no runroot override; integration-assert (a) a jailed run's `/proc/self/mountinfo` contains no `/home/<user>`, AND (b) a container created by `netcage run` is visible to a subsequent `netcage`-managed listing (proving the store is shared, not split).
-- **pasta `-I`:** unit-assert `SidecarRunArgs` emits the `-I,<name>` pasta opt; integration-assert the tool netns interface is the fixed name and NOT `enx*`, and that egress still works (the existing verify leak-test still passes - forced egress unchanged).
-- Prior art: the existing `SidecarRunArgs`/`ToolRunArgs` wiring unit tests and the `verify` integration leak-test are the seams to extend. The forced-egress guarantee (verify's three-point test) must stay green through all of this - none of these changes touch the egress model.
-
-> Trimmed at tasking-time into the tasks' acceptance criteria.
+> Tasked: implementation + testing detail moved into `work/tasks/` (`hide-host-identity-in-jail-wiring`, `relocate-graphroot-to-var-tmp-single-store`, `docs-what-is-hidden-and-storage-hygiene`) and the durable rationale into `docs/adr/0013-host-identity-hardening-scope.md`. Tested provenance is in `work/notes/observations/jail-leaks-host-identity-metadata-not-network.md`.
 
 ## Out of Scope
 
@@ -87,5 +66,5 @@ All of these are recorded with tested provenance in `work/notes/observations/jai
 ## Further Notes
 
 - Full tested provenance (live probes on this host, throwaway `--root`, zero residue) is in `work/notes/observations/jail-leaks-host-identity-metadata-not-network.md`. Read it before tasking - it records every dead-end already ruled out (rootful, masking, the `setup` verb, ephemeral-storage-auto-delete) so they are not re-litigated.
-- **One non-blocking open choice:** the exact username-free storage path default (`/var/tmp/netcage-storage` vs a uid-namespaced variant) and whether the fixed hostname is a constant or the run id. Both have safe defaults; pick during tasking/build, not a blocking unknown.
+- The remaining small choices (exact `/var/tmp` store subpath; fixed hostname constant vs run-id) are left to the building tasks with safe defaults; ADR-0013 owns the scope rationale.
 - All changes preserve the forced-egress guarantee; the `verify` leak-test staying green is the floor for every task here.

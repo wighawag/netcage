@@ -1,0 +1,37 @@
+# netcage hardens the CHEAP+OWNED host-identity leaks and states the rest as an explicit non-goal; the guarantee stays NETWORK egress
+
+**Status:** accepted (foundation of the `jail-host-identity-hardening` prd; builds on ADR-0001/0002 rootless design, ADR-0006 Runner seam, ADR-0009 kept pair)
+
+## Context
+
+netcage's guarantee is forced NETWORK egress: every TCP/DNS packet from the wrapped tool is pushed through the socks5h proxy, fail-closed (see `CONTEXT.md`, ADR-0001/0003). That guarantee holds and is proven by `verify`. But netcage exists to run UNTRUSTED / aggressive tools without revealing WHO or WHERE you are, and a live session (recorded in `work/notes/observations/jail-leaks-host-identity-metadata-not-network.md`, with live-tested provenance) showed a jailed tool can fingerprint the OPERATOR'S MACHINE with zero network access, purely from local files and interfaces: host machine name (`/etc/hosts`), host username (rootless Podman storage paths in `/proc/self/mountinfo`), host NIC name/MAC (`enx<MAC>` interface naming), host hardware/kernel (`/proc/cpuinfo`, `uname`), and wrapper env. `verify` never probed any of this, so the scope of "what a netcage jail hides" was never stated: a user could reasonably assume it hides more than it does.
+
+## Decision
+
+netcage's guarantee remains **network egress only**. On top of that, we CLOSE the host-identity leaks that are cheap AND netcage-owned, and we STATE the residual explicitly so it is documented, not surprising. Per leak:
+
+- **Host machine name (`/etc/hosts`) + hostname:** HIDDEN. Mount a synthesized localhost-only `/etc/hosts` `:ro` into the tool container and set a fixed neutral `--hostname`. (Both are accepted under `--network container:`, unlike `--dns`; live-verified.)
+- **Host username (Podman storage paths in mountinfo):** HIDDEN by relocating the graphroot to a username-free path under `/var/tmp`, applied at the single Runner seam so every podman invocation shares one store (see the `--root` decision below). The `-v` volume SOURCE path is the user's own choice, so it is handled by DOCUMENTATION (mount from outside `$HOME`), not code.
+- **Host NIC name/MAC:** HIDDEN. Pass pasta `-I,<stable-name>` (e.g. `netcage0`) so the in-netns interface is not named after the host default-route NIC (whose systemd `enx<MAC>` name re-exposes the host MAC). Live-verified: name leak gone, egress unaffected (the route out is still the TUN).
+- **Host hardware + kernel version (`/proc/cpuinfo`, `/proc/meminfo`, `uname`):** NOT HIDDEN. Accepted residual. The kernel is shared (containers are not VMs); `/proc/cpuinfo` reports physical CPUs regardless of cgroup limits, and faking it breaks tools. A real fix needs a different isolation model (gVisor/Kata), out of scope.
+- **Wrapper / tool-image env (`ANON_PI_STAGE`, `SEARXNG_HOME`, etc.):** NOT netcage's to strip. It comes from the wrapper image (anon-pi) or the tool image's own Dockerfile ENV; the fix belongs in that repo. netcage's own `netcage-run-<id>-*` names + `netcage.managed` labels are deliberate and low-sensitivity (ADR-0009); not hidden.
+- **LAN-topology residual** (the pasta interface still carries the host `192.168.x` addresses/routes): SEEN and DEFERRED as a smaller follow-up, distinct from NIC identity; not tackled here.
+
+`verify` stays the acceptance floor: the forced-egress three-point leak-test must remain green through all of the above (none of these changes touch the egress model).
+
+## Considered options (rejected)
+
+- **Rootful Podman** to move the graphroot off `/home/<user>`: REJECTED. It only INCIDENTALLY neutralises the username path (rootful default graphroot is `/var/lib/containers`), while detonating the rootless design that is load-bearing (ADR-0001, ADR-0002, both foundational spikes; the pasta host-loopback reachback is a rootless mechanism) and WORSENING the escape/blast-radius threat model. The `/var/tmp` graphroot achieves the username fix staying rootless.
+- **Masking the `/proc/self/mountinfo` family** (bind an empty file over it): REJECTED. Once the graphroot is username-free and the `-v` case is documented, masking is unnecessary, and it can BREAK tools that legitimately read mountinfo. Dropped rather than shipped as an opt-in.
+- **A `setup` provisioning verb / a provisioning helper:** REJECTED. The `/var/tmp` graphroot is world-writable-sticky and needs no root and no host-state provisioning, so there is nothing for a `setup` verb to do. (`setup-default`, the ADR-0012 config writer, is unrelated and unaffected.)
+- **Auto-deleting the relocated storage on exit ("leave no trace"):** REJECTED as a default. The graphroot holds the image cache AND the kept containers (ADR-0009); podman self-heals a missing graphroot by re-initialising and RE-PULLING IMAGES, but it does NOT restore kept containers. Auto-delete would silently destroy the kept runs `/var/tmp` was chosen to preserve. Storage stays persistent, exactly like today's home-folder store; only the path changes.
+
+## The `--root` decision (single-seam, global flag, no runroot override)
+
+The graphroot is selected via podman's GLOBAL `--root <path>` flag (which must precede the subcommand), injected at the shared Runner/exec seam so it travels with the argv to EVERY podman invocation netcage makes: `internal/jail` (run/start/teardown/verify/exec) AND `internal/manage` (the pass-through verbs `ps`/`logs`/`start`, which build `jail.RunSpec` through the same Runner) AND the interactive raw-passthrough path. A per-arg-builder edit is INSUFFICIENT and would SPLIT the store, making `netcage ps`/`logs`/`start` unable to find the containers a `netcage run` created (a correctness break, not just a leak). `--runroot` is left at its default (co-locating the transient runroot with the persistent root and wiping both produced `acquiring lock ... file exists` refresh noise in probes). The `--root`-flag approach is preferred over a `CONTAINERS_STORAGE_CONF`/`storage.conf` env because it fits ADR-0006 (netcage is a pure podman client through the Runner, so a global flag crosses cleanly to a future REMOTE podman where a host-process env var would not) and needs no on-disk config file.
+
+## Consequences
+
+- Clearing the relocated storage requires `podman --root <path> system reset --force`, NOT `rm -rf` (the rootless overlay `diff/` tree is owned by id-mapped subuids, so a plain `rm -rf` fails on permissions). This is documented.
+- A `/var/tmp` cleanup (tmpfiles age policy / reboot) costs only a re-pull on the next run, never a failure (self-heal), but wipes any KEPT containers, same as losing the home store would.
+- The scope is now stated: future changes must not silently ERODE the closed leaks nor OVER-CLAIM beyond network egress + the three closed host-identity leaks above.
