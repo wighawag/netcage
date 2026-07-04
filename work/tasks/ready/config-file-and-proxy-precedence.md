@@ -41,6 +41,10 @@ becomes **flag > env > config > refuse**.
   since env/flag also carry credentials.)
 - **A missing config file is a no-op** (not an error): a user with no config and no
   flag/env still gets today's "no proxy: refuse" message.
+- **Expose which SOURCE won.** The resolution must record/return which of
+  flag / env / config supplied the proxy, so downstream verbs can report it (task 2
+  prints `source: ...`; task 4 reads it). Own this signal HERE so those tasks read
+  it rather than retrofit it into this task's code.
 
 Where it lives: the config loader belongs INSIDE `internal/cli` so it can reuse
 the exported proxy parser AND the UNEXPORTED allow-direct validator without
@@ -53,6 +57,9 @@ exporting the latter. Wire it into the existing proxy-resolution point (where
 - [ ] With a config file holding a valid `proxy`, `netcage run <img>` (no `--proxy`,
       no `NETCAGE_PROXY`) resolves the config proxy and runs; precedence is
       flag > env > config > refuse (an explicit flag or env still wins).
+- [ ] Proxy resolution RECORDS which source won (flag | env | config) and exposes
+      it (so tasks 2/4 can report it); a test asserts the correct source is recorded
+      for each of flag / env / config.
 - [ ] The config `proxy` goes through the SAME socks5h-enforcing validation as the
       flag/env: a `socks5://` (or malformed) proxy in config is rejected loudly,
       not accepted laxer.
