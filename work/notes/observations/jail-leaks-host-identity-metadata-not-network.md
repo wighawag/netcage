@@ -167,3 +167,257 @@ This constraint applies to the Leak 2 spike/task deliverable.
 | 4 hardware/kernel | out-of-scope | scope ADR: accepted residual (container, not VM) |
 | 5 NIC name/MAC | investigate first | investigation task to pin provenance |
 | cross-cutting | decide scope | ADR: network egress guaranteed; host-identity masking scope stated per-leak, incl. the provisioning constraint |
+
+## Update 2026-07-04 - mountinfo masking is opt-in, and the command surface for it
+
+Two maintainer decisions, refining Leak 2 and the provisioning story.
+
+### 1. mountinfo masking is NOT a default
+
+Masking the `/proc/self/mountinfo` family can BREAK tools that legitimately read
+it (mount inspectors, some package/build tooling), so it must NOT be on by
+default. It is an OPT-IN hardening the user enables knowingly. (The graphroot
+relocation, by contrast, is transparent to tools and could be a default once the
+spike proves a reachable username-free path; masking stays opt-in regardless.)
+
+### 2. Command surface: `setup-default` stays its own verb; a NEW `setup` verb
+### enables the extra hardening
+
+This builds on ADR-0012's existing naming invariant (a netcage-only verb must
+never shadow a podman verb; that is why the config WRITER is `setup-default`, not
+`init`).
+
+- **`setup-default` KEEPS its own dedicated name** (not folded into a generic
+   `setup`). The point of the distinct name is to make the user KNOW they are
+   defining a persisted DEFAULT that every later `netcage run` reuses (ADR-0012:
+   the name signals the silent-default tradeoff). Collapsing it into a plain
+   `setup` would lose that signal. So `setup-default` remains separate.
+- **A NEW `setup` verb** is the natural home for enabling the extra host-identity
+   hardening that needs host-state provisioning: creating/owning the neutral
+   graphroot directory the user must provide (the provisioning-helper from the
+   previous update), and opting into the mountinfo masking. `setup` = "prepare
+   this host/environment for hardened netcage runs" (provision the writable
+   graphroot dir with correct ownership, optionally enable masking); it is
+   distinct in MEANING from `setup-default` = "persist my default proxy/allowlist".
+   Neither collides with a podman verb (podman has no `setup`), so both satisfy
+   ADR-0012's rule.
+
+Net: two sibling verbs with clearly different jobs, not one overloaded one.
+`setup-default` -> persisted proxy/allowlist default (the ADR-0012 writer, exists
+in the config prd). `setup` -> host provisioning + opt-in hardening toggles (new,
+owns the Leak 2 provisioning-helper + the opt-in mountinfo masking). The
+provisioning constraint from the prior update lands HERE: `setup` is the helper
+that makes the user-owned host-state creation easy and correct, while netcage
+itself still never silently creates privileged/host state during a `run`.
+
+Routing delta for Leak 2: the spike/task deliverable now targets `setup` as the
+home for (a) the graphroot-relocation provisioning helper and (b) the opt-in
+mountinfo-masking toggle (default OFF).
+
+## Update 2026-07-04 - Leak 2 SIMPLIFIED: graphroot in /tmp (no root), tested; masking + `setup` dropped
+
+Maintainer proposed putting the relocated graphroot in `/tmp` so NO root/host
+provisioning is needed. TESTED live on this host (rootless podman 5.x):
+
+    podman --root /tmp/netcage-graphroot-<uniq> run --rm --network none alpine \
+      sh -c 'cat /proc/self/mountinfo'
+
+Results (throwaway root, reset+removed after):
+- Podman picks the **overlay** driver on `/tmp` fine (rootless). Overlay-on-tmpfs
+  works.
+- The overlay mount line becomes
+  `lowerdir=/tmp/netcage-graphroot-.../overlay/...` with **ZERO lines containing
+  `/home/wighawag`**. The username leak is GONE.
+- `/tmp` is `drwxrwxrwt` (world-writable sticky), so the user creates their subdir
+  with **NO privilege**. Kills the "external folder needs root" problem.
+
+So `/tmp` (or a similar user-writable neutral path) is a PROVEN answer, no root.
+
+Two caveats to carry (not blockers):
+1. `/tmp` here is a **tmpfs (RAM-backed), wiped on reboot** -> the graphroot
+   (image cache + container storage) is EPHEMERAL: images re-pull after reboot,
+   and KEPT runs (ADR-0009) would not survive a reboot. Arguably GOOD for an
+   anonymity tool (no persistent storage fingerprint), but it changes the
+   kept-run promise. Alternatives if persistence matters: `$XDG_RUNTIME_DIR`
+   (`/run/user/<uid>`, uid-based not username, `drwx------`) or disk-backed
+   `/var/tmp/...`. The ONLY remaining open question is which default
+   (persistence-vs-ephemerality tradeoff); `/tmp` proves a working one exists.
+2. A tmpfs graphroot competes for RAM (here `/tmp` is 15G); a big image could
+   pressure memory. Note, not a blocker.
+
+**User `-v` project folders:** the source path is the user's OWN choice, so
+netcage cannot neutralize it without hiding what the user asked for. Correct
+answer is DOC GUIDANCE: "if you don't want your username to leak, mount your
+project from a path OUTSIDE `$HOME`." A documentation fix, not code.
+
+### The cascade (simpler outcome, agreed)
+
+- graphroot in `/tmp` handles the overlay/rootfs source (no root); docs handle
+  the `-v` volume source. Together these cover BOTH things mountinfo masking was
+  for, so **DROP the mountinfo-masking option entirely** (it also avoided the
+  "breaks tools that read mountinfo" downside for free).
+- No masking toggle + no privileged folder to provision => the `setup` verb has
+  NOTHING left to do, so **DROP the `setup` verb** proposed in the prior update.
+- Command surface therefore stays as-is: `setup-default` remains the ONLY new
+  verb (the ADR-0012 config writer); there is NO `setup`.
+
+### Leak 2, final shape
+
+| Prior plan | Final |
+| --- | --- |
+| relocate graphroot (spike for reachable path) | graphroot -> `/tmp` (or `$XDG_RUNTIME_DIR`/`/var/tmp`), PROVEN, no root |
+| mask mountinfo family (opt-in) | DROPPED (unnecessary) |
+| `setup` command + provisioning helper | DROPPED |
+| user `-v` source leak | DOC guidance: mount from outside `$HOME` |
+| open question | only: which neutral default (persistence vs ephemerality) |
+
+Provenance: the two probes above were run live on this host 2026-07-04 with a
+throwaway `--root` under `/tmp`, `podman system reset --force` + `rm -rf` after;
+no residue, host storage untouched. (Spotted-observation status kept: this note
+records a maintainer session's decisions + one local probe, not a full finding.)
+
+## Update 2026-07-04 - default is /var/tmp; graphroot self-heals; runroot split; rm caveat
+
+Maintainer picks **`/var/tmp`** as the graphroot default (disk-backed,
+reboot-safe, 189G free here) BECAUSE netcage does NOT `--rm` by default (kept
+runs, ADR-0009) so storage + kept pairs + the image cache should survive reboots.
+`/tmp`/`$XDG_RUNTIME_DIR` (both tmpfs, wiped on reboot/logout, and XDG is only 3G)
+would drop kept runs and re-pull every boot; wrong for a kept-by-default tool.
+
+Tested "what if the folder is wiped: must netcage rebuild it?" -- live probes on a
+throwaway `--root`, no residue:
+
+1. Delete just the storage dir, run again -> **podman recreates it + re-pulls**,
+   run succeeds.
+2. Delete the whole parent (storage AND runroot), run again -> **podman recreates
+   the full tree + re-pulls**, run still succeeds.
+
+=> The graphroot is **SELF-HEALING**. netcage needs ZERO rebuild logic: it just
+keeps passing `--root <path>`; if the path is missing podman makes it and
+re-pulls on demand. A `/var/tmp` wipe therefore costs only a re-pull on the next
+run, never a failure.
+
+Two design notes fell out of the probes:
+
+- **Split graphroot from runroot.** `--root` (persistent: images/containers) goes
+  on `/var/tmp` (survive reboot). `--runroot` (transient locks/pipes) must stay
+  on `$XDG_RUNTIME_DIR` / podman's default `/run`, NOT co-located under the same
+  `/var/tmp` dir. Co-locating them and wiping both produced
+  `acquiring lock ... file exists` refresh errors (the run still succeeded, but
+  it is noise from tearing out live lock state). So: set `--root` only; leave
+  `--runroot` default.
+- **Rootless graphroot cannot be `rm -rf`'d by the user.** The overlay `diff/`
+  tree is owned by id-mapped subuids (rootless userns), so a plain `rm -rf`
+  hits permission-denied. A reboot/tmpfiles wipe works (runs as root), but if
+  netcage ever tells a user "delete this dir to reset storage" it MUST say
+  `podman unshare rm -rf <dir>` or `podman system reset`, never `rm -rf`
+  (or provide a helper that shells that). Worth a doc line + possibly a
+  `netcage`-side reset convenience.
+
+Provenance: live probes on this host 2026-07-04, throwaway `--root`/`--runroot`
+under `/tmp`, cleaned with `podman system reset --force` + `podman unshare rm
+-rf`; verified zero leftover probe dirs after. Host storage untouched.
+
+## Update 2026-07-04 - Leak 2 FINAL (minimal): /var/tmp == today's storage minus the username; no cleanup
+
+Clarifying the "rebuild" wording and closing the ephemeral-storage tangent.
+
+**"Podman rebuilds it" meant re-INITIALISE + re-pull-on-demand, NOT restore.**
+When the graphroot is missing, podman re-creates EMPTY storage and re-downloads
+whatever IMAGE the current run needs. It does NOT bring back prior contents:
+images are recoverable (they live in a registry), but KEPT CONTAINERS (ADR-0009)
+are NOT (nothing to re-pull them from). So a wipe is harmless for the image
+cache, DESTRUCTIVE for kept runs. That is why auto-delete-on-exit cannot be the
+default, and the whole ephemeral-storage / "delete on leaving the machine" idea
+is DROPPED (it would silently destroy the kept runs `/var/tmp` was chosen to
+preserve).
+
+**The correct mental model (maintainer, agreed):** `--root /var/tmp/<neutral>`
+behaves EXACTLY like today's `~/.local/share/containers/storage`: persistent,
+survives reboots + between runs, holds image cache + kept containers, accumulates
+until cleared, self-heals if missing. The ONLY thing that changes is the PATH no
+longer contains the username, so `/proc/self/mountinfo` stops leaking it. Nothing
+else about storage semantics changes.
+
+Therefore **no auto-cleanup** (netcage doesn't auto-delete the home-folder
+storage today; it shouldn't auto-delete `/var/tmp` storage either, same
+lifecycle, same non-behaviour).
+
+### Leak 2, minimal final form
+
+- Point podman's graphroot at a username-free path under `/var/tmp` (`--root`);
+  leave `--runroot` at its default.
+- User `-v` volumes: DOC guidance (mount from outside `$HOME` to keep the
+  username out of that source path).
+- **No** mountinfo masking, **no** `setup` verb, **no** provisioning helper,
+  **no** auto-cleanup.
+- ONE doc line on manual clearing: use
+  `podman --root /var/tmp/<netcage-storage> system reset --force` (NOT `rm -rf`,
+  which fails on the id-mapped overlay `diff/` tree). Doc only, no code.
+
+## Update 2026-07-04 - Leak 5 INVESTIGATED + FIX PROVEN: pasta copies the host NIC NAME (not MAC); rename with `-I`
+
+Investigated the NIC leak end-to-end with live probes (throwaway `--root`, no
+residue). Result: root cause pinned, fix proven, egress unaffected.
+
+### What actually leaks (the precise mechanism)
+
+The host's default-route NIC here is `enxc8a362ba9779` - systemd predictable
+naming `enx<MAC>`, i.e. the NAME literally encodes the host MAC `c8:a3:62:ba:97:79`
+(a USB ethernet adapter).
+
+Probe (podman pasta sidecar + a tool joined via `--network container:`, exactly
+netcage's topology): the tool netns shows `/sys/class/net` = `{lo, enxc8a362ba9779}`.
+So the tool DOES see the host NIC NAME. BUT the interface's actual MAC inside the
+netns is a pasta-SYNTHESISED `d6:02:1b:ea:d8:6c` (varies per run), NOT the host's
+real `c8:a3:62:ba:97:79`.
+
+**So the leak is the NAME, not the MAC.** pasta creates its own interface with a
+fake MAC but COPIES the host default-route interface's NAME. When that host name
+is `enx<MAC>` (systemd's default for a NIC with no other predictable id, common
+for USB NICs), the name re-exposes the host MAC even though the live MAC is fake.
+Confirmed as pasta's documented default: `pasta --help` shows
+`-I, --ns-ifname NAME  default: same interface name as external one`.
+
+### The fix (PROVEN)
+
+pasta's `-I/--ns-ifname` sets the in-netns interface name. netcage already
+composes pasta opts through podman as `--network pasta:<opt>,<opt>` (see
+`SidecarRunArgs`: `network = "pasta"` or `"pasta:--map-host-loopback,"+addr`).
+Adding `-I,netcage0` gives `--network pasta:-I,netcage0[,--map-host-loopback,...]`.
+
+Probed with `--network 'pasta:-I,netcage0'`:
+- tool netns `/sys/class/net` = `{lo, netcage0}` - the `enx...` name is GONE.
+- host NIC name/MAC no longer appears anywhere in the tool netns.
+- egress unaffected: default route is `default via 192.168.1.1 dev netcage0`,
+  routing works. Renaming the interface does NOT break pasta connectivity.
+
+### Verdict + where it lands
+
+FIX, small and in-scope. Add a fixed `-I,<stable-name>` (e.g. `netcage0`) to the
+pasta network arg netcage builds in `internal/jail/jail.go` `SidecarRunArgs`
+(compose it alongside the existing `--map-host-loopback` opt). One-token change to
+the arg builder; the wiring test asserts the token is present. No ADR needed (it
+does not change the egress model; the route out is still the TUN, this only
+re-labels the pasta interface).
+
+### Leak 1 fix de-risked (probed 2026-07-04)
+
+Under the real `--network container:<sidecar>` topology, probed: a `/etc/hosts`
+`:ro` bind mount IS accepted (tool sees `127.0.0.1 localhost` only), and
+`--hostname netcage` IS accepted (tool `hostname` returns `netcage`). Neither is
+refused the way `--dns` is under `--network container:`. So the Leak 1 fix has no
+refusal risk to design around. Throwaway `--root`, cleaned after, no residue.
+
+### Residual NOT fixed by this (separate, note only)
+
+The route dump still showed `192.168.1.1` / `192.168.1.0/24` (host LAN
+gateway/subnet) on the pasta interface. That is LAN-TOPOLOGY exposure, a DIFFERENT
+residual from NIC identity, and in the REAL netcage sidecar the tool's route is
+the TUN (`CLONE_MAIN=0` stops the pasta routes cloning into the TUN table), so a
+tool reading its default route sees the TUN, not this. Whether the pasta
+interface's copied LAN addresses are still readable via `/sys` in the full
+tun2socks jail is a smaller follow-up; the NIC-NAME leak (the one the transcript
+flagged, and the one that re-exposes the host MAC) is the fixable target and is
+now solved. Provenance: live pasta+container probes on this host 2026-07-04,
+throwaway `--root`, `system reset` + `unshare rm -rf` after, zero residue.
