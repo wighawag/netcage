@@ -115,8 +115,8 @@ func decodeResumeName(b []byte) string {
 func forceRemoveStartPair(runID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_ = exec.CommandContext(ctx, "podman", "rm", "-f", "--depend", "netcage-run-"+runID+"-sidecar").Run()
-	_ = exec.CommandContext(ctx, "podman", "rm", "-f", "-i", "netcage-run-"+runID+"-tool").Run()
+	_ = exec.CommandContext(ctx, "podman", podmanTestArgs("rm", "-f", "--depend", "netcage-run-"+runID+"-sidecar")...).Run()
+	_ = exec.CommandContext(ctx, "podman", podmanTestArgs("rm", "-f", "-i", "netcage-run-"+runID+"-tool")...).Run()
 	// Sweep the durable resolv.conf too, so this test (which deliberately keeps a
 	// pair) cleans fully after itself and leaves no $TMPDIR orphan.
 	jail.RemoveResolvConf(runID)
@@ -291,10 +291,10 @@ func TestJail_Start_RefusesNonNetcageContainer(t *testing.T) {
 	defer cancel()
 
 	name := "netcage-start-unmanaged-" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", "")
-	if err := exec.CommandContext(ctx, "podman", "create", "--name", name, "docker.io/library/alpine:latest", "true").Run(); err != nil {
+	if err := exec.CommandContext(ctx, "podman", podmanTestArgs("create", "--name", name, "docker.io/library/alpine:latest", "true")...).Run(); err != nil {
 		t.Skipf("could not create the unmanaged fixture container: %v", err)
 	}
-	t.Cleanup(func() { _ = exec.Command("podman", "rm", "-f", "-i", name).Run() })
+	t.Cleanup(func() { _ = exec.Command("podman", podmanTestArgs("rm", "-f", "-i", name)...).Run() })
 
 	cfg := jail.Config{
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: "9050"},

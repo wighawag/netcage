@@ -26,7 +26,7 @@ func residueFor(t *testing.T, runID string) []string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, _ := exec.CommandContext(ctx, "podman", "ps", "-a", "--format", "{{.Names}}").CombinedOutput()
+	out, _ := exec.CommandContext(ctx, "podman", podmanTestArgs("ps", "-a", "--format", "{{.Names}}")...).CombinedOutput()
 	var left []string
 	for _, line := range strings.Split(string(out), "\n") {
 		name := strings.TrimSpace(line)
@@ -173,8 +173,8 @@ func containerLabel(t *testing.T, name, key string) string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "podman", "inspect",
-		"--format", "{{ index .Config.Labels \""+key+"\" }}", name).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "podman", podmanTestArgs("inspect",
+		"--format", "{{ index .Config.Labels \""+key+"\" }}", name)...).CombinedOutput()
 	if err != nil {
 		return ""
 	}
@@ -189,8 +189,8 @@ func containerLabel(t *testing.T, name, key string) string {
 func forceRemovePair(runID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_ = exec.CommandContext(ctx, "podman", "rm", "-f", "--depend", "netcage-run-"+runID+"-sidecar").Run()
-	_ = exec.CommandContext(ctx, "podman", "rm", "-f", "-i", "netcage-run-"+runID+"-tool").Run()
+	_ = exec.CommandContext(ctx, "podman", podmanTestArgs("rm", "-f", "--depend", "netcage-run-"+runID+"-sidecar")...).Run()
+	_ = exec.CommandContext(ctx, "podman", podmanTestArgs("rm", "-f", "-i", "netcage-run-"+runID+"-tool")...).Run()
 	// Sweep the durable resolv.conf too, so a kept-pair test cleans fully after
 	// itself and leaves no $TMPDIR orphan.
 	jail.RemoveResolvConf(runID)

@@ -42,8 +42,41 @@ func TestMain(m *testing.M) {
 				os.Stderr.Write(out)
 			}
 		}
+
+		// SHARED-WRITE ISOLATION (the graphroot relocation task): point the jail's
+		// podman graphroot at a per-run SCRATCH dir so the integration suite stands up
+		// real storage WITHOUT touching the developer's real default store
+		// (~/.local/share/containers/storage). Without this, every integration jail
+		// run would pull images into (and leave containers in) the real store. The
+		// scratch store is torn down with `podman --root <tmp> system reset --force`
+		// (a plain rm -rf fails on the id-mapped overlay diff/ tree, ADR-0013). It sits
+		// under /var/tmp (disk-backed, world-writable-sticky), mirroring the real path
+		// shape the code relocates to.
+		if store, serr := os.MkdirTemp("/var/tmp", "netcage-itest-store"); serr == nil {
+			os.Setenv("NETCAGE_GRAPHROOT", store)
+			defer func() {
+				resetCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				_ = exec.CommandContext(resetCtx, "podman", "--root", store, "system", "reset", "--force").Run()
+				_ = os.RemoveAll(store)
+			}()
+		}
 	}
 	os.Exit(m.Run())
+}
+
+// podmanTestArgs prefixes a test-side `podman` argv with `--root
+// $NETCAGE_GRAPHROOT` when the integration suite isolated storage under a scratch
+// graphroot (TestMain). The PRODUCT injects --root at its own exec seam
+// (ExecRunner), so jail-created containers live in the scratch store; a test-side
+// `podman ps`/`inspect`/`rm` must look in the SAME store or it would see nothing.
+// When the env is unset (default store) it is a plain pass-through, so this is
+// safe on either configuration.
+func podmanTestArgs(args ...string) []string {
+	if store := os.Getenv("NETCAGE_GRAPHROOT"); store != "" {
+		return append([]string{"--root", store}, args...)
+	}
+	return args
 }
 
 // requirePodman skips the test unless a working rootless podman is present. The
@@ -223,7 +256,7 @@ func TestJail_DefaultDevImage_ForcedEgressAndNoResidue(t *testing.T) {
 	}
 
 	// No run-attributable container for this run should remain (no residue).
-	out, _ := exec.CommandContext(ctx, "podman", "ps", "-a", "--format", "{{.Names}}").CombinedOutput()
+	out, _ := exec.CommandContext(ctx, "podman", podmanTestArgs("ps", "-a", "--format", "{{.Names}}")...).CombinedOutput()
 	if strings.Contains(string(out), "netcage-run-"+runID) {
 		t.Fatalf("run-attributable containers left after the default-dev-image run:\n%s", out)
 	}
@@ -256,7 +289,7 @@ func TestJail_TeardownLeavesNoResidue(t *testing.T) {
 	_, _ = jail.Run(ctx, jail.ExecRunner{}, cfg)
 
 	// No container named for this run should remain.
-	out, _ := exec.CommandContext(ctx, "podman", "ps", "-a", "--format", "{{.Names}}").CombinedOutput()
+	out, _ := exec.CommandContext(ctx, "podman", podmanTestArgs("ps", "-a", "--format", "{{.Names}}")...).CombinedOutput()
 	if strings.Contains(string(out), "netcage-run-"+runID) {
 		t.Fatalf("run-attributable containers left after teardown:\n%s", out)
 	}

@@ -187,7 +187,7 @@ func TestJail_SplitTunnel_DirectReachableRestForcedThroughProxy(t *testing.T) {
 	}
 
 	// No run-attributable container may remain (no residue).
-	psOut, _ := exec.CommandContext(ctx, "podman", "ps", "-a", "--format", "{{.Names}}").CombinedOutput()
+	psOut, _ := exec.CommandContext(ctx, "podman", podmanTestArgs("ps", "-a", "--format", "{{.Names}}")...).CombinedOutput()
 	if strings.Contains(string(psOut), "netcage-run-"+runID) {
 		t.Fatalf("split-tunnel run left run-attributable residue:\n%s", psOut)
 	}

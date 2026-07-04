@@ -75,9 +75,9 @@ func TestVerify_RawPodmanStartBypassIsFailClosed(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = exec.CommandContext(ctx, "podman", "rm", "-f", "--depend", sidecarName).Run()
+		_ = exec.CommandContext(ctx, "podman", podmanTestArgs("rm", "-f", "--depend", sidecarName)...).Run()
 		// Belt-and-braces: remove the tool by name too in case --depend did not.
-		_ = exec.CommandContext(ctx, "podman", "rm", "-f", "-i", toolName).Run()
+		_ = exec.CommandContext(ctx, "podman", podmanTestArgs("rm", "-f", "-i", toolName)...).Run()
 		if left := rawResidueFor(t, id); len(left) != 0 {
 			t.Errorf("raw-bypass test left netcage-run-%s residue on the host: %v", id, left)
 		}
@@ -178,7 +178,7 @@ func TestVerify_RawPodmanStartBypassIsFailClosed(t *testing.T) {
 // runPodmanRaw runs a raw podman command (outside jail.Run) and returns its
 // combined output, failing the test's error path via the returned error.
 func runPodmanRaw(ctx context.Context, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, "podman", args...).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "podman", podmanTestArgs(args...)...).CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
 
@@ -187,9 +187,9 @@ func runPodmanRaw(ctx context.Context, args ...string) (string, error) {
 // folded into the output string (the caller asserts on markers, not exit codes).
 func probeInNetns(ctx context.Context, t *testing.T, sidecarName, sh string) string {
 	t.Helper()
-	out, _ := exec.CommandContext(ctx, "podman", "run", "--rm",
+	out, _ := exec.CommandContext(ctx, "podman", podmanTestArgs("run", "--rm",
 		"--network", "container:"+sidecarName,
-		"docker.io/library/alpine:latest", "sh", "-c", sh).CombinedOutput()
+		"docker.io/library/alpine:latest", "sh", "-c", sh)...).CombinedOutput()
 	return strings.TrimSpace(string(out))
 }
 
@@ -198,8 +198,8 @@ func probeInNetns(ctx context.Context, t *testing.T, sidecarName, sh string) str
 // accumulate across restarts.
 func outputRuleCount(ctx context.Context, t *testing.T, sidecarName string) int {
 	t.Helper()
-	out, err := exec.CommandContext(ctx, "podman", "exec", sidecarName,
-		"iptables", "-S", "OUTPUT").CombinedOutput()
+	out, err := exec.CommandContext(ctx, "podman", podmanTestArgs("exec", sidecarName,
+		"iptables", "-S", "OUTPUT")...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("iptables -S OUTPUT in sidecar: %v\n%s", err, out)
 	}
@@ -236,7 +236,7 @@ func rawResidueFor(t *testing.T, id string) []string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, _ := exec.CommandContext(ctx, "podman", "ps", "-a", "--format", "{{.Names}}").CombinedOutput()
+	out, _ := exec.CommandContext(ctx, "podman", podmanTestArgs("ps", "-a", "--format", "{{.Names}}")...).CombinedOutput()
 	var left []string
 	for _, line := range strings.Split(string(out), "\n") {
 		name := strings.TrimSpace(line)
