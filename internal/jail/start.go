@@ -120,6 +120,15 @@ func Start(ctx context.Context, r Runner, cfg Config, resolveName string) (Resul
 		return Result{}, fmt.Errorf("re-materialise tool resolv.conf for start: %w", err)
 	}
 
+	// Re-materialise the sanitized /etc/hosts at the SAME stable path the tool
+	// bind-mounts (baked at create as hostsPathFor(runID)), for the same reason as
+	// the resolv.conf above: a revive on another host or after a temp-dir sweep
+	// would otherwise fail with crun "cannot stat" when podman re-mounts the missing
+	// source. Idempotent; an ephemeral start removes it again via Teardown.
+	if err := writeHostsAt(hostsPathFor(cfg.RunID)); err != nil {
+		return Result{}, fmt.Errorf("re-materialise tool /etc/hosts for start: %w", err)
+	}
+
 	// 3d. reachback diagnostic for a host-loopback proxy (as the run path), so an
 	// unreachable proxy port is a clear message, not an opaque tool failure.
 	if cfg.ProxyOnHostLoopback {

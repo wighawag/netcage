@@ -113,6 +113,73 @@ func TestRemoveResolvConf_IsIdempotent(t *testing.T) {
 	RemoveResolvConf("no-such-run-id-xyz") // missing file: no-op
 }
 
+// TestTeardown_SweepsHostsOnEphemeralKeepsItOnKept mirrors the resolv.conf sweep
+// test for the sanitized /etc/hosts bind-mount source (Leak 1, ADR-0013): swept
+// on the EPHEMERAL path so it does not orphan under $TMPDIR, LEFT durable on the
+// KEPT path so a later `netcage start` can re-mount it. `netcage rm` performs the
+// same sweep via jail.RemoveHosts.
+func TestTeardown_SweepsHostsOnEphemeralKeepsItOnKept(t *testing.T) {
+	t.Run("ephemeral sweeps the hosts file", func(t *testing.T) {
+		c := teardownCfg(true)
+		path := hostsPathFor(c.RunID)
+		if err := writeHostsAt(path); err != nil {
+			t.Fatalf("seed hosts: %v", err)
+		}
+		t.Cleanup(func() { os.Remove(path) })
+		if err := Teardown(context.Background(), &recordRunner{}, c); err != nil {
+			t.Fatalf("Teardown (ephemeral): %v", err)
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("ephemeral teardown must remove the hosts file %s (got stat err %v); it would otherwise orphan", path, err)
+		}
+	})
+
+	t.Run("kept leaves the hosts file durable", func(t *testing.T) {
+		c := teardownCfg(false)
+		path := hostsPathFor(c.RunID)
+		if err := writeHostsAt(path); err != nil {
+			t.Fatalf("seed hosts: %v", err)
+		}
+		t.Cleanup(func() { os.Remove(path) })
+		if err := Teardown(context.Background(), &recordRunner{}, c); err != nil {
+			t.Fatalf("Teardown (kept): %v", err)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("kept teardown must LEAVE the hosts file %s durable (so netcage start can re-mount it); got stat err %v", path, err)
+		}
+	})
+}
+
+// TestRemoveHosts_IsIdempotent pins that RemoveHosts is a safe no-op on a missing
+// file and an empty run id (like RemoveResolvConf), so it can be called on every
+// exit path and by `netcage rm` without guarding.
+func TestRemoveHosts_IsIdempotent(t *testing.T) {
+	RemoveHosts("")                   // empty run id: no-op, must not panic
+	RemoveHosts("no-such-run-id-xyz") // missing file: no-op
+}
+
+// TestWriteHostsAt_IsLocalhostOnly pins the synthesized /etc/hosts contains ONLY
+// localhost entries and NO host machine name / `127.0.1.1 <host>` line (the leak
+// this fix closes). It is the per-run temp fixture the tool bind-mounts.
+func TestWriteHostsAt_IsLocalhostOnly(t *testing.T) {
+	path := hostsPathFor("hoststest")
+	t.Cleanup(func() { os.Remove(path) })
+	if err := writeHostsAt(path); err != nil {
+		t.Fatalf("writeHostsAt: %v", err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read hosts: %v", err)
+	}
+	got := string(b)
+	if !strings.Contains(got, "127.0.0.1") || !strings.Contains(got, "localhost") {
+		t.Fatalf("synthesized hosts must contain the localhost entry; got:\n%s", got)
+	}
+	if strings.Contains(got, "127.0.1.1") {
+		t.Fatalf("synthesized hosts must NOT carry a `127.0.1.1 <host>` line (the leak); got:\n%s", got)
+	}
+}
+
 func joinAll(calls [][]string) string {
 	var b strings.Builder
 	for _, c := range calls {

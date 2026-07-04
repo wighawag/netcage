@@ -48,6 +48,29 @@ import (
 // and the firewall narrowing rule's destination is stable.
 const mappedHostLoopback = "169.254.1.1"
 
+// pastaIfName is the FIXED, neutral name pasta gives the in-netns interface (via
+// its `-I,<name>` option, composed into the pasta network arg in SidecarRunArgs).
+// It hides the NIC-name leak (Leak 5, ADR-0013): pasta's default is to reuse the
+// host default-route NIC's NAME inside the netns, and under systemd predictable
+// naming that name is often `enx<MAC>`, whose NAME re-exposes the host NIC MAC
+// even though pasta already synthesizes a fake MAC. Renaming the interface to a
+// fixed constant removes that leak. It is a CONSTANT (not run-scoped): the name
+// carries no identity, so there is nothing to vary per run, and a stable name
+// keeps the wiring test and any interface-name assertion deterministic. The route
+// out is still the TUN, so the rename does not touch forced egress (ADR-0013,
+// live-verified in the jail-leaks observation).
+const pastaIfName = "netcage0"
+
+// fixedHostname is the FIXED, neutral hostname netcage sets on the tool container
+// (via --hostname) so /etc/hostname and the container's own name do not reveal or
+// mirror the host machine name (Leak 1, ADR-0013). It is a CONSTANT (not the run
+// id): the point is a NEUTRAL value that carries no host or run identity, and a
+// run-id hostname would just introduce a different correlator. It is netcage's
+// DEFAULT only: it is emitted BEFORE the vetted pass-through flags (ToolRunArgs),
+// so a user who explicitly passes `--hostname` (an ADR-0010 allow-list flag) still
+// wins under podman's last-flag-wins semantics.
+const fixedHostname = "netcage"
+
 // sidecarDNSHelperPath is where the netcage-dns helper is mounted inside the
 // sidecar container (read-only) and exec'd from (ADR-0006: the forwarder runs
 // INSIDE the sidecar via `podman exec -d`, so the host needs no nsenter). The
@@ -172,6 +195,11 @@ type Config struct {
 	// resolvConfPath is a host path to a resolv.conf (nameserver 127.0.0.1)
 	// mounted into the tool, set by Run.
 	resolvConfPath string
+	// hostsPath is a host path to a synthesized localhost-only /etc/hosts mounted
+	// read-only into the tool (Leak 1 of the host-identity hardening, ADR-0013),
+	// set by Run. Its presence signals the sanitized-hosts wiring is active; it
+	// mirrors resolvConfPath (a per-run temp fixture, not a shared/global write).
+	hostsPath string
 }
 
 // proxyAuth returns the SOCKS5 auth for the forwarder, or nil.
@@ -560,10 +588,17 @@ func (c Config) proxyReachbackAddr() string {
 // own dialer loops back through tun0 and pasta resets it. See
 // work/notes/findings/spike-jail-forced-egress-clone-main-and-excluded-route.md.
 func (c Config) SidecarRunArgs() []string {
-	network := "pasta"
+	// Compose the pasta options. `-I,<name>` renames the in-netns interface to a
+	// fixed neutral name so it does not inherit the host NIC's `enx<MAC>` name
+	// (Leak 5, ADR-0013); it is ALWAYS present (the interface exists in both proxy
+	// modes). For a host-loopback proxy, `--map-host-loopback,<addr>` follows so the
+	// sidecar's dialer can reach the host-loopback proxy through the pasta map. The
+	// route out is still the TUN, so neither opt affects forced egress.
+	pastaOpts := []string{"-I", pastaIfName}
 	if c.ProxyOnHostLoopback {
-		network = "pasta:--map-host-loopback," + mappedHostLoopback
+		pastaOpts = append(pastaOpts, "--map-host-loopback", mappedHostLoopback)
 	}
+	network := "pasta:" + strings.Join(pastaOpts, ",")
 	args := []string{
 		"run", "-d", "--name", c.sidecarName(),
 	}
@@ -679,6 +714,20 @@ func (c Config) ToolRunArgs() []string {
 		// all name resolution goes proxy-side. This replaces --dns (which podman
 		// refuses under --network container:).
 		args = append(args, "-v", c.resolvConfPath+":/etc/resolv.conf:ro")
+	}
+	// Sanitize /etc/hosts + fix the hostname (Leak 1, ADR-0013). Mount a synthesized
+	// localhost-only /etc/hosts read-only (mirroring the resolv.conf mount above) so
+	// the tool no longer inherits podman's default /etc/hosts, which under rootless
+	// podman carries the host's `127.0.1.1 <hostname>` line and leaks the host
+	// machine name. The source file is a per-run temp fixture Run synthesizes (like
+	// the resolv.conf), so the mount appears only when hostsPath is set. Unlike
+	// --dns, both the /etc/hosts mount and --hostname ARE accepted under --network
+	// container: (live-verified). --hostname is netcage's neutral DEFAULT; it is
+	// emitted BEFORE the vetted pass-through flags so an explicit user --hostname
+	// (ADR-0010) wins under podman's last-flag-wins.
+	args = append(args, "--hostname", fixedHostname)
+	if c.hostsPath != "" {
+		args = append(args, "-v", c.hostsPath+":/etc/hosts:ro")
 	}
 	for _, m := range c.Mounts {
 		args = append(args, "-v", m)
