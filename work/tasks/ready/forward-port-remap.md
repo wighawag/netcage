@@ -14,7 +14,7 @@ Behaviour:
 
 - `netcage forward <c> 3001` stays BYTE-IDENTICAL to today: host 3001 -> jail 3001. The bare single-port form is the zero-remap special case, so no existing invocation changes.
 - `netcage forward <c> 8080:3001` binds host `<bind>:8080` and connects to in-jail `127.0.0.1:3001`.
-- Split the second positional on a single `:`: zero colons => host == jail; exactly one colon => `hostPort:jailPort`; two or more colons (`1:2:3`) => LOUD usage error. Validate BOTH sides 1..65535 (reuse/extend the existing `parseForwardPort`); a non-numeric or out-of-range host side or jail side is a loud usage error.
+- Split the second positional on a single `:`: zero colons => host == jail; exactly one colon => `hostPort:jailPort`; two or more colons (`1:2:3`) => LOUD usage error. Validate BOTH sides 1..65535 (reuse/extend the existing `parseForwardPort`); a non-numeric or out-of-range host side or jail side is a loud usage error. NOTE: use a plain `strings.Split(s, ":")` + count check, NOT `net.SplitHostPort` (both sides are bare port NUMBERS, no host address; `net.SplitHostPort` would mis-handle the count/IPv6 cases and is the wrong tool here).
 - `--bind` semantics are UNCHANGED (`127.0.0.1` default, `0.0.0.0` the guardrailed warned opt-in, nothing else).
 - The startup / running line names BOTH ports honestly: `forwarding http://127.0.0.1:8080 -> <container>:3001`.
 - README host-access section updated to show the remap; if the `-p`/`--publish` refusal hint quotes the single-port form, update it to the `[hostPort:]jailPort` form.
