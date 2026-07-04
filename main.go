@@ -9,6 +9,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"github.com/wighawag/netcage/internal/detectproxy"
 	"github.com/wighawag/netcage/internal/jail"
 	"github.com/wighawag/netcage/internal/manage"
+	"github.com/wighawag/netcage/internal/setupdefault"
 	"github.com/wighawag/netcage/internal/verify"
 )
 
@@ -65,6 +67,8 @@ func run(args []string) int {
 		return runVerify(ctx, cmd)
 	case cmd.Name == "detect-proxy":
 		return runDetectProxy(ctx, cmd)
+	case cmd.Name == "setup-default":
+		return runSetupDefault(ctx, cmd)
 	case cmd.Name == "start":
 		return runStart(ctx, cmd)
 	case cmd.IsManagement():
@@ -270,6 +274,121 @@ func runDetectProxy(ctx context.Context, cmd *cli.Command) int {
 	return 0
 }
 
+// runSetupDefault runs the interactive, re-runnable onboarding that persists a
+// credential-free DEFAULT proxy so a bare `netcage run` needs no --proxy. It
+// composes the in-process detect-proxy engine, verify's exit-IP evidence step,
+// and the SINGLE config writer (cli.WriteConfig), keeping the DECISION logic in
+// the pure setupdefault package and only wiring the impure prompt / detect /
+// verify / write / print seams here. It carries no proxy and is not preflighted
+// (cli.IsProxyless): it is ESTABLISHING the proxy, not egressing through one.
+//
+// The config location is resolved from the real process env (XDG_CONFIG_HOME /
+// HOME), so the writer targets ~/.config/netcage/config.json; the writer enforces
+// the credential-free + socks5h + 0600 invariants at that one seam.
+func runSetupDefault(ctx context.Context, _ *cli.Command) int {
+	path, ok := cli.ConfigPath(os.LookupEnv)
+	if !ok {
+		fmt.Fprintln(os.Stderr, "netcage: setup-default: cannot resolve a config directory (set XDG_CONFIG_HOME or HOME)")
+		return 1
+	}
+	existing, err := cli.ReadConfigView(os.LookupEnv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "netcage: setup-default: %v\n", err)
+		return 1
+	}
+	opts := setupdefault.Options{
+		Prompter:   stdinPrompter{in: bufio.NewReader(os.Stdin), out: os.Stderr},
+		Detector:   processHintDetector{},
+		Verifier:   jailVerifier{ctx: ctx},
+		Writer:     envConfigWriter{},
+		Console:    stderrConsole{},
+		ConfigPath: path,
+		Existing:   existing,
+	}
+	if err := setupdefault.Run(opts); err != nil {
+		fmt.Fprintf(os.Stderr, "netcage: setup-default: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// stdinPrompter is the real interactive input seam: it prints prompts to out
+// (stderr, so a piped-to-a-file stdout stays clean) and reads answers from in.
+// An empty (bare-Enter) answer means "accept the default". Confirm reads a
+// yes/no; a bare Enter uses the supplied default. EOF on stdin returns an error
+// so the flow aborts cleanly rather than looping.
+type stdinPrompter struct {
+	in  *bufio.Reader
+	out *os.File
+}
+
+func (p stdinPrompter) Ask(prompt, def string) (string, error) {
+	fmt.Fprintf(p.out, "%s: ", prompt)
+	line, err := p.in.ReadString('\n')
+	if err != nil && line == "" {
+		return "", fmt.Errorf("reading input: %w", err)
+	}
+	return strings.TrimSpace(line), nil
+}
+
+func (p stdinPrompter) Confirm(prompt string, def bool) (bool, error) {
+	suffix := " [y/N]"
+	if def {
+		suffix = " [Y/n]"
+	}
+	fmt.Fprintf(p.out, "%s%s: ", prompt, suffix)
+	line, err := p.in.ReadString('\n')
+	if err != nil && line == "" {
+		return false, fmt.Errorf("reading input: %w", err)
+	}
+	ans := strings.ToLower(strings.TrimSpace(line))
+	if ans == "" {
+		return def, nil
+	}
+	return ans == "y" || ans == "yes", nil
+}
+
+// processHintDetector is the real detection seam: it runs the detect-proxy engine
+// with the WEAK, HEDGED process hints computed from the host process table (the
+// same impure shell runDetectProxy uses). It presents evidence only and never
+// labels the provider.
+type processHintDetector struct{}
+
+func (processHintDetector) Detect() detectproxy.Report {
+	hints := detectproxy.PortHints(runningProcessNames())
+	return detectproxy.Probe(detectproxy.DialProber{Hints: hints})
+}
+
+// jailVerifier is the real verify seam: it reuses verify's exit-IP machinery to
+// gather the exit IP of a chosen proxy through an ephemeral jail (evidence the
+// egress is not the host IP). It bounds each probe with a timeout. It makes NO
+// claim about the provider (evidence only).
+type jailVerifier struct{ ctx context.Context }
+
+func (v jailVerifier) ExitIP(proxy cli.ProxyConfig) (string, error) {
+	pctx, cancel := context.WithTimeout(v.ctx, 30*time.Second)
+	defer cancel()
+	return verify.ExitIPForProxy(pctx, verify.DefaultJailRunner, proxy)
+}
+
+// envConfigWriter is the real persist seam: it writes through the SINGLE config
+// writer (cli.WriteConfig) bound to the real process env, so the credential-free
+// + socks5h + 0600 invariants are enforced at that one place. It never forks a
+// second writer.
+type envConfigWriter struct{}
+
+func (envConfigWriter) Write(proxyURL string, allowDirect []string) error {
+	return cli.WriteConfig(os.LookupEnv, proxyURL, allowDirect)
+}
+
+// stderrConsole prints setup-default's human lines to stderr, so a redirected
+// stdout stays clean (the verb writes no machine output).
+type stderrConsole struct{}
+
+func (stderrConsole) Printf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format, args...)
+}
+
 // firstConfirmedPort returns the port of the first candidate that CONFIRMED
 // SOCKS5, for the optional exit-IP evidence (a confirmed SOCKS5 speaker is the
 // only sensible target to probe an exit IP through).
@@ -314,6 +433,7 @@ const usage = `usage:
   netcage start  [--proxy ...] [--allow-direct ...] [-it] [--rm] <container>
   netcage verify [--proxy socks5h://[user:pass@]host:port]
   netcage detect-proxy [--json]
+  netcage setup-default
   netcage ps
   netcage images
   netcage logs|inspect|stop|rm <container>
@@ -343,6 +463,17 @@ named reusable jailed container is a durable environment. It CARRIES a --proxy
 (and any --allow-direct) and RECONCILES it against the config the container was
 created with: a DIFFERENT proxy/allowlist is REFUSED (remove it and run again, or
 start it with the same jail config) rather than silently reviving a stale jail.
+
+setup-default is a netcage-only onboarding verb (podman has no such verb; ` + "`init`" + `
+was rejected because ` + "`podman init`" + ` is real): it is the INTERACTIVE, re-runnable
+setup that DETECTS a SOCKS proxy (via detect-proxy), lets you CHOOSE or enter one,
+VERIFIES it (shows the exit IP as evidence it differs from your host), WARNS ONCE
+about the silent-default tradeoff, and PERSISTS the choice (credential-free) into
+~/.config/netcage/config.json (0600), so a bare ` + "`netcage run`" + ` needs no --proxy. It
+is the ONLY thing that writes the config file. It REFUSES to persist a ` + "`user:pass@`" + `
+proxy (keep authed proxies in NETCAGE_PROXY/--proxy, transient); it is re-runnable
+and CONFIRMS before overwriting an existing config. It carries NO --proxy (it is
+establishing the proxy, not egressing through one) and is not preflighted.
 
 detect-proxy is a netcage-only utility verb: it PROBES the common local SOCKS
 ports (127.0.0.1:9050 Tor, :9150 Tor Browser, :1080 generic), CONFIRMS each open
