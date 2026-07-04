@@ -155,6 +155,30 @@ netcage start --proxy socks5h://127.0.0.1:9050 -it netcage-run-<id>-tool   # res
 
 `start` **revives** the existing sidecar (its baked firewall re-applies on start, then netcage **verifies** it), **re-execs the DNS forwarder**, and re-enters the tool with its filesystem state intact. It is the jail-aware exception to the other verbs: it carries a `--proxy` (and any `--allow-direct`) and **reconciles** it against the config the container was created with. A **different** proxy/allowlist is **refused** (remove the container and `run` again, or start it with the same jail config) rather than silently reviving a stale jail or discarding container state. A non-netcage or unknown container is refused. Without `--rm` the pair is left stopped again (fail-closed via the baked firewall); with `--rm` the resume is ephemeral (both removed on exit). See [ADR-0011](docs/adr/0011-netcage-start-revives-jail-refuses-changed-config.md).
 
+## Host access: reach an in-jail server from the host
+
+A jailed tool sometimes runs a server you want to open on the host (a dev/preview server on `:3001`, a local API). `-p`/`--publish` stays **refused** (it would open an inbound path around the jail); host access is a separate, explicit, out-of-band verb instead, the netcage analogue of `kubectl port-forward` / `ssh -L`:
+
+```sh
+# terminal 1: the jailed tool starts a server on :3001 (unchanged run)
+netcage run --proxy socks5h://127.0.0.1:9050 -it -v ./app netcage-run-<id>-tool
+# terminal 2: the HUMAN opens the window, explicitly, per port
+netcage forward netcage-run-<id>-tool 3001
+# -> forwarding http://127.0.0.1:3001 -> netcage-run-<id>-tool:3001 (Ctrl-C to stop)
+```
+
+`forward` stands up ONE host `<bind>:<port>` -> in-jail `<port>` forward for as long as the verb runs, then tears it down on Ctrl-C (nothing revives it, a reboot ends it). Guardrails (see [ADR-0014](docs/adr/0014-host-access-to-in-jail-server-is-a-forward-verb-not-a-publish-flag.md)): **loopback by default** (the bare verb binds `127.0.0.1`, so nothing off-box can reach the server); **TCP only** and **exactly the one named port** (UDP stays hard-dropped, ADR-0003); **netcage-managed containers only** (label-scoped, ADR-0009, a non-netcage or stopped jail is refused loudly); and it **never touches the egress firewall** (no OUTPUT rule, so forced egress and fail-closed are exactly as before, the reply just rides the established inbound socket).
+
+For LAN access (e.g. viewing the preview from a phone on the same network) `--bind 0.0.0.0` binds all interfaces, but it is a **separate, louder opt-in**: it prints a **warning** naming what it exposes (the container, the port, and that any LAN host can reach the jailed tool's server) before forwarding. No bind value other than `127.0.0.1` and `0.0.0.0` is accepted.
+
+```sh
+netcage forward --bind 0.0.0.0 netcage-run-<id>-tool 3001
+# -> WARNING: exposing netcage-run-<id>-tool:3001 on ALL interfaces (0.0.0.0); any
+#    host on your LAN can reach the jailed tool's server. Ctrl-C to stop.
+```
+
+**Nothing about host access persists.** After a reboot, re-establish it explicitly: `netcage start <container>` (revive the jail), relaunch the server if it was a tool-run process, then `netcage forward <container> <port>` again.
+
 ## Split tunnel: reach one local service directly
 
 `--allow-direct <IP|CIDR>[:port]` (repeatable) opens a **narrow, guardrailed hole** in the forced egress for specific **RFC1918 / link-local** destinations, so a jailed tool can reach a trusted local service (e.g. a local model at `192.168.1.150:8080`) DIRECTLY over the LAN, while ALL other egress stays forced through the proxy, fail-closed.

@@ -38,6 +38,16 @@ func graphRoot() string {
 	return defaultGraphRoot
 }
 
+// GraphRoot exports the resolved graphroot for the ONE caller that spawns podman
+// OUTSIDE the ExecRunner.Run seam: the `forward` verb's host-side socat relay
+// runs `podman --root <graphroot> exec -i <tool> ...` as a CHILD of socat, so it
+// cannot inherit the automatic --root injection podmanGlobalArgs applies at the
+// exec seam and must embed the store explicitly. It resolves through the SAME
+// pure resolver (test override honoured), so the forward's connect side reads the
+// exact store the jail wrote into (never a split); do NOT fork a second graphroot
+// resolver in the forward package.
+func GraphRoot() string { return graphRoot() }
+
 // podmanGlobalArgs prepends podman's GLOBAL `--root <graphroot>` flag BEFORE the
 // subcommand argv, so the store selection travels with EVERY podman invocation
 // netcage makes (`podman --root <path> run ...`, never `podman run --root
