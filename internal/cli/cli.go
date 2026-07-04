@@ -112,12 +112,15 @@ type Command struct {
 	// container's baked config.
 	StartName string
 
-	// ManageArgv holds a management verb's positional arguments verbatim: the
-	// netcage container NAME for logs/inspect/stop/rm, the name + command for exec,
-	// and nothing for ps/images. The management verbs are inspection/lifecycle
-	// pass-throughs to podman (scoped by the netcage.managed label in the manage
-	// package); they do NOT egress, so they carry no proxy and are NOT subject to
-	// the run flag allow-list. Empty for run/verify.
+	// ManageArgv holds a management verb's arguments verbatim: the netcage container
+	// NAME for logs/stop/rm, the name + command for exec, the name + read-only
+	// inspect flags for inspect, and the read-only podman ps output/query flags
+	// (--format/--format json/-q/--filter) for ps (ADR-0016). The management verbs
+	// are inspection/lifecycle pass-throughs to podman (scoped by the
+	// netcage.managed label in the manage package); they do NOT egress, so they
+	// carry no proxy and are NOT subject to the run flag allow-list. The manage
+	// package parses/forwards these; the CLI passes them through verbatim. Empty for
+	// run/verify.
 	ManageArgv []string
 
 	// Interactive / TTY record the -i / -t (and -it/-ti) booleans. This package

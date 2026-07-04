@@ -492,9 +492,10 @@ const usage = `usage:
   netcage setup-default
   netcage forward [--bind 127.0.0.1|0.0.0.0] <container> <port>
   netcage ports  <container> [--json]
-  netcage ps
+  netcage ps     [--format <tmpl>|json] [-q] [--filter <f>]...
   netcage images
-  netcage logs|inspect|stop|rm <container>
+  netcage inspect <container> [--format <go-template>]
+  netcage logs|stop|rm <container>
   netcage exec   [-it] [-w <dir>] [-e KEY=VAL]... [-u <user>] <container> <cmd> [args...]
 
 management verbs (ps/logs/inspect/exec/stop/rm/images) are thin pass-throughs to
@@ -504,6 +505,18 @@ NOT egress, so they need NO --proxy; they never stand up or tear down a jail
 (` + "`exec`" + ` runs inside the container's existing jailed netns). A non-netcage
 container is refused. ` + "`rm`" + ` removes the whole tool+sidecar pair (no orphaned
 sidecar).
+
+ps and inspect are podman-FAITHFUL for machine-readable output: ` + "`netcage ps`" + `
+forwards podman's own output/query flags (--format <go-template>, --format json,
+-q/--quiet, and additional --filter) to the underlying ` + "`podman ps`" + `, with the
+netcage.managed scope ALWAYS enforced on top (a user --filter composes ON TOP of
+it, never replacing it), so ` + "`netcage ps --format '{{.ID}}\t{{.Labels}}'`" + ` /
+` + "`-q`" + ` / ` + "`--filter label=<k>=<v>`" + ` behave exactly as with ` + "`podman ps`" + ` over
+netcage's containers. ` + "`netcage inspect <c> --format <go-template>`" + ` forwards the
+template to ` + "`podman inspect`" + ` (default is full JSON), so
+` + "`netcage inspect <id> --format '{{index .Config.Labels \"anon-pi.key\"}}'`" + `
+returns just that label. These are read-only query flags (they only shape the
+output), so they cannot breach the jail; the label scope stays enforced.
 
 exec is podman-faithful: it honours -i/--interactive, -t/--tty (a real TTY +
 stdin passthrough for -it, so ` + "`netcage exec -it <c> bash`" + ` is a usable

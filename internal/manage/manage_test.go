@@ -19,12 +19,210 @@ const managedFilter = "--filter label=" + jail.LabelManaged + "=true"
 // containers (and only those), including stopped ones (-a, since a kept pair is
 // stopped at rest).
 func TestPsArgs_ListsOnlyManagedContainers(t *testing.T) {
-	got := strings.Join(manage.PsArgs(), " ")
+	got := strings.Join(manage.PsArgs(nil), " ")
 	for _, want := range []string{"ps", "-a", managedFilter} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("ps args missing %q\ngot: %s", want, got)
 		}
 	}
+}
+
+// TestPsArgs_ForwardsUserFlagsAfterTheManagedFilter pins the podman-faithful
+// machine-readable listing (ADR-0016): the caller's own read-only ps output/query
+// flags (--format/--format json/-q/--filter/...) are FORWARDED VERBATIM AFTER the
+// managed-scope filter, so `netcage ps --format '{{.ID}}'` / `-q` / an extra
+// `--filter` behave exactly as podman. Crucially the netcage.managed filter is
+// always PREPENDED (never dropped), so the label scope stays enforced no matter
+// what the caller passes, and a user --filter composes ON TOP of it.
+func TestPsArgs_ForwardsUserFlagsAfterTheManagedFilter(t *testing.T) {
+	cases := [][]string{
+		{"--format", "{{.ID}}"},
+		{"--format", "{{.ID}}\t{{.Labels}}"},
+		{"--format", "json"},
+		{"-q"},
+		{"--filter", "label=anon-pi.key=abc"},
+	}
+	for _, userArgs := range cases {
+		t.Run(strings.Join(userArgs, "_"), func(t *testing.T) {
+			got := manage.PsArgs(userArgs)
+			joined := strings.Join(got, " ")
+			// The managed-scope filter must ALWAYS be present (the label scope is never
+			// weakened by whatever the caller passes).
+			if !strings.Contains(joined, managedFilter) {
+				t.Fatalf("ps must ALWAYS carry the managed-scope filter %q; got: %s", managedFilter, joined)
+			}
+			// The user's flags must be forwarded verbatim, AFTER the managed filter, so a
+			// user --filter composes on top (podman ANDs repeated --filter) rather than
+			// replacing the netcage scope.
+			if !strings.HasSuffix(joined, strings.Join(userArgs, " ")) {
+				t.Fatalf("ps must forward the user flags VERBATIM after the managed filter; got: %s", joined)
+			}
+			managedIdx := strings.Index(joined, managedFilter)
+			userIdx := strings.Index(joined, strings.Join(userArgs, " "))
+			if managedIdx == -1 || userIdx == -1 || userIdx < managedIdx {
+				t.Fatalf("the managed filter must come BEFORE the user flags (so a user --filter is additive, not a replacement); got: %s", joined)
+			}
+		})
+	}
+}
+
+// TestRun_PsForwardsOutputFlagsAndKeepsManagedScope proves end-to-end (no podman)
+// that `netcage ps --format ...` / `-q` / `--filter ...` REACH podman (the fixed
+// human table is gone) AND that the netcage.managed filter is still enforced. It
+// asserts the podman argv the runner receives CHANGES with the caller's flags
+// (the injectable-Runner seam), which is exactly what the fixed-table bug broke.
+func TestRun_PsForwardsOutputFlagsAndKeepsManagedScope(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string // a substring the forwarded podman argv must contain
+	}{
+		{"format template", []string{"--format", "{{.ID}}\t{{.Labels}}"}, "--format {{.ID}}\t{{.Labels}}"},
+		{"format json", []string{"--format", "json"}, "--format json"},
+		{"quiet", []string{"-q"}, "-q"},
+		{"extra filter", []string{"--filter", "label=anon-pi.key=abc"}, "--filter label=anon-pi.key=abc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &recordRunner{}
+			if err := manage.Run(context.Background(), r, "ps", tc.args, manage.IO{}); err != nil {
+				t.Fatalf("ps %v: %v", tc.args, err)
+			}
+			joined := joinAll(r.calls)
+			if !strings.Contains(joined, tc.want) {
+				t.Fatalf("ps must FORWARD %q to podman (the flag must change the output, not be ignored); calls:\n%s", tc.want, joined)
+			}
+			// The managed-scope filter must still be enforced (label scope is not weakened).
+			if !strings.Contains(joined, managedFilter) {
+				t.Fatalf("ps must still carry the managed-scope filter %q even with user flags; calls:\n%s", managedFilter, joined)
+			}
+		})
+	}
+	// And a bare `netcage ps` (no user flags) must be byte-identical to before: the
+	// fixed managed listing, so the default human table is unchanged.
+	r := &recordRunner{}
+	if err := manage.Run(context.Background(), r, "ps", nil, manage.IO{}); err != nil {
+		t.Fatalf("bare ps: %v", err)
+	}
+	if got := strings.Join(r.calls[0], " "); got != "ps -a "+managedFilter {
+		t.Fatalf("bare `netcage ps` must be the fixed managed listing %q; got %q", "ps -a "+managedFilter, got)
+	}
+}
+
+// TestParseInspectArgs_SeparatesFlagsFromNameEitherSide pins that the caller's
+// read-only inspect flags are separated from the single container NAME whether
+// the flag is written BEFORE or AFTER the name (podman tolerates both), and that a
+// value-taking flag in its `--flag value` separate form consumes its value so a
+// go-template is never mistaken for the container name.
+func TestParseInspectArgs_SeparatesFlagsFromNameEitherSide(t *testing.T) {
+	cases := []struct {
+		name      string
+		args      []string
+		wantFlags string
+		wantName  string
+	}{
+		{"format after name (the anon-pi case)",
+			[]string{"netcage-run-abc-tool", "--format", `{{index .Config.Labels "anon-pi.key"}}`},
+			`--format {{index .Config.Labels "anon-pi.key"}}`, "netcage-run-abc-tool"},
+		{"format before name",
+			[]string{"--format", "{{.Id}}", "netcage-run-abc-tool"},
+			"--format {{.Id}}", "netcage-run-abc-tool"},
+		{"format=value inline before name",
+			[]string{"--format={{.Id}}", "netcage-run-abc-tool"},
+			"--format={{.Id}}", "netcage-run-abc-tool"},
+		{"short -f after name",
+			[]string{"netcage-run-abc-tool", "-f", "{{.Id}}"},
+			"-f {{.Id}}", "netcage-run-abc-tool"},
+		{"bare inspect (no flags)",
+			[]string{"netcage-run-abc-tool"},
+			"", "netcage-run-abc-tool"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			flags, name, err := manage.ParseInspectArgs(tc.args)
+			if err != nil {
+				t.Fatalf("parse of %v: %v", tc.args, err)
+			}
+			if got := strings.Join(flags, " "); got != tc.wantFlags {
+				t.Fatalf("flags: got %q, want %q", got, tc.wantFlags)
+			}
+			if name != tc.wantName {
+				t.Fatalf("name: got %q, want %q", name, tc.wantName)
+			}
+		})
+	}
+}
+
+// TestParseInspectArgs_RequiresExactlyOneContainer pins the arity: zero
+// positionals (only flags) is a usage error, and two positionals (a typo) is
+// refused rather than silently inspecting the wrong container.
+func TestParseInspectArgs_RequiresExactlyOneContainer(t *testing.T) {
+	if _, _, err := manage.ParseInspectArgs([]string{"--format", "{{.Id}}"}); err == nil {
+		t.Fatal("inspect with no container name must be refused")
+	}
+	if _, _, err := manage.ParseInspectArgs([]string{"a", "b"}); err == nil {
+		t.Fatal("inspect with two container names must be refused")
+	}
+}
+
+// TestInspectArgs_EmitsFlagsBeforeTheName pins the argv the inspect verb builds:
+// `podman inspect [flags...] <name>`, flags BEFORE the name (podman's order).
+func TestInspectArgs_EmitsFlagsBeforeTheName(t *testing.T) {
+	got := manage.InspectArgs([]string{"--format", `{{index .Config.Labels "anon-pi.key"}}`}, "netcage-run-abc-tool")
+	joined := strings.Join(got, " ")
+	if got[0] != "inspect" {
+		t.Fatalf("inspect argv must start with the podman verb inspect; got: %s", joined)
+	}
+	if !strings.HasSuffix(joined, "netcage-run-abc-tool") {
+		t.Fatalf("the container name must be the LAST token (flags before it); got: %s", joined)
+	}
+	if !strings.Contains(joined, `--format {{index .Config.Labels "anon-pi.key"}}`) {
+		t.Fatalf("inspect argv must forward the --format template; got: %s", joined)
+	}
+}
+
+// TestRun_InspectForwardsFormatAndStillGuardsTheLabel proves end-to-end (no
+// podman) that `netcage inspect <id> --format '...'` FORWARDS the template to
+// podman (the full-JSON-only bug is gone) AND still enforces the netcage.managed
+// label guard: a non-netcage container is refused BEFORE any podman inspect action
+// runs.
+func TestRun_InspectForwardsFormatAndStillGuardsTheLabel(t *testing.T) {
+	t.Run("managed: forwards the template", func(t *testing.T) {
+		r := &recordRunner{labels: map[string]map[string]string{
+			"netcage-run-abc-tool": {
+				jail.LabelManaged: "true", jail.LabelRole: jail.RoleTool, jail.LabelRunID: "abc",
+			},
+		}}
+		if err := manage.Run(context.Background(), r, "inspect",
+			[]string{"netcage-run-abc-tool", "--format", `{{index .Config.Labels "anon-pi.key"}}`}, manage.IO{}); err != nil {
+			t.Fatalf("inspect of a managed tool with --format: %v", err)
+		}
+		joined := joinAll(r.calls)
+		// The ACTION inspect (the one with the user's template + the name last) must be
+		// forwarded. The guard inspect uses the netcage label template, so match the
+		// user's distinctive template to avoid confusing the two.
+		if !strings.Contains(joined, `inspect --format {{index .Config.Labels "anon-pi.key"}} netcage-run-abc-tool`) {
+			t.Fatalf("inspect must FORWARD the user --format template to podman (not print full JSON); calls:\n%s", joined)
+		}
+	})
+	t.Run("non-netcage: refused before any action inspect", func(t *testing.T) {
+		r := &recordRunner{labels: map[string]map[string]string{
+			"some-random-container": {}, // exists but NOT netcage-managed
+		}}
+		err := manage.Run(context.Background(), r, "inspect",
+			[]string{"some-random-container", "--format", "{{.Id}}"}, manage.IO{})
+		if err == nil {
+			t.Fatal("inspect of a non-netcage container must be REFUSED even with --format")
+		}
+		if !strings.Contains(err.Error(), "not a netcage-managed container") {
+			t.Fatalf("the refusal must name the reason; got: %v", err)
+		}
+		// Only the guard's label probe may run; the user's --format action inspect must
+		// NOT reach podman against an unguarded container.
+		if strings.Contains(joinAll(r.calls), "{{.Id}}") {
+			t.Fatalf("a refused inspect must NOT run the user's --format action against podman; calls:\n%s", joinAll(r.calls))
+		}
+	})
 }
 
 // TestImagesArgs_ShowsNetcageImages pins that `netcage images` is a thin podman
@@ -48,7 +246,7 @@ func TestNamedVerbArgs_ArePlainPassThroughs(t *testing.T) {
 		got  []string
 	}{
 		{"logs", manage.LogsArgs("netcage-run-abc-tool")},
-		{"inspect", manage.InspectArgs("netcage-run-abc-tool")},
+		{"inspect", manage.InspectArgs(nil, "netcage-run-abc-tool")},
 		{"stop", manage.StopArgs("netcage-run-abc-tool")},
 	}
 	for _, tc := range cases {

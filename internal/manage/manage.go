@@ -49,14 +49,27 @@ func managedFilter() []string {
 	return []string{"--filter", "label=" + jail.LabelManaged + "=true"}
 }
 
-// PsArgs builds `podman ps -a --filter label=netcage.managed=true`: list
-// netcage's containers, INCLUDING stopped ones (-a), because a kept pair is
+// PsArgs builds `podman ps -a --filter label=netcage.managed=true [userArgs...]`:
+// list netcage's containers, INCLUDING stopped ones (-a), because a kept pair is
 // stopped at rest and the whole point of `ps` here is to see it. Only
 // netcage-managed containers appear; unrelated podman containers are filtered
 // out.
-func PsArgs() []string {
+//
+// The caller's OWN podman `ps` output/query flags (--format <go-template>,
+// --format json, -q/--quiet, additional --filter, ...) are FORWARDED VERBATIM
+// after the managed-scope filter, so `netcage ps --format '{{.ID}}\t{{.Labels}}'`
+// / `-q` / `--filter label=<k>=<v>` behave EXACTLY as `podman ps` does
+// (podman-faithful machine-readable output, ADR-0016). This is safe because `ps`
+// is a READ-ONLY listing verb: its flags only shape the OUTPUT (they cannot
+// egress, alter a netns/firewall, or touch a container's lifecycle), and the
+// netcage.managed filter is always PREPENDED, so a user --filter composes ON TOP
+// of the implicit netcage scope (podman ANDs repeated --filter), never replacing
+// it. The managed-scope filter therefore stays enforced no matter what the caller
+// passes.
+func PsArgs(userArgs []string) []string {
 	args := []string{"ps", "-a"}
-	return append(args, managedFilter()...)
+	args = append(args, managedFilter()...)
+	return append(args, userArgs...)
 }
 
 // ImagesArgs builds `podman images`: the images netcage uses. A thin
@@ -129,10 +142,95 @@ func LogsArgs(name string) []string {
 	return namedVerbArgs("logs", name)
 }
 
-// InspectArgs builds `podman inspect <name>` for a netcage-managed container (a
-// plain pass-through; scoping is the pre-verb guardManaged check, not a filter).
-func InspectArgs(name string) []string {
-	return namedVerbArgs("inspect", name)
+// InspectArgs builds `podman inspect [flags...] <name>` for a netcage-managed
+// container: the caller's OWN inspect flags (chiefly --format <go-template>, so
+// `netcage inspect <id> --format '{{index .Config.Labels "anon-pi.key"}}'`
+// returns just that label, exactly as `podman inspect`) are FORWARDED VERBATIM
+// BEFORE the name (podman's flags-before-positional order), then the name.
+// Full-JSON default (no --format) is preserved. Scoping is the pre-verb
+// guardManaged label check (a REFUSED non-netcage container never reaches this
+// argv), not a filter. This is safe because inspect is a READ-ONLY query verb:
+// --format only shapes the OUTPUT and cannot egress or touch a container's
+// lifecycle (ADR-0016). flags carries the already-separated inspect flags (parsed
+// off the front of the verb args); name is the guarded subject container.
+func InspectArgs(flags []string, name string) []string {
+	args := []string{"inspect"}
+	args = append(args, flags...)
+	return append(args, name)
+}
+
+// ParseInspectArgs separates the caller's read-only inspect FLAGS from the single
+// subject container NAME, so a podman user can write the flag on EITHER side of
+// the name (`netcage inspect <c> --format '...'` OR `netcage inspect --format
+// '...' <c>`), matching podman's tolerant flag placement. It scans every token:
+// the FIRST non-flag token is the container name; every other token is a flag
+// (and a value-taking flag in its `--flag value` separate form consumes the next
+// token as its value, so that value is not mistaken for the name). Recognising a
+// small set of value-taking inspect flags (--format/-f, --type/-t, --size is a
+// boolean) is enough to keep the name resolution correct; unrecognised flags are
+// still forwarded (inspect is a read-only query verb, so there is no jail to
+// breach, unlike run/exec's curated allow-list), just treated as boolean for the
+// purpose of finding the name. Exactly one positional (the name) is required.
+//
+// This is a READ-ONLY query verb: forwarding arbitrary inspect flags is safe
+// because they only shape the OUTPUT (they cannot egress, alter a netns/firewall,
+// or touch a container's lifecycle), and the pre-verb guardManaged label check
+// still REFUSES a non-netcage container before podman inspect ever runs
+// (ADR-0016).
+func ParseInspectArgs(args []string) (flags []string, name string, err error) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			// Explicit end-of-flags: the next token is the name, the rest (if any) are
+			// extra positionals (refused - inspect here takes exactly one container).
+			rest := args[i+1:]
+			if len(rest) == 0 {
+				return nil, "", fmt.Errorf("inspect requires a netcage container name")
+			}
+			if name != "" || len(rest) > 1 {
+				return nil, "", fmt.Errorf("inspect takes exactly one netcage container name; got extra positionals")
+			}
+			name = rest[0]
+			break
+		}
+		if len(a) == 0 || a[0] != '-' || a == "-" {
+			// A positional: the container name. Only one is allowed.
+			if name != "" {
+				return nil, "", fmt.Errorf("inspect takes exactly one netcage container name; got a second positional %q", a)
+			}
+			name = a
+			continue
+		}
+		// A flag: forward it. If it is a value-taking inspect flag in its separate
+		// `--flag value` form (no inline `=`), also consume the next token as its value
+		// so a `--format {{...}}` value is never mistaken for the container name.
+		flags = append(flags, a)
+		if isInspectValueFlag(a) && !strings.Contains(a, "=") {
+			if i+1 >= len(args) {
+				return nil, "", fmt.Errorf("inspect flag %s needs a value", a)
+			}
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	if name == "" {
+		return nil, "", fmt.Errorf("inspect requires a netcage container name")
+	}
+	return flags, name, nil
+}
+
+// isInspectValueFlag reports whether a is one of the value-taking podman inspect
+// flags in its `--flag`/`-f` separate form (so ParseInspectArgs consumes the next
+// token as its value rather than treating it as the container name). The set is
+// small and read-only: --format/-f (the go-template), --type/-t (container|image).
+// A `--flag=value` inline form carries its own value, so it is NOT listed here
+// (the `strings.Contains(a, "=")` guard at the call site skips it).
+func isInspectValueFlag(a string) bool {
+	switch a {
+	case "--format", "-f", "--type", "-t":
+		return true
+	}
+	return false
 }
 
 // StopArgs builds `podman stop <name>` for a netcage-managed container: a plain
@@ -466,15 +564,23 @@ type IO struct {
 // to out.Stdout/out.Stderr so `logs`/`inspect`/`ps` feel like the podman verbs
 // they wrap.
 //
-//   - ps: a label-scoped container listing, no named subject.
+//   - ps: a label-scoped container listing, no named subject. The caller's own
+//     read-only podman ps output/query flags (--format/--format json/-q/--filter)
+//     are FORWARDED after the managed-scope filter, so machine-readable listing is
+//     podman-faithful; the netcage.managed filter is always prepended (a user
+//     --filter composes on top, never replaces it), so the label scope stays
+//     enforced (ADR-0016).
+//   - inspect: operates on a NAMED container after the label guard, and FORWARDS
+//     the caller's read-only inspect flags (chiefly --format <go-template>) so a
+//     single label can be read machine-readably (ADR-0016).
 //   - images / build / pull / load: UNGUARDED image-store pass-throughs (no label
 //     check - they act on images, not run-labelled containers). build/pull/load
 //     forward their args to podman VERBATIM against the store (the graphroot
 //     --root is inherited from the exec seam, ADR-0013), refusing ONLY a
 //     user-supplied --root (it would re-split the single store).
-//   - logs / inspect / stop / exec: operate on a NAMED container, but only after
-//     GUARDING that it is netcage-managed (the label). A non-netcage container is
-//     REFUSED with ErrNotManaged before any podman verb runs against it.
+//   - logs / stop / exec: operate on a NAMED container, but only after GUARDING
+//     that it is netcage-managed (the label). A non-netcage container is REFUSED
+//     with ErrNotManaged before any podman verb runs against it.
 //   - rm: guard the named container, then remove the WHOLE pair by its SIDECAR
 //     name (rm -f --depend cascades to the tool), so no orphaned sidecar is left
 //     even when the user names the tool.
@@ -484,7 +590,12 @@ type IO struct {
 func Run(ctx context.Context, r jail.Runner, verb string, args []string, out IO) error {
 	switch verb {
 	case "ps":
-		return stream(ctx, r, PsArgs(), out)
+		// ps forwards the caller's read-only podman ps output/query flags
+		// (--format/--format json/-q/--filter/...) VERBATIM after the managed-scope
+		// filter, so machine-readable listing is podman-faithful (ADR-0016). The
+		// netcage.managed filter is always prepended, so a user --filter composes ON TOP
+		// of it (never replaces it) and the label scope stays enforced.
+		return stream(ctx, r, PsArgs(args), out)
 	case "images":
 		return stream(ctx, r, ImagesArgs(), out)
 	case "build", "pull", "load":
@@ -498,7 +609,22 @@ func Run(ctx context.Context, r jail.Runner, verb string, args []string, out IO)
 			return err
 		}
 		return stream(ctx, r, passThroughVerbArgs(verb, args), out)
-	case "logs", "inspect", "stop":
+	case "inspect":
+		// inspect is podman-faithful for machine-readable output: the caller's own
+		// read-only inspect flags (chiefly --format <go-template>) are forwarded so
+		// `netcage inspect <id> --format '{{index .Config.Labels "anon-pi.key"}}'`
+		// returns just that label (ADR-0016). The flags are separated from the subject
+		// name, the name is guarded netcage-managed, then podman inspect runs with the
+		// flags BEFORE the name.
+		flags, name, err := ParseInspectArgs(args)
+		if err != nil {
+			return err
+		}
+		if _, err := guardManaged(ctx, r, name); err != nil {
+			return err
+		}
+		return stream(ctx, r, InspectArgs(flags, name), out)
+	case "logs", "stop":
 		name, _, err := requireName(verb, args)
 		if err != nil {
 			return err

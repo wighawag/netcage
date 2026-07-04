@@ -213,6 +213,44 @@ netcage ports netcage-run-<id>-tool --json
 
 The field names `address` (string), `port` (int), and `loopbackOnly` (bool) are the contract; the array is sorted stably (by port, then address) and an empty result is `[]`. A caller (e.g. an agent) uses this to show a pick-list and then `netcage forward` the chosen port, without the user knowing the port in advance.
 
+## Manage netcage containers: ps / logs / inspect / exec / stop / rm / images
+
+The pass-through management verbs let you inspect and manage the containers a kept `netcage run` leaves behind with familiar podman vocabulary, **scoped to netcage's own containers** via the `netcage.managed` label (ADR-0009) so you never see (or act on) unrelated podman containers:
+
+```sh
+netcage ps                    # list netcage's containers (kept pairs), incl. stopped
+netcage logs    <container>   # the tool container's logs
+netcage inspect <container>   # full podman inspect JSON
+netcage exec -it <container> <cmd>   # run a command inside the existing jailed netns
+netcage stop    <container>   # stop a jailed container (its baked firewall re-applies on restart)
+netcage rm      <container>   # remove the whole tool+sidecar pair (no orphaned sidecar)
+netcage images                # the images netcage uses
+```
+
+These are inspection/lifecycle **only**: none stands up or tears down a jail, none egresses (so none needs a `--proxy`), and `exec` enters the container's **existing** jailed netns (never a fresh un-jailed one) and refuses if the jail is not running (`netcage start <c>` first). A non-netcage container is refused loudly.
+
+### Machine-readable ps and inspect (podman-faithful)
+
+`netcage ps` and `netcage inspect` are **podman-faithful for machine-readable output**: they forward podman's own output/query flags to the underlying podman verb, over netcage's managed set, so a consumer (e.g. an agent that stamps a label on each container and reads it back) can list and query netcage's containers **without screen-scraping the human table**.
+
+`netcage ps` forwards `--format <go-template>`, `--format json`, `-q`/`--quiet`, and additional `--filter`, with the `netcage.managed` scope **always enforced on top** (a user `--filter` composes ON TOP of it, it never replaces it), so these behave exactly as `podman ps` does over netcage's containers:
+
+```sh
+netcage ps --format '{{.ID}}\t{{.Labels}}'   # IDs + labels, tab-separated
+netcage ps --format json                     # a stable JSON array
+netcage ps -q                                # IDs only
+netcage ps --filter label=anon-pi.key=abc    # AND-ed on top of netcage.managed
+```
+
+`netcage inspect <container> --format <go-template>` forwards the template to `podman inspect` (the no-`--format` default stays full JSON), so a single label is read back directly:
+
+```sh
+netcage inspect netcage-run-<id>-tool --format '{{index .Config.Labels "anon-pi.key"}}'
+# -> the anon-pi.key label value, nothing else
+```
+
+These are **read-only query flags**: they only shape the output, so they cannot egress, alter a netns/firewall, or touch a container's lifecycle. The managed-scope filter (for `ps`) and the `netcage.managed` label guard (for `inspect`) stay enforced no matter what flags you pass, and neither verb touches the egress firewall. See [ADR-0016](docs/adr/0016-pass-through-query-verbs-forward-podman-output-flags.md).
+
 ## Split tunnel: reach one local service directly
 
 `--allow-direct <IP|CIDR>[:port]` (repeatable) opens a **narrow, guardrailed hole** in the forced egress for specific **RFC1918 / link-local** destinations, so a jailed tool can reach a trusted local service (e.g. a local model at `192.168.1.150:8080`) DIRECTLY over the LAN, while ALL other egress stays forced through the proxy, fail-closed.
