@@ -1,8 +1,11 @@
 // Package manage implements netcage's pass-through management verbs
-// (ps/logs/inspect/exec/stop/rm/images/commit) as THIN wrappers over podman,
-// SCOPED to netcage's own containers via the netcage.managed label (ADR-0009). A
-// user manages netcage's containers with podman vocabulary without ever seeing
-// (or acting on) unrelated ones.
+// (ps/logs/inspect/exec/stop/rm/images/commit + the image-store WRITE verbs
+// build/pull/load) as THIN wrappers over podman. The container-scoped verbs are
+// SCOPED to netcage's own containers via the netcage.managed label (ADR-0009), so
+// a user manages netcage's containers with podman vocabulary without ever seeing
+// (or acting on) unrelated ones. The image verbs (images + build/pull/load) are
+// UNGUARDED pass-throughs against netcage's image store: they act on IMAGES, not
+// run-labelled containers, so the label guard does not apply (ADR-0013).
 //
 // These verbs are inspection/lifecycle ONLY: they never stand up or tear down a
 // jail (that is `run` / `netcage start`) and they never touch a running jail's
@@ -61,6 +64,60 @@ func PsArgs() []string {
 // container-label filter to apply here).
 func ImagesArgs() []string {
 	return []string{"images"}
+}
+
+// BuildArgs builds `podman build <args...>`: build a Dockerfile into netcage's
+// image store. It is a THIN pass-through - the user's args flow through VERBATIM
+// (like exec's command tail, NOT a single-label-scoped name), and it does NOT
+// hand-add `--root`: the graphroot is injected at the shared ExecRunner.Run seam
+// (ADR-0013's single-seam rule), so a per-builder `--root` would be redundant and
+// risk splitting the store. `netcage build` == `podman build`, scoped to the
+// store. (The one refused arg, a user `--root`, is rejected in Run BEFORE the
+// argv is built, so it never reaches here.)
+func BuildArgs(args []string) []string {
+	return passThroughVerbArgs("build", args)
+}
+
+// PullArgs builds `podman pull <args...>`: pull a registry ref into netcage's
+// store. A thin verbatim pass-through, like BuildArgs (see it for the
+// no-hand-added-`--root` rationale).
+func PullArgs(args []string) []string {
+	return passThroughVerbArgs("pull", args)
+}
+
+// LoadArgs builds `podman load <args...>`: load a `podman save` tar into
+// netcage's store. A thin verbatim pass-through, like BuildArgs.
+func LoadArgs(args []string) []string {
+	return passThroughVerbArgs("load", args)
+}
+
+// passThroughVerbArgs is the shared shape for the image-store WRITE verbs
+// (build/pull/load): the podman verb then the user's args VERBATIM. No
+// `--filter`, no label scoping, and no hand-added `--root` (the graphroot rides
+// in at the shared exec seam). It is the write sibling of ImagesArgs/PsArgs.
+func passThroughVerbArgs(verb string, args []string) []string {
+	out := make([]string, 0, len(args)+1)
+	out = append(out, verb)
+	return append(out, args...)
+}
+
+// refuseUserRoot is the ONE fail-closed guard on the otherwise-verbatim write
+// verbs: a user-supplied `--root` (in either `--root x` or `--root=x` form,
+// anywhere in the args) is REFUSED. netcage OWNS the store location - the
+// graphroot is injected at the shared ExecRunner.Run seam so every verb shares
+// ONE store (ADR-0013); honouring a user `--root` would re-split the store this
+// fix exists to unify, making a `netcage build`'s image invisible to `netcage
+// run` (consistent with how `run` owns `--network`/`--name`). Everything ELSE on
+// podman's flag surface is forwarded verbatim: there is no jail to breach, so
+// `run`'s allow-list does not apply (even a build-time `--network` is safe - it
+// produces an IMAGE, still forced-egress-jailed at a later `netcage run`).
+func refuseUserRoot(verb string, args []string) error {
+	for _, a := range args {
+		if a == "--root" || strings.HasPrefix(a, "--root=") {
+			return fmt.Errorf("netcage owns the image store location, so `netcage %s` refuses a user-supplied --root: it is injected automatically (the single %s store); honouring your --root would split the store and hide the result from `netcage run`", verb, "/var/tmp/netcage-storage")
+		}
+	}
+	return nil
 }
 
 // LogsArgs builds `podman logs <name>`: the tool container's logs. It is a PLAIN
@@ -409,7 +466,12 @@ type IO struct {
 // to out.Stdout/out.Stderr so `logs`/`inspect`/`ps` feel like the podman verbs
 // they wrap.
 //
-//   - ps / images: label-scoped listings, no named subject.
+//   - ps: a label-scoped container listing, no named subject.
+//   - images / build / pull / load: UNGUARDED image-store pass-throughs (no label
+//     check - they act on images, not run-labelled containers). build/pull/load
+//     forward their args to podman VERBATIM against the store (the graphroot
+//     --root is inherited from the exec seam, ADR-0013), refusing ONLY a
+//     user-supplied --root (it would re-split the single store).
 //   - logs / inspect / stop / exec: operate on a NAMED container, but only after
 //     GUARDING that it is netcage-managed (the label). A non-netcage container is
 //     REFUSED with ErrNotManaged before any podman verb runs against it.
@@ -425,6 +487,17 @@ func Run(ctx context.Context, r jail.Runner, verb string, args []string, out IO)
 		return stream(ctx, r, PsArgs(), out)
 	case "images":
 		return stream(ctx, r, ImagesArgs(), out)
+	case "build", "pull", "load":
+		// The image-store WRITE verbs (ADR-0013): the write siblings of `images`. They
+		// act on IMAGES, not run-labelled containers, so they are UNGUARDED (no
+		// guardManaged) and forward their args to podman VERBATIM. The graphroot `--root`
+		// is inherited from the shared ExecRunner.Run seam, never hand-added here. The ONE
+		// refusal is a user-supplied `--root` (it would re-split the single store); every
+		// other podman flag passes through (no jail to breach, so no run allow-list).
+		if err := refuseUserRoot(verb, args); err != nil {
+			return err
+		}
+		return stream(ctx, r, passThroughVerbArgs(verb, args), out)
 	case "logs", "inspect", "stop":
 		name, _, err := requireName(verb, args)
 		if err != nil {

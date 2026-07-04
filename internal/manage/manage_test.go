@@ -640,3 +640,127 @@ func TestRun_NamedVerbAcceptsManagedContainer(t *testing.T) {
 		t.Fatalf("logs of a managed container must run podman logs; calls: %s", joinAll(r.calls))
 	}
 }
+
+// TestWriteVerbArgs_ForwardVerbatim pins the image-store WRITE verbs
+// (build/pull/load) as THIN pass-throughs: `podman <verb> <args...>` with the
+// user's args forwarded VERBATIM (like exec's command tail, NOT the
+// single-label-scoped-name shape of logs/inspect/stop). They carry NO --filter
+// and, crucially, do NOT hand-add --root: the graphroot is injected at the shared
+// ExecRunner.Run seam (ADR-0013's single-seam rule), so a per-builder --root would
+// be redundant + risk splitting the store.
+func TestWriteVerbArgs_ForwardVerbatim(t *testing.T) {
+	cases := []struct {
+		verb string
+		got  []string
+		want string
+	}{
+		{"build", manage.BuildArgs([]string{"-t", "localhost/x/tool:latest", "."}), "build -t localhost/x/tool:latest ."},
+		{"pull", manage.PullArgs([]string{"docker.io/library/alpine:latest"}), "pull docker.io/library/alpine:latest"},
+		{"load", manage.LoadArgs([]string{"-i", "img.tar"}), "load -i img.tar"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.verb, func(t *testing.T) {
+			joined := strings.Join(tc.got, " ")
+			if tc.got[0] != tc.verb {
+				t.Fatalf("%s args must start with the podman verb %q; got: %s", tc.verb, tc.verb, joined)
+			}
+			if joined != tc.want {
+				t.Fatalf("%s must forward args VERBATIM; got %q, want %q", tc.verb, joined, tc.want)
+			}
+			// The --root graphroot is inherited from the ExecRunner.Run seam, never
+			// hand-added per builder (ADR-0013). A builder that emits it would risk drift.
+			if strings.Contains(joined, "--root") {
+				t.Fatalf("%s must NOT hand-add --root (it is injected at the shared exec seam); got: %s", tc.verb, joined)
+			}
+			if strings.Contains(joined, "--filter") {
+				t.Fatalf("%s is a plain pass-through with NO --filter; got: %s", tc.verb, joined)
+			}
+		})
+	}
+}
+
+// TestRun_WriteVerbsAreUnguardedPassThroughs proves build/pull/load are UNGUARDED
+// (no netcage.managed label check, mirroring `images`): they act on IMAGES, not
+// run-labelled containers, so they forward straight to podman with NO guard
+// inspect. The recordRunner has NO labels table, so any guardManaged inspect would
+// fail; the verbs must run their podman argv regardless.
+func TestRun_WriteVerbsAreUnguardedPassThroughs(t *testing.T) {
+	cases := []struct {
+		verb string
+		args []string
+		want string
+	}{
+		{"build", []string{"-t", "localhost/x/tool:latest", "."}, "build -t localhost/x/tool:latest ."},
+		{"pull", []string{"docker.io/library/alpine:latest"}, "pull docker.io/library/alpine:latest"},
+		{"load", []string{"-i", "img.tar"}, "load -i img.tar"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.verb, func(t *testing.T) {
+			r := &recordRunner{}
+			if err := manage.Run(context.Background(), r, tc.verb, tc.args, manage.IO{}); err != nil {
+				t.Fatalf("%s must forward to podman unguarded: %v", tc.verb, err)
+			}
+			joined := joinAll(r.calls)
+			if !strings.Contains(joined, tc.want) {
+				t.Fatalf("%s must run `podman %s`; calls:\n%s", tc.verb, tc.want, joined)
+			}
+			// UNGUARDED: no guardManaged label probe (`inspect --format ...`) runs, unlike
+			// the container-scoped verbs. It forwards straight to podman.
+			if strings.Contains(joined, "inspect --format") {
+				t.Fatalf("%s must be UNGUARDED (no label check, like images); calls:\n%s", tc.verb, joined)
+			}
+			// No jail wiring: these stand up NO jail, so never --network.
+			if strings.Contains(joined, "--network") {
+				t.Fatalf("%s stands up no jail; it must NOT wire --network; calls:\n%s", tc.verb, joined)
+			}
+		})
+	}
+}
+
+// TestRun_WriteVerbsRefuseUserRoot pins the ONE fail-closed guard on the otherwise
+// verbatim write verbs: a user-supplied --root (in either `--root x` or `--root=x`
+// form) is REFUSED with a clear message naming that netcage owns the store
+// location. Honouring it would re-split the single store this fix exists to unify.
+// The refusal must happen BEFORE any podman verb runs.
+func TestRun_WriteVerbsRefuseUserRoot(t *testing.T) {
+	forms := [][]string{
+		{"--root", "/tmp/other-store", "."},
+		{"--root=/tmp/other-store", "."},
+		{"-t", "img:tag", "--root", "/tmp/other-store", "."}, // interleaved, not just leading
+	}
+	for _, verb := range []string{"build", "pull", "load"} {
+		for _, args := range forms {
+			t.Run(verb+" "+strings.Join(args, "_"), func(t *testing.T) {
+				r := &recordRunner{}
+				err := manage.Run(context.Background(), r, verb, args, manage.IO{})
+				if err == nil {
+					t.Fatalf("%s with a user --root must be REFUSED (netcage owns the store)", verb)
+				}
+				if !strings.Contains(err.Error(), "--root") {
+					t.Fatalf("the refusal must name --root; got: %v", err)
+				}
+				// No podman verb may run on the refused path.
+				for _, c := range r.calls {
+					if len(c) > 0 && c[0] == verb {
+						t.Fatalf("a --root refusal must NOT issue `podman %s`; calls:\n%s", verb, joinAll(r.calls))
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestRun_WriteVerbsForwardEveryOtherFlagVerbatim proves that ONLY --root is
+// refused: every OTHER podman flag (even a build-time --network, safe because the
+// jail is applied at run, not build) is forwarded verbatim. There is no jail to
+// breach, so `run`'s allow-list does not apply here.
+func TestRun_WriteVerbsForwardEveryOtherFlagVerbatim(t *testing.T) {
+	r := &recordRunner{}
+	if err := manage.Run(context.Background(), r, "build",
+		[]string{"--network", "host", "-t", "img:tag", "."}, manage.IO{}); err != nil {
+		t.Fatalf("build must forward a build-time --network verbatim (no jail to breach): %v", err)
+	}
+	if !strings.Contains(joinAll(r.calls), "build --network host -t img:tag .") {
+		t.Fatalf("build must forward every non---root flag verbatim; calls:\n%s", joinAll(r.calls))
+	}
+}
