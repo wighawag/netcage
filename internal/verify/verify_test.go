@@ -3,8 +3,10 @@ package verify
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/wighawag/netcage/internal/cli"
 	"github.com/wighawag/netcage/internal/jail"
 )
 
@@ -224,6 +226,40 @@ func TestSplitTunnelChecks_DirectChecksRunAfterCore(t *testing.T) {
 		if names[i] != want[i] {
 			t.Fatalf("check %d = %q, want %q (core first, directs appended)", i, names[i], want[i])
 		}
+	}
+}
+
+// TestReport_HeaderStatesResolvedProxyAndSource: the report renders a header line
+// stating the RESOLVED proxy AND which source supplied it, so `netcage verify`
+// answers "which proxy am I on?" on demand. The source label is a pure resolution
+// fact carried on the Report, so it is asserted WITHOUT podman (no jail run).
+func TestReport_HeaderStatesResolvedProxyAndSource(t *testing.T) {
+	proxy := cli.ProxyConfig{Host: "127.0.0.1", Port: "9050"}
+	for _, src := range []cli.ProxySource{cli.ProxySourceFlag, cli.ProxySourceEnv, cli.ProxySourceConfig} {
+		rep := Report{Proxy: proxy, Source: src}
+		out := rep.String()
+		wantProxy := "proxy: socks5h://127.0.0.1:9050"
+		wantSource := "source: " + string(src)
+		if !strings.Contains(out, wantProxy) {
+			t.Fatalf("report header must state the resolved proxy %q; got:\n%s", wantProxy, out)
+		}
+		if !strings.Contains(out, wantSource) {
+			t.Fatalf("report header must state %q; got:\n%s", wantSource, out)
+		}
+	}
+}
+
+// TestReport_HeaderOmitsCredentials: the report NEVER prints embedded proxy
+// credentials (env/flag proxies may carry user:pass@); the header shows only
+// socks5h://host:port, so a screen-share / log of `verify` leaks no secret.
+func TestReport_HeaderOmitsCredentials(t *testing.T) {
+	proxy := cli.ProxyConfig{Host: "127.0.0.1", Port: "9050", Username: "user", Password: "secret"}
+	out := Report{Proxy: proxy, Source: cli.ProxySourceEnv}.String()
+	if strings.Contains(out, "secret") || strings.Contains(out, "user") {
+		t.Fatalf("report header must NOT print proxy credentials; got:\n%s", out)
+	}
+	if !strings.Contains(out, "proxy: socks5h://127.0.0.1:9050") {
+		t.Fatalf("report header must still state the credential-free proxy; got:\n%s", out)
 	}
 }
 
