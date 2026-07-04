@@ -41,3 +41,7 @@ And assert the forward's own property in the same run: the host reaches the in-j
 > Where to look: the verify leak-test + `internal/socks5hfixture` for the harness to reuse; `internal/forward` for standing up the forward under test. Seam to test at: the leak-test's three assertions plus the host-reaches-`127.0.0.1:<port>` assertion, run with a forward active, ephemeral + isolated.
 >
 > "Done" means: an automated check that fails if the forward ever touches egress, reusing the existing harness, running clean (no residue). Record any non-obvious in-scope decision in the done record.
+
+## Requeue 2026-07-04
+
+Blocker found + fixed: the forward connector (sh -c nested in socat EXEC) is unparseable by socat; fixing internal/forward to the spike-proven plain nc connector on this branch, then the acceptance test proves it.
