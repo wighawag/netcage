@@ -216,7 +216,7 @@ func runStart(ctx context.Context, cmd *cli.Command) int {
 func runVerify(ctx context.Context, cmd *cli.Command) int {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
-	rep := verify.RunCommandVerify(ctx, cmd.Proxy)
+	rep := verify.RunCommandVerify(ctx, cmd.Proxy, cmd.ProxySource)
 	fmt.Fprint(os.Stderr, rep.String())
 	return rep.ExitCode()
 }

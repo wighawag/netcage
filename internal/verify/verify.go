@@ -40,6 +40,14 @@ type Assertion struct {
 
 // Report is the outcome of a verify run.
 type Report struct {
+	// Proxy is the RESOLVED proxy verify ran against; Source is which of
+	// flag|env|config supplied it (from the CLI resolution). They are reported in
+	// the header (see String) so `netcage verify` answers "which proxy am I on?"
+	// on demand. They are a pure resolution fact (no jail run needed to know
+	// them), so the header is testable without podman.
+	Proxy  cli.ProxyConfig
+	Source cli.ProxySource
+
 	Assertions []Assertion
 }
 
@@ -63,9 +71,22 @@ func (r Report) ExitCode() int {
 	return 1
 }
 
-// String renders a per-assertion pass/fail summary.
+// String renders the resolved-proxy header (proxy + source) followed by the
+// per-assertion pass/fail summary. The header states which proxy verify ran
+// against and where it came from (flag|env|config), so `netcage verify` doubles
+// as the on-demand "which proxy am I on?" inspector. It prints only the
+// credential-free socks5h://host:port (never any embedded user:pass@), so a
+// shared/logged report leaks no secret. The header is omitted when no proxy is
+// set (a zero Report), keeping the pure-orchestration tests unaffected.
 func (r Report) String() string {
 	var b strings.Builder
+	if r.Proxy.Host != "" {
+		fmt.Fprintf(&b, "proxy: socks5h://%s", r.Proxy.Address())
+		if r.Source != "" {
+			fmt.Fprintf(&b, " (source: %s)", r.Source)
+		}
+		b.WriteString("\n")
+	}
 	for _, a := range r.Assertions {
 		mark := "FAIL"
 		if a.Ok {
@@ -214,7 +235,7 @@ func SplitTunnelChecks(core []Check, directs []Check) []Check {
 // It uses a public IP-echo over HTTP; if the host-side baseline cannot be
 // obtained (offline), the check reports an error (a failure), never a false
 // pass.
-func RunCommandVerify(ctx context.Context, proxy cli.ProxyConfig) Report {
+func RunCommandVerify(ctx context.Context, proxy cli.ProxyConfig, source cli.ProxySource) Report {
 	cfg := jail.Config{
 		Proxy:               proxy,
 		ProxyOnHostLoopback: isHostLoopback(proxy.Host),
@@ -241,7 +262,7 @@ func RunCommandVerify(ctx context.Context, proxy cli.ProxyConfig) Report {
 		},
 	}
 
-	return Run(ctx, []Check{
+	rep := Run(ctx, []Check{
 		{Name: "forced-egress-exit-ip-differs-from-host", Run: func(ctx context.Context) Assertion {
 			hostIP, herr := hostExitIP(ctx)
 			if herr != nil {
@@ -272,6 +293,11 @@ func RunCommandVerify(ctx context.Context, proxy cli.ProxyConfig) Report {
 				"A UDP-only forwarder breaks glibc images; check netcage-dns."}
 		}},
 	})
+	// Record the resolved proxy + its source on the report so it also answers
+	// "which proxy am I on?" (the leak assertions above are untouched).
+	rep.Proxy = proxy
+	rep.Source = source
+	return rep
 }
 
 // dnsProbeName is a stable public hostname the glibc DNS check resolves. Its
