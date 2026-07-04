@@ -669,6 +669,13 @@ func TestParse_ManagementVerbsNeedNoProxy(t *testing.T) {
 		{[]string{"rm", "netcage-run-abc-tool"}, "rm", []string{"netcage-run-abc-tool"}},
 		{[]string{"exec", "netcage-run-abc-tool", "sh", "-c", "id"}, "exec", []string{"netcage-run-abc-tool", "sh", "-c", "id"}},
 		{[]string{"commit", "-m", "snap", "netcage-run-abc-tool", "my-image:tag"}, "commit", []string{"-m", "snap", "netcage-run-abc-tool", "my-image:tag"}},
+		// The image-store WRITE verbs (build/pull/load): pass-through management verbs
+		// like images, carrying NO proxy and forwarding their args VERBATIM as
+		// ManageArgv (the --root graphroot is injected at the shared exec seam, never
+		// parsed here).
+		{[]string{"build", "-t", "localhost/x/tool:latest", "."}, "build", []string{"-t", "localhost/x/tool:latest", "."}},
+		{[]string{"pull", "docker.io/library/alpine:latest"}, "pull", []string{"docker.io/library/alpine:latest"}},
+		{[]string{"load", "-i", "img.tar"}, "load", []string{"-i", "img.tar"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.wantName, func(t *testing.T) {

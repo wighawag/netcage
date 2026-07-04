@@ -90,7 +90,7 @@ func ParseProxy(raw string) (ProxyConfig, error) {
 // allow-list are rejected: jail-breaching flags with an explanatory message,
 // anything else as an unknown flag.
 type Command struct {
-	Name  string // "run", "verify", "start", or a management verb (ps/logs/inspect/exec/stop/rm/images)
+	Name  string // "run", "verify", "start", or a management verb (ps/logs/inspect/exec/stop/rm/images/commit/build/pull/load)
 	Proxy ProxyConfig
 
 	// ProxySource records which of flag / env / config supplied the resolved
@@ -190,6 +190,18 @@ var managementVerbs = map[string]bool{
 	// filesystem->image snapshot), so it carries NO proxy preflight, exactly like
 	// ps/logs/exec/... - and unlike `run`/`start` it never touches the jail.
 	"commit": true,
+	// build/pull/load are the WRITE side of the netcage image store (ADR-0013): the
+	// siblings of the READ verb `images`. They pass through to `podman --root
+	// <graphroot> <verb> ...` (the --root injected at the shared ExecRunner.Run
+	// seam), forwarding their args VERBATIM, so a `netcage build`/`pull`/`load`
+	// writes into the SAME store `netcage run`/`netcage images` read (fixing the
+	// v0.7.0 regression where a locally-built image was invisible to `netcage run`).
+	// They stand up NO jail and do NOT egress, so like the others they carry NO
+	// proxy preflight; unlike the container verbs they are UNGUARDED (they act on
+	// images, not run-labelled containers, mirroring `images`).
+	"build": true,
+	"pull":  true,
+	"load":  true,
 }
 
 // IsManagementVerb reports whether name is one of the pass-through management

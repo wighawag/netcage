@@ -424,3 +424,79 @@ func TestManageVerbs_PsShowsKeptPairAndRmRemovesIt(t *testing.T) {
 	}
 	_ = sidecarName
 }
+
+// TestManageBuild_WritesImageIntoNetcageStore is the podman-gated, END-TO-END
+// regression proof for the image-store WRITE verbs (the v0.7.0 regression this
+// task fixes): `netcage build -t <unique-ref> <context>` writes an image into
+// netcage's store (the relocated graphroot), and a SUBSEQUENT netcage store read
+// SEES it - proving build and run share ONE store. Before this fix a `podman
+// build` landed in the DEFAULT rootless store, invisible to `netcage run`.
+//
+// The build read is done through the PRODUCT's own seam (`podmanTestArgs` prefixes
+// `--root $NETCAGE_GRAPHROOT`, exactly the store the product's ExecRunner writes
+// into), so the assertion is that the image the write verb produced is where the
+// read/run path looks - the single-store contract.
+//
+// It also proves the ONE refusal end to end: `netcage build --root <other> ...` is
+// REFUSED (netcage owns the store location) and writes no image.
+//
+// Build context is `FROM scratch` + a COPY, so the build needs NO registry egress
+// (no base-image pull) and is fully self-contained/deterministic.
+//
+// Shared-write isolation (podman images are host-global state): a UNIQUE image tag
+// names the image and t.Cleanup does `podman --root <store> rmi -f <ref>` even on
+// failure, so the test cannot orphan an image; the scratch NETCAGE_GRAPHROOT
+// (TestMain) keeps it off the developer's real store entirely.
+func TestManageBuild_WritesImageIntoNetcageStore(t *testing.T) {
+	requirePodman(t)
+
+	tag := "build" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", "")
+	imageRef := "localhost/netcage-build-test:" + tag
+	// Register cleanup FIRST so any failure below still removes the built image.
+	t.Cleanup(func() { removeImage(imageRef) })
+
+	// A tiny, egress-free build context: FROM scratch + COPY a marker file, so the
+	// build pulls nothing and is deterministic.
+	buildDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(buildDir, "marker.txt"), []byte("netcage-build-ok\n"), 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, "Dockerfile"),
+		[]byte("FROM scratch\nCOPY marker.txt /marker.txt\n"), 0o644); err != nil {
+		t.Fatalf("write Dockerfile: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	// --- A user-supplied --root is REFUSED (netcage owns the store location). ---
+	var refuseOut bytes.Buffer
+	err := manage.Run(ctx, jail.ExecRunner{}, "build",
+		[]string{"--root", t.TempDir(), "-t", imageRef + "-rootrefused", buildDir},
+		manage.IO{Stdout: &refuseOut, Stderr: &refuseOut})
+	if err == nil {
+		t.Fatalf("netcage build with a user --root must be REFUSED; output:\n%s", refuseOut.String())
+	}
+	if !strings.Contains(err.Error(), "--root") {
+		t.Fatalf("the --root refusal must name --root; got: %v", err)
+	}
+	if imageExists(t, imageRef+"-rootrefused") {
+		t.Cleanup(func() { removeImage(imageRef + "-rootrefused") })
+		t.Fatalf("a refused --root build must NOT write an image")
+	}
+
+	// --- netcage build writes the image into the netcage store. ---
+	var buildOut bytes.Buffer
+	if err := manage.Run(ctx, jail.ExecRunner{}, "build",
+		[]string{"-t", imageRef, buildDir},
+		manage.IO{Stdout: &buildOut, Stderr: &buildOut}); err != nil {
+		t.Fatalf("netcage build -t %s %s: %v\noutput:\n%s", imageRef, buildDir, err, buildOut.String())
+	}
+
+	// The end-to-end regression proof: a SUBSEQUENT netcage store read (through the
+	// SAME --root the run path uses) SEES the freshly-built image. Before this fix
+	// the build landed in the default store and this read would find nothing.
+	if !imageExists(t, imageRef) {
+		t.Fatalf("netcage build must write into the netcage store so a subsequent store read/run SEES it; %s not found\noutput:\n%s", imageRef, buildOut.String())
+	}
+}
