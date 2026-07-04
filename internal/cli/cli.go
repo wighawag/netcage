@@ -126,6 +126,13 @@ type Command struct {
 	Interactive bool // -i / --interactive
 	TTY         bool // -t / --tty
 
+	// JSON records the --json flag on `detect-proxy`: emit the machine-readable
+	// reuse CONTRACT (the versioned, provider-field-free detection schema) instead
+	// of the human findings. It is meaningful ONLY for `detect-proxy` (the one
+	// netcage-only UTILITY verb that produces a machine contract); it is unset for
+	// every other subcommand.
+	JSON bool // --json (detect-proxy: emit the machine reuse contract)
+
 	// Rm records the netcage-owned --rm flag: an EPHEMERAL run (remove BOTH the
 	// tool and the sidecar on exit, no residue). It is NOT smuggled to podman's raw
 	// --rm; netcage OWNS the container lifecycle and INTERPRETS its own --rm into
@@ -227,12 +234,22 @@ func (d DialReachability) Check(address string) error {
 	return c.Close()
 }
 
+// IsProxyless reports whether this parsed command carries NO proxy and so is NOT
+// subject to the proxy preflight: the pass-through management verbs (inspection /
+// lifecycle, no egress) AND the netcage-only `detect-proxy` utility verb, which
+// is LOOKING FOR a proxy rather than egressing through one. A proxy-reachability
+// preflight on a verb that has no proxy would be nonsensical.
+func (c Command) IsProxyless() bool {
+	return c.IsManagement() || c.Name == "detect-proxy"
+}
+
 // Preflight runs the startup checks with a real TCP dial.
 func (c *Command) Preflight() error {
-	// Management verbs do not egress and carry no proxy, so there is nothing to
-	// preflight: a proxy-down check would be wrong (requiring --proxy to `ps` /
-	// `logs` makes no sense). Skip it for them.
-	if c.IsManagement() {
+	// Proxyless verbs (management pass-throughs + detect-proxy) do not egress and
+	// carry no proxy, so there is nothing to preflight: a proxy-down check would be
+	// wrong (requiring --proxy to `ps` / `logs` / `detect-proxy` makes no sense).
+	// Skip it for them.
+	if c.IsProxyless() {
 		return nil
 	}
 	return c.PreflightWith(DialReachability{})
@@ -328,7 +345,7 @@ func Parse(args []string) (*Command, error) {
 // unit-testable without mutating the real process environment.
 func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Command, error) {
 	if len(args) == 0 {
-		return nil, errors.New("no subcommand: expected `run`, `verify`, or a management verb (ps/logs/inspect/exec/stop/rm/images)")
+		return nil, errors.New("no subcommand: expected `run`, `verify`, `detect-proxy`, `start`, or a management verb (ps/logs/inspect/exec/stop/rm/images)")
 	}
 	name := args[0]
 	// Management verbs (ps/logs/inspect/exec/stop/rm/images) are thin podman
@@ -339,10 +356,20 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 	if IsManagementVerb(name) {
 		return &Command{Name: name, ManageArgv: args[1:]}, nil
 	}
+	// `detect-proxy` is a NETCAGE-ONLY UTILITY verb (podman has no `detect-proxy`):
+	// it PROBES for a local SOCKS proxy, so it is LOOKING FOR a proxy rather than
+	// egressing through one. It therefore carries NO --proxy (a --proxy is a usage
+	// error, not a silently-ignored flag), is NOT subject to the run flag allow-list
+	// or the proxy preflight, and takes only the machine-contract `--json` flag. Its
+	// tiny surface is parsed here, entirely separate from the run/verify/start
+	// proxy-resolution path below.
+	if name == "detect-proxy" {
+		return parseDetectProxy(args[1:])
+	}
 	switch name {
 	case "run", "verify", "start":
 	default:
-		return nil, fmt.Errorf("unknown subcommand %q: expected `run`, `verify`, `start`, or a management verb (ps/logs/inspect/exec/stop/rm/images/commit)", name)
+		return nil, fmt.Errorf("unknown subcommand %q: expected `run`, `verify`, `start`, `detect-proxy`, or a management verb (ps/logs/inspect/exec/stop/rm/images/commit)", name)
 	}
 
 	rest := args[1:]
@@ -585,6 +612,30 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 		}
 	}
 
+	return cmd, nil
+}
+
+// parseDetectProxy parses the `detect-proxy` verb's tiny surface: the boolean
+// `--json` flag and nothing else. It deliberately does NOT resolve a proxy
+// (flag/env/config) and does NOT accept --proxy, positionals, or the run
+// allow-list flags: detect-proxy is LOOKING FOR a proxy, so requiring or
+// preflighting one would be nonsensical. Any --proxy, positional, or unknown flag
+// is refused loudly (fail-closed on the unknown), keeping the verb's "no proxy,
+// not preflighted" contract unambiguous.
+func parseDetectProxy(rest []string) (*Command, error) {
+	cmd := &Command{Name: "detect-proxy"}
+	for _, a := range rest {
+		switch {
+		case a == "--json":
+			cmd.JSON = true
+		case a == "--proxy" || strings.HasPrefix(a, "--proxy="):
+			return nil, errors.New("detect-proxy takes no --proxy: it is looking FOR a proxy, not egressing through one (run `netcage verify` to test a specific proxy)")
+		case strings.HasPrefix(a, "-") && a != "-":
+			return nil, fmt.Errorf("unknown flag %q: detect-proxy accepts only --json (it probes the common local SOCKS ports and carries no proxy)", a)
+		default:
+			return nil, fmt.Errorf("detect-proxy takes no positional arguments, got %q (it probes the fixed common SOCKS ports 9050/9150/1080)", a)
+		}
+	}
 	return cmd, nil
 }
 

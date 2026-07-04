@@ -146,6 +146,36 @@ func ExitIPProbe(ctx context.Context, run JailRunner, cfg jail.Config) (observed
 	return firstIP(res.ToolStdout), nil
 }
 
+// ExitIPForProxy runs the SAME IP-echo exit-IP probe RunCommandVerify uses, but
+// against an arbitrary resolved socks5h proxy, and returns the exit IP the jail
+// observed. It is the exit-IP machinery REUSED by `detect-proxy` for its optional
+// exit-IP EVIDENCE (proof the egress is not the host IP) so that verb does not
+// reinvent the jail-run-plus-IP-echo path.
+//
+// It is EVIDENCE-gathering, not a leak assertion: it makes NO claim about whose
+// exit it is (the honesty constraint forbids labelling the provider) and does NOT
+// compare against the host IP. It fetches the exit IP over the SAME public IP-echo
+// through an EPHEMERAL jail (remove both, no residue). An unreachable proxy /
+// unavailable podman / empty answer returns an error so the caller OMITS the
+// evidence rather than presenting a false one.
+func ExitIPForProxy(ctx context.Context, run JailRunner, proxy cli.ProxyConfig) (exitIP string, err error) {
+	cfg := jail.Config{
+		Proxy:               proxy,
+		ProxyOnHostLoopback: isHostLoopback(proxy.Host),
+		Image:               "docker.io/library/alpine:latest",
+		ToolArgv:            []string{"sh", "-c", "wget -qO- -T 10 " + ipEchoURL + " 2>&1 || true"},
+		Ephemeral:           true, // internal one-shot: remove both, no residue
+	}
+	ip, err := ExitIPProbe(ctx, run, cfg)
+	if err != nil {
+		return "", err
+	}
+	if ip == "" {
+		return "", fmt.Errorf("exit-IP probe produced no IP (the proxy may have failed closed)")
+	}
+	return ip, nil
+}
+
 // DNSProbe runs a name-resolution probe through the jail (cfg's ToolArgv must
 // resolve a unique name and print the answer). It returns the tool's stdout so
 // the caller can assert the unique name resolved to the proxy-side answer; the
