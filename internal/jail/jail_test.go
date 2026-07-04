@@ -54,7 +54,7 @@ func TestSidecarRunArgs_ForcedEgressShape(t *testing.T) {
 	args := strings.Join(c.SidecarRunArgs(), " ")
 	for _, want := range []string{
 		"--cap-add NET_ADMIN", "--device /dev/net/tun",
-		"--network pasta:--map-host-loopback," + mappedHostLoopback,
+		"--network pasta:-I," + pastaIfName + ",--map-host-loopback," + mappedHostLoopback,
 		"PROXY=socks5://" + mappedHostLoopback + ":9050",
 		"netcage-run-abc123-sidecar",
 	} {
@@ -119,6 +119,40 @@ func TestSidecarRunArgs_RemoteProxyNoHostLoopbackMap(t *testing.T) {
 	}
 }
 
+// TestSidecarRunArgs_RenamesPastaInterface pins the NIC-name leak fix (Leak 5,
+// ADR-0013): the pasta network arg carries `-I,<fixed-name>` so the in-netns
+// interface is renamed to a fixed neutral name instead of inheriting the host
+// default-route NIC's name (which under systemd `enx<MAC>` naming re-exposes the
+// host MAC). It is present in BOTH proxy modes (the interface exists regardless
+// of how the sidecar reaches the proxy), and composes alongside the existing
+// --map-host-loopback opt for the host-loopback case. The route out is still the
+// TUN, so renaming the interface does not touch forced egress (live-verified in
+// the observation).
+func TestSidecarRunArgs_RenamesPastaInterface(t *testing.T) {
+	t.Run("host-loopback proxy: -I composes alongside --map-host-loopback", func(t *testing.T) {
+		c := cfg()
+		c.ProxyOnHostLoopback = true
+		args := strings.Join(c.SidecarRunArgs(), " ")
+		want := "--network pasta:-I," + pastaIfName + ",--map-host-loopback," + mappedHostLoopback
+		if !strings.Contains(args, want) {
+			t.Fatalf("host-loopback sidecar must rename the pasta interface: want %q\ngot: %s", want, args)
+		}
+	})
+	t.Run("remote proxy: -I is the only pasta opt", func(t *testing.T) {
+		c := cfg()
+		c.Proxy = cli.ProxyConfig{Host: "bastion.example", Port: "1080"}
+		c.ProxyOnHostLoopback = false
+		args := strings.Join(c.SidecarRunArgs(), " ")
+		want := "--network pasta:-I," + pastaIfName
+		if !strings.Contains(args, want) {
+			t.Fatalf("remote sidecar must rename the pasta interface: want %q\ngot: %s", want, args)
+		}
+		if strings.Contains(args, "map-host-loopback") {
+			t.Fatalf("remote proxy must NOT use --map-host-loopback; got: %s", args)
+		}
+	})
+}
+
 func TestToolRunArgs_SharesNetnsAndPassesThrough(t *testing.T) {
 	c := cfg()
 	c.Mounts = []string{"/host/out:/out", "/host/words:/words:ro"}
@@ -131,6 +165,61 @@ func TestToolRunArgs_SharesNetnsAndPassesThrough(t *testing.T) {
 		if !strings.Contains(args, want) {
 			t.Fatalf("tool args missing %q\ngot: %s", want, args)
 		}
+	}
+}
+
+// TestToolRunArgs_SanitizesHostsAndFixesHostname pins the host-machine-name leak
+// fix (Leak 1, ADR-0013): the tool container mounts a synthesized localhost-only
+// /etc/hosts read-only (mirroring the resolv.conf mount) so it no longer inherits
+// podman's default /etc/hosts carrying the host's `127.0.1.1 <hostname>` line, and
+// carries a fixed neutral --hostname so /etc/hostname and the container name do
+// not mirror the host. Both are accepted under --network container: (unlike --dns;
+// live-verified). The hosts mount appears only when Run has synthesized the file
+// (hostsPath set), like the resolv.conf mount.
+func TestToolRunArgs_SanitizesHostsAndFixesHostname(t *testing.T) {
+	c := cfg()
+	c.hostsPath = "/tmp/netcage-hosts-abc123"
+	args := c.ToolRunArgs()
+	joined := strings.Join(args, " ")
+	if want := "-v /tmp/netcage-hosts-abc123:/etc/hosts:ro"; !strings.Contains(joined, want) {
+		t.Fatalf("tool args must mount the sanitized /etc/hosts read-only: want %q\ngot: %s", want, joined)
+	}
+	if want := "--hostname " + fixedHostname; !strings.Contains(joined, want) {
+		t.Fatalf("tool args must set the fixed neutral hostname: want %q\ngot: %s", want, joined)
+	}
+	// The hostname flag must precede the image (a run flag), else podman mis-reads it
+	// as the tool argv.
+	imgIdx := indexOf(args, c.Image)
+	if i := indexOf(args, "--hostname"); i < 0 || i > imgIdx {
+		t.Fatalf("--hostname must appear as a run flag BEFORE the image; args: %s", joined)
+	}
+	// The netcage-owned --hostname must precede PassThroughFlags so an explicit user
+	// --hostname (a vetted ADR-0010 pass-through) wins under podman's last-flag-wins
+	// semantics; the netcage value is only the neutral DEFAULT.
+	c2 := cfg()
+	c2.hostsPath = "/tmp/netcage-hosts-abc123"
+	c2.PassThroughFlags = []string{"--hostname", "userbox"}
+	args2 := c2.ToolRunArgs()
+	first := indexOf(args2, "--hostname")
+	if first < 0 || args2[first+1] != fixedHostname {
+		t.Fatalf("the FIRST --hostname must be netcage's neutral default %q; args: %s", fixedHostname, strings.Join(args2, " "))
+	}
+	// and the user's override appears AFTER it (last wins in podman)
+	if last := lastIndexOf(args2, "userbox"); last <= first {
+		t.Fatalf("a user --hostname override must appear AFTER netcage's default so it wins; args: %s", strings.Join(args2, " "))
+	}
+}
+
+// TestToolRunArgs_OmitsHostsMountWhenUnsynthesized checks the hosts mount is
+// conditional on Run having written the file (like resolv.conf): with no
+// hostsPath set, no /etc/hosts mount is emitted (the arg-builder alone does not
+// fabricate a source path). The fixed --hostname is unconditional (it needs no
+// host file).
+func TestToolRunArgs_OmitsHostsMountWhenUnsynthesized(t *testing.T) {
+	c := cfg()
+	joined := strings.Join(c.ToolRunArgs(), " ")
+	if strings.Contains(joined, ":/etc/hosts:ro") {
+		t.Fatalf("tool args must NOT mount /etc/hosts when Run has not synthesized it; got: %s", joined)
 	}
 }
 
@@ -290,6 +379,16 @@ func indexOf(args []string, tok string) int {
 		}
 	}
 	return -1
+}
+
+func lastIndexOf(args []string, tok string) int {
+	last := -1
+	for i, a := range args {
+		if a == tok {
+			last = i
+		}
+	}
+	return last
 }
 
 // The firewall is baked into the sidecar's create-time `EXTRA_COMMANDS` env

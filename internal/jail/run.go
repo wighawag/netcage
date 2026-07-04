@@ -112,6 +112,18 @@ func Run(ctx context.Context, r Runner, cfg Config) (Result, error) {
 	}
 	cfg.resolvConfPath = resolvPath
 
+	// Synthesize + mount a sanitized localhost-only /etc/hosts into the tool (Leak 1,
+	// ADR-0013), mirroring the resolv.conf above: same stable run-attributable path
+	// (a KEPT container re-mounts it on restart), same ephemeral-only sweep in
+	// Teardown. This strips the host machine name (podman's default /etc/hosts
+	// carries `127.0.1.1 <hostname>`). The fixed --hostname is unconditional in
+	// ToolRunArgs and needs no host file.
+	hostsPath := hostsPathFor(cfg.RunID)
+	if err := writeHostsAt(hostsPath); err != nil {
+		return Result{}, fmt.Errorf("write tool /etc/hosts: %w", err)
+	}
+	cfg.hostsPath = hostsPath
+
 	// 3. reachback diagnostic for a host-loopback proxy (story 14): a clear
 	// message instead of an opaque tool failure when the sidecar cannot reach the
 	// proxy port through the pasta map.
@@ -351,6 +363,47 @@ func writeResolvConfAt(path string) error {
 	return os.WriteFile(path, []byte("nameserver 127.0.0.1\noptions use-vc\n"), 0o644)
 }
 
+// hostsPathFor is the STABLE, run-attributable host path of the tool's sanitized
+// localhost-only /etc/hosts (Leak 1, ADR-0013). Like resolvConfPathFor it is
+// deterministic in the run id so a KEPT container's bind-mount source is the SAME
+// on the original run and on every `netcage start` revive (podman re-mounts this
+// exact path on restart, so it must not be a random temp name a later revive
+// cannot reproduce). It lives under the OS temp dir (world-writable-safe: it only
+// ever contains the fixed localhost entries).
+func hostsPathFor(runID string) string {
+	return filepath.Join(os.TempDir(), "netcage-hosts-"+runID)
+}
+
+// sanitizedHosts is the fixed localhost-only /etc/hosts netcage mounts into the
+// tool (Leak 1, ADR-0013): ONLY the loopback entries, so the host's
+// `127.0.1.1 <hostname>` line (which rootless podman's default /etc/hosts carries)
+// never reaches the tool.
+const sanitizedHosts = "127.0.0.1\tlocalhost\n::1\tlocalhost\n"
+
+// writeHostsAt writes the sanitized localhost-only /etc/hosts to the given stable
+// path, idempotently (overwrite is fine: the content is fixed). Used by both the
+// run path and `netcage start` (which re-materialises the same file before
+// reviving, so a revive works even if the durable file was removed). Mirrors
+// writeResolvConfAt.
+func writeHostsAt(path string) error {
+	return os.WriteFile(path, []byte(sanitizedHosts), 0o644)
+}
+
+// RemoveHosts removes the run-attributable sanitized /etc/hosts file for runID
+// (the tool's bind-mount source, hostsPathFor). It is the counterpart to the
+// container removal, exactly like RemoveResolvConf: a KEPT run leaves the file
+// durable so a later `netcage start` can re-mount it, so whatever finally removes
+// the kept pair must also sweep this file or it orphans under $TMPDIR. A missing
+// file is a no-op (idempotent).
+func RemoveHosts(runID string) {
+	if runID == "" {
+		return
+	}
+	if err := os.Remove(hostsPathFor(runID)); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "netcage: could not remove /etc/hosts for run %s: %v\n", runID, err)
+	}
+}
+
 // RemoveResolvConf removes the run-attributable resolv.conf file for runID (the
 // tool's bind-mount source, resolvConfPathFor). It is the counterpart to the
 // container removal: because a KEPT run leaves the file durable on the host (so a
@@ -488,9 +541,11 @@ func Teardown(ctx context.Context, r Runner, cfg Config) error {
 	if !cfg.Ephemeral {
 		return nil
 	}
-	// Sweep the run-attributable resolv.conf too: an ephemeral run removes the pair,
-	// so the durable bind-mount source must not orphan under $TMPDIR.
+	// Sweep the run-attributable bind-mount sources too: an ephemeral run removes
+	// the pair, so the durable resolv.conf + sanitized /etc/hosts must not orphan
+	// under $TMPDIR.
 	RemoveResolvConf(cfg.RunID)
+	RemoveHosts(cfg.RunID)
 	var errs []error
 	// Order: tool first (it shares/depends on the sidecar netns), then sidecar
 	// (which takes the netns + firewall + DNS forwarder with it). -i (ignore) makes a missing container
