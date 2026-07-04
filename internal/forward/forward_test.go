@@ -104,6 +104,19 @@ func TestListenArgs_IsHostSocatLoopbackListenerIntoNetnsConnect(t *testing.T) {
 	if !strings.Contains(joined, "127.0.0.1 3001") {
 		t.Fatalf("the connect side must reach the in-jail server at 127.0.0.1:<port>; got: %s", joined)
 	}
+	// Load-bearing: the socat EXEC address must be SOCAT-PARSEABLE. socat's `EXEC:`
+	// does NOT invoke a shell and does NOT honour quotes: it whitespace-splits the
+	// address and execvp's the raw tokens. So a nested `sh -c '...'`, a single-quote,
+	// a `||`, or a shell redirection in the connector would be passed LITERALLY to
+	// podman and the connector would die (the host reaches nothing). This guard is
+	// exactly what the earlier broken `EXEC:...sh -c 'nc || socat'` connector needed
+	// and lacked; the connector must be a single, shell-free command
+	// (work/notes/observations/forward-socat-exec-nested-quote-connector-broken.md).
+	for _, unparseable := range []string{"sh -c", "'", "||", "2>", "&&"} {
+		if strings.Contains(joined, unparseable) {
+			t.Fatalf("the socat EXEC connector must be a single shell-free command (socat EXEC does not run a shell / honour quotes); found %q in: %s", unparseable, joined)
+		}
+	}
 	// Load-bearing: the forward NEVER touches the egress firewall.
 	for _, forbidden := range []string{"iptables", "OUTPUT", "--network", "-p ", "--publish", "nft"} {
 		if strings.Contains(joined, forbidden) {

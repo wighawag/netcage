@@ -89,12 +89,23 @@ const allInterfacesBind = "0.0.0.0"
 // userspace host relay that adds NO firewall rule (the egress-untouched
 // invariant) and is TCP-only (ADR-0003).
 //
-// The connector is `sh -c` trying busybox `nc` then `socat` inside the TOOL
-// container (the spike proved the tool image's busybox `nc` works; falling to
-// socat covers a tool image that ships socat but not nc), so the connect side
-// works across the common tool images without netcage assuming a specific
-// connector. The graphroot is embedded explicitly because socat spawns podman as
-// a CHILD, outside the ExecRunner --root injection seam.
+// The connector is the SPIKE-PROVEN plain shape: `podman --root <graphroot> exec
+// -i <tool> nc 127.0.0.1 <port>` (the tool image's busybox `nc`). It is a SINGLE
+// command with NO shell wrapper, because socat's `EXEC:` does NOT invoke a shell
+// and does NOT honour quotes: it whitespace-splits the address and execvp's the
+// raw tokens. An earlier `EXEC:...sh -c 'nc ... || socat ...'` connector was
+// therefore BROKEN (socat passed the literal `'exec`, `||`, `2>/dev/null`, and
+// quote chars to podman, so the connector died and the host reached nothing);
+// it was live-caught and reverted to this plain form (both `EXEC:` + plain `nc`
+// and `SYSTEM:` + a plain command work; ANY nested `sh -c '...'` through socat
+// does not - see work/notes/observations/forward-socat-exec-nested-quote-
+// connector-broken.md and the spike finding's Shape B). The cross-image fallback
+// for a tool that lacks `nc` is NOT an inline shell chain (that reintroduces the
+// bug) but the documented mounted-static-relay-helper follow-up (mirroring how
+// netcage-dns is mounted into the sidecar, ADR-0006); a tool image with neither
+// `nc` nor the helper fails LOUD at connect time (a relay error, not a leak).
+// The graphroot is embedded explicitly because socat spawns podman as a CHILD,
+// outside the ExecRunner --root injection seam.
 func ListenArgs(cfg Config) []string {
 	bind := cfg.Bind
 	if bind == "" {
@@ -102,12 +113,10 @@ func ListenArgs(cfg Config) []string {
 	}
 	port := strconv.Itoa(cfg.Port)
 	// The connect command runs INSIDE the tool container's netns (shared with the
-	// sidecar), so 127.0.0.1:<port> is the in-jail server. `exec 2>/dev/null` keeps
-	// the connector's own noise off the relay's stderr; the trailing exec chain
-	// tries nc then socat so a tool image with either works.
-	connect := fmt.Sprintf("podman --root %s exec -i %s sh -c "+
-		"'exec nc 127.0.0.1 %s 2>/dev/null || exec socat STDIO TCP:127.0.0.1:%s'",
-		jail.GraphRoot(), cfg.ToolContainer, port, port)
+	// sidecar), so 127.0.0.1:<port> is the in-jail server. Plain `nc`, no shell
+	// wrapper, so socat's no-shell/no-quote EXEC parsing execvp's clean tokens.
+	connect := fmt.Sprintf("podman --root %s exec -i %s nc 127.0.0.1 %s",
+		jail.GraphRoot(), cfg.ToolContainer, port)
 	listen := fmt.Sprintf("TCP-LISTEN:%s,bind=%s,fork,reuseaddr", port, bind)
 	return []string{"socat", listen, "EXEC:" + connect}
 }
