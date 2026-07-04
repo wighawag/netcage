@@ -246,7 +246,20 @@ type ExecRunner struct{}
 // so callers can inspect the exit code and classify it against the captured
 // stderr.
 func (ExecRunner) Run(ctx context.Context, spec RunSpec) (string, string, error) {
-	cmd := exec.CommandContext(ctx, spec.Name, spec.Args...)
+	// Inject the username-free graphroot (podman's global `--root`) at THIS single
+	// exec seam, so EVERY podman invocation netcage issues - jail run/start/
+	// teardown/verify/exec, the manage pass-through verbs, the interactive raw
+	// passthrough, and the probe/verify runners - shares ONE store (ADR-0013).
+	// Every inline ExecRunner{} construction site inherits it here with zero
+	// per-site wiring, so it is impossible to miss an invocation (a split store
+	// would make `netcage ps`/`start` unable to find a `netcage run`'s container).
+	// Only podman commands are rewritten; any other command (the local `sh` the
+	// streaming tests use) is left untouched.
+	args := spec.Args
+	if spec.Name == "podman" {
+		args = podmanGlobalArgs(args)
+	}
+	cmd := exec.CommandContext(ctx, spec.Name, args...)
 
 	// Interactive: RAW passthrough. The command inherits stdin and writes its
 	// stdout/stderr straight through to the process's own stdout/stderr; podman

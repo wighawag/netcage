@@ -42,8 +42,35 @@ func TestMain(m *testing.M) {
 				os.Stderr.Write(out)
 			}
 		}
+
+		// SHARED-WRITE ISOLATION (the graphroot relocation task): isolate the jail's
+		// podman graphroot under a per-run SCRATCH dir so the verify leak-test stands
+		// up real storage WITHOUT touching the developer's default store. Torn down
+		// with `podman --root <tmp> system reset --force` (a plain rm -rf fails on the
+		// id-mapped overlay diff/ tree, ADR-0013). Test-side podman calls route through
+		// podmanTestArgs to look in the SAME store the product's ExecRunner writes into.
+		if store, serr := os.MkdirTemp("/var/tmp", "netcage-verify-itest-store"); serr == nil {
+			os.Setenv("NETCAGE_GRAPHROOT", store)
+			defer func() {
+				resetCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				_ = exec.CommandContext(resetCtx, "podman", "--root", store, "system", "reset", "--force").Run()
+				_ = os.RemoveAll(store)
+			}()
+		}
 	}
 	os.Exit(m.Run())
+}
+
+// podmanTestArgs prefixes a test-side `podman` argv with `--root $NETCAGE_GRAPHROOT`
+// when the suite isolated storage under a scratch graphroot (TestMain), so a
+// test-side podman call looks in the SAME store the product's ExecRunner writes
+// into. A plain pass-through when the env is unset.
+func podmanTestArgs(args ...string) []string {
+	if store := os.Getenv("NETCAGE_GRAPHROOT"); store != "" {
+		return append([]string{"--root", store}, args...)
+	}
+	return args
 }
 
 func requirePodman(t *testing.T) {

@@ -110,7 +110,7 @@ func TestJail_Interactive_IdenticalTopologyForcedEgressAndNoResidue(t *testing.T
 	// No run-attributable residue (no netcage-run-<id>-* container; the netns +
 	// firewall are lifecycle-bound to the sidecar container, so no container means
 	// no netns/firewall either).
-	out, _ := exec.CommandContext(ctx, "podman", "ps", "-a", "--format", "{{.Names}}").CombinedOutput()
+	out, _ := exec.CommandContext(ctx, "podman", podmanTestArgs("ps", "-a", "--format", "{{.Names}}")...).CombinedOutput()
 	if strings.Contains(string(out), "netcage-run-"+runID) {
 		t.Fatalf("interactive run left run-attributable containers behind:\n%s", out)
 	}

@@ -38,8 +38,36 @@ func TestMain(m *testing.M) {
 				os.Stderr.Write(out)
 			}
 		}
+
+		// SHARED-WRITE ISOLATION (the graphroot relocation task): isolate the jail's
+		// podman graphroot under a per-run SCRATCH dir so this suite stands up a REAL
+		// kept pair WITHOUT touching the developer's default store
+		// (~/.local/share/containers/storage). Torn down with `podman --root <tmp>
+		// system reset --force` (a plain rm -rf fails on the id-mapped overlay diff/
+		// tree, ADR-0013). Every test-side podman call routes through podmanTestArgs so
+		// it looks in this SAME store the product's ExecRunner writes into.
+		if store, serr := os.MkdirTemp("/var/tmp", "netcage-manage-itest-store"); serr == nil {
+			os.Setenv("NETCAGE_GRAPHROOT", store)
+			defer func() {
+				resetCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				_ = exec.CommandContext(resetCtx, "podman", "--root", store, "system", "reset", "--force").Run()
+				_ = os.RemoveAll(store)
+			}()
+		}
 	}
 	os.Exit(m.Run())
+}
+
+// podmanTestArgs prefixes a test-side `podman` argv with `--root $NETCAGE_GRAPHROOT`
+// when the suite isolated storage under a scratch graphroot (TestMain), so a
+// test-side `podman ps`/`inspect`/`rm` looks in the SAME store the product's
+// ExecRunner writes into. A plain pass-through when the env is unset.
+func podmanTestArgs(args ...string) []string {
+	if store := os.Getenv("NETCAGE_GRAPHROOT"); store != "" {
+		return append([]string{"--root", store}, args...)
+	}
+	return args
 }
 
 // requirePodman skips unless a working rootless podman is present (the whole file
@@ -59,8 +87,8 @@ func requirePodman(t *testing.T) {
 func forceRemovePair(runID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_ = exec.CommandContext(ctx, "podman", "rm", "-f", "--depend", "netcage-run-"+runID+"-sidecar").Run()
-	_ = exec.CommandContext(ctx, "podman", "rm", "-f", "-i", "netcage-run-"+runID+"-tool").Run()
+	_ = exec.CommandContext(ctx, "podman", podmanTestArgs("rm", "-f", "--depend", "netcage-run-"+runID+"-sidecar")...).Run()
+	_ = exec.CommandContext(ctx, "podman", podmanTestArgs("rm", "-f", "-i", "netcage-run-"+runID+"-tool")...).Run()
 	// Sweep the durable resolv.conf too, so a kept-pair test cleans fully after
 	// itself and leaves no $TMPDIR orphan.
 	jail.RemoveResolvConf(runID)
@@ -72,7 +100,7 @@ func residueFor(t *testing.T, runID string) []string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, _ := exec.CommandContext(ctx, "podman", "ps", "-a", "--format", "{{.Names}}").CombinedOutput()
+	out, _ := exec.CommandContext(ctx, "podman", podmanTestArgs("ps", "-a", "--format", "{{.Names}}")...).CombinedOutput()
 	var left []string
 	for _, line := range strings.Split(string(out), "\n") {
 		name := strings.TrimSpace(line)
@@ -132,7 +160,7 @@ func waitToolRunning(t *testing.T, name string) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		out, _ := exec.Command("podman", "inspect", "--format", "{{ .State.Running }}", name).CombinedOutput()
+		out, _ := exec.Command("podman", podmanTestArgs("inspect", "--format", "{{ .State.Running }}", name)...).CombinedOutput()
 		if strings.TrimSpace(string(out)) == "true" {
 			return
 		}
@@ -146,7 +174,7 @@ func waitToolRunning(t *testing.T, name string) {
 func removeImage(ref string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_ = exec.CommandContext(ctx, "podman", "rmi", "-f", ref).Run()
+	_ = exec.CommandContext(ctx, "podman", podmanTestArgs("rmi", "-f", ref)...).Run()
 }
 
 // imageExists reports whether an image ref is present locally (podman image
@@ -155,7 +183,7 @@ func imageExists(t *testing.T, ref string) bool {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return exec.CommandContext(ctx, "podman", "image", "exists", ref).Run() == nil
+	return exec.CommandContext(ctx, "podman", podmanTestArgs("image", "exists", ref)...).Run() == nil
 }
 
 // TestManageCommit_SnapshotsKeptToolToImage is the podman-gated proof for the
@@ -231,7 +259,7 @@ func TestManageCommit_SnapshotsKeptToolToImage(t *testing.T) {
 	if left := residueFor(t, runID); len(left) != 2 {
 		t.Fatalf("commit must leave the kept pair intact (snapshot-only); got %d: %v", len(left), left)
 	}
-	state, _ := exec.CommandContext(ctx, "podman", "inspect", "--format", "{{ .State.Running }}", toolName).CombinedOutput()
+	state, _ := exec.CommandContext(ctx, "podman", podmanTestArgs("inspect", "--format", "{{ .State.Running }}", toolName)...).CombinedOutput()
 	if strings.TrimSpace(string(state)) == "true" {
 		t.Fatalf("commit must NOT start the tool container (it is a filesystem->image snapshot); tool is running")
 	}
@@ -380,8 +408,8 @@ func TestManageVerbs_PsShowsKeptPairAndRmRemovesIt(t *testing.T) {
 	// A non-netcage container must be REFUSED (guard by label): create a plain
 	// alpine container carrying no netcage label and assert rm/logs refuse it.
 	unmanaged := "netcage-mgmt-unmanaged-" + runID
-	_ = exec.CommandContext(ctx, "podman", "create", "--name", unmanaged, "docker.io/library/alpine:latest", "true").Run()
-	t.Cleanup(func() { _ = exec.Command("podman", "rm", "-f", "-i", unmanaged).Run() })
+	_ = exec.CommandContext(ctx, "podman", podmanTestArgs("create", "--name", unmanaged, "docker.io/library/alpine:latest", "true")...).Run()
+	t.Cleanup(func() { _ = exec.Command("podman", podmanTestArgs("rm", "-f", "-i", unmanaged)...).Run() })
 	if err := manage.Run(ctx, jail.ExecRunner{}, "rm", []string{unmanaged}, manage.IO{}); err == nil {
 		t.Fatalf("netcage rm of a non-netcage container %s must be refused", unmanaged)
 	}
