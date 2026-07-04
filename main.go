@@ -74,11 +74,25 @@ func run(args []string) int {
 		return runStart(ctx, cmd)
 	case cmd.Name == "forward":
 		return runForward(ctx, cmd)
+	case cmd.Name == "ports":
+		return runPorts(ctx, cmd)
 	case cmd.IsManagement():
 		return runManage(ctx, cmd)
 	default:
 		return runRun(ctx, cmd)
 	}
+}
+
+// runPorts is a STUB for the `netcage ports <container> [--json]` read verb: the
+// CLI parse + validation layer (this task) recognises the verb and produces a
+// well-formed Command (PortsContainer + JSON), but the listener ENUMERATION
+// mechanism (read /proc/net/tcp* via the sidecar) and its human/JSON rendering
+// are a SEPARATE wiring task that owns the real dispatch. Until then this stub
+// fails loudly rather than silently falling through to runRun (which would try to
+// stand up a jail). It carries no proxy and is not preflighted (cli.IsProxyless).
+func runPorts(_ context.Context, cmd *cli.Command) int {
+	fmt.Fprintf(os.Stderr, "netcage: ports: not yet wired (container %q, json=%v): the enumeration mechanism is a separate task\n", cmd.PortsContainer, cmd.JSON)
+	return 1
 }
 
 // runManage routes a pass-through management verb (ps/logs/inspect/exec/stop/rm/
@@ -463,6 +477,7 @@ const usage = `usage:
   netcage detect-proxy [--json]
   netcage setup-default
   netcage forward [--bind 127.0.0.1|0.0.0.0] <container> <port>
+  netcage ports  <container> [--json]
   netcage ps
   netcage images
   netcage logs|inspect|stop|rm <container>
