@@ -178,6 +178,18 @@ type Command struct {
 	ForwardPort      int    // forward: the TCP port to expose (1..65535)
 	ForwardBind      string // forward: resolved host bind (127.0.0.1 default, or 0.0.0.0)
 
+	// PortsContainer carries the parsed, validated single positional of the
+	// `netcage ports <container> [--json]` read verb: the netcage-managed container
+	// NAME whose in-jail TCP listeners to enumerate. It is a DEDICATED field (not
+	// reused from ForwardContainer) so `ports` and `forward` stay conceptually
+	// distinct even though they share the same managed-container resolver. It is the
+	// ZERO value for every other subcommand. `ports` reuses Command.JSON for its
+	// --json machine-contract flag (one spelling for the machine contract, like
+	// detect-proxy). This package only PARSES + VALIDATES the surface; the listener
+	// ENUMERATION mechanism (read /proc/net/tcp* via the sidecar) is a separate task
+	// that consumes PortsContainer + JSON.
+	PortsContainer string // ports: the netcage-managed container name to enumerate
+
 	// AllowDirect is the validated split-tunnel LAN allowlist: --allow-direct
 	// values (repeatable) parsed into private-only DirectAllow entries (network +
 	// optional port). EMPTY by default (no flag) == today's strict jail. This
@@ -268,7 +280,7 @@ func (d DialReachability) Check(address string) error {
 // is LOOKING FOR a proxy rather than egressing through one. A proxy-reachability
 // preflight on a verb that has no proxy would be nonsensical.
 func (c Command) IsProxyless() bool {
-	return c.IsManagement() || c.Name == "detect-proxy" || c.Name == "setup-default" || c.Name == "forward"
+	return c.IsManagement() || c.Name == "detect-proxy" || c.Name == "setup-default" || c.Name == "forward" || c.Name == "ports"
 }
 
 // Preflight runs the startup checks with a real TCP dial.
@@ -373,7 +385,7 @@ func Parse(args []string) (*Command, error) {
 // unit-testable without mutating the real process environment.
 func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Command, error) {
 	if len(args) == 0 {
-		return nil, errors.New("no subcommand: expected `run`, `verify`, `detect-proxy`, `setup-default`, `start`, `forward`, or a management verb (ps/logs/inspect/exec/stop/rm/images)")
+		return nil, errors.New("no subcommand: expected `run`, `verify`, `detect-proxy`, `setup-default`, `start`, `forward`, `ports`, or a management verb (ps/logs/inspect/exec/stop/rm/images)")
 	}
 	name := args[0]
 	// Management verbs (ps/logs/inspect/exec/stop/rm/images) are thin podman
@@ -415,10 +427,20 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 	if name == "forward" {
 		return parseForward(args[1:])
 	}
+	// `ports` is a NETCAGE-ONLY read verb (podman has no `ports`): it LISTS a jailed
+	// container's open TCP listeners by reading /proc/net/tcp* via the sidecar. It
+	// only reads /proc and sends NO traffic, so like forward/detect-proxy/setup-default
+	// it carries NO --proxy (a --proxy is a usage error), is NOT subject to the run
+	// allow-list, and is NOT preflighted (IsProxyless). Its tiny surface (a single
+	// <container> positional + the machine-contract --json) is parsed here, separate
+	// from the run/verify/start proxy-resolution path below.
+	if name == "ports" {
+		return parsePorts(args[1:])
+	}
 	switch name {
 	case "run", "verify", "start":
 	default:
-		return nil, fmt.Errorf("unknown subcommand %q: expected `run`, `verify`, `start`, `detect-proxy`, `setup-default`, `forward`, or a management verb (ps/logs/inspect/exec/stop/rm/images/commit)", name)
+		return nil, fmt.Errorf("unknown subcommand %q: expected `run`, `verify`, `start`, `detect-proxy`, `setup-default`, `forward`, `ports`, or a management verb (ps/logs/inspect/exec/stop/rm/images/commit)", name)
 	}
 
 	rest := args[1:]
@@ -749,6 +771,43 @@ func parseForwardPort(s string) (int, error) {
 		return 0, fmt.Errorf("forward port %d is out of range: expected a TCP port 1-65535", p)
 	}
 	return p, nil
+}
+
+// parsePorts parses the `netcage ports <container> [--json]` read verb's tiny
+// surface, mirroring the proxyless-verb pattern of detect-proxy / forward:
+//
+//   - Exactly ONE positional: the netcage-managed container NAME whose in-jail TCP
+//     listeners to enumerate. Zero or two+ positionals is a loud usage error.
+//   - The sole flag `--json` (and `--json=`... is NOT a thing; it is a boolean):
+//     emit the machine-readable listener contract instead of the human table. It
+//     reuses the existing Command.JSON field so there is one spelling for the
+//     machine contract (like detect-proxy --json).
+//   - NO --proxy (it only reads /proc, it does not egress; a --proxy is a usage
+//     error, not a silently-ignored flag), and any unknown flag is refused
+//     (fail-closed on the unknown), consistent with the other verbs.
+//
+// It does NOT enumerate the listeners: the MECHANISM (read /proc/net/tcp* via the
+// sidecar) is a separate task that consumes PortsContainer + JSON.
+func parsePorts(rest []string) (*Command, error) {
+	cmd := &Command{Name: "ports"}
+	var positionals []string
+	for _, a := range rest {
+		switch {
+		case a == "--json":
+			cmd.JSON = true
+		case a == "--proxy" || strings.HasPrefix(a, "--proxy="):
+			return nil, errors.New("ports takes no --proxy: it only reads /proc to list a jail's open TCP listeners, it does not egress (a pure read like detect-proxy)")
+		case strings.HasPrefix(a, "-") && a != "-":
+			return nil, fmt.Errorf("unknown flag %q: ports accepts only --json (emit the machine listener contract) plus the single positional <container>", a)
+		default:
+			positionals = append(positionals, a)
+		}
+	}
+	if len(positionals) != 1 {
+		return nil, fmt.Errorf("ports takes exactly one netcage container name, got %d positional(s) %v", len(positionals), positionals)
+	}
+	cmd.PortsContainer = positionals[0]
+	return cmd, nil
 }
 
 // parseDetectProxy parses the `detect-proxy` verb's tiny surface: the boolean
