@@ -240,7 +240,7 @@ func (d DialReachability) Check(address string) error {
 // is LOOKING FOR a proxy rather than egressing through one. A proxy-reachability
 // preflight on a verb that has no proxy would be nonsensical.
 func (c Command) IsProxyless() bool {
-	return c.IsManagement() || c.Name == "detect-proxy"
+	return c.IsManagement() || c.Name == "detect-proxy" || c.Name == "setup-default"
 }
 
 // Preflight runs the startup checks with a real TCP dial.
@@ -345,7 +345,7 @@ func Parse(args []string) (*Command, error) {
 // unit-testable without mutating the real process environment.
 func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Command, error) {
 	if len(args) == 0 {
-		return nil, errors.New("no subcommand: expected `run`, `verify`, `detect-proxy`, `start`, or a management verb (ps/logs/inspect/exec/stop/rm/images)")
+		return nil, errors.New("no subcommand: expected `run`, `verify`, `detect-proxy`, `setup-default`, `start`, or a management verb (ps/logs/inspect/exec/stop/rm/images)")
 	}
 	name := args[0]
 	// Management verbs (ps/logs/inspect/exec/stop/rm/images) are thin podman
@@ -366,10 +366,21 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 	if name == "detect-proxy" {
 		return parseDetectProxy(args[1:])
 	}
+	// `setup-default` is a NETCAGE-ONLY onboarding verb (podman has no such verb;
+	// `init` was rejected because `podman init` is real, ADR-0012). It is the ONLY
+	// config writer: it detects/chooses/verifies/warns/persists a credential-free
+	// DEFAULT proxy so a bare `netcage run` needs no --proxy. It is NOT a jailed
+	// run: it is ESTABLISHING the proxy, not egressing through one, so it carries
+	// NO --proxy and is NOT preflighted (it resolves the proxy interactively, not
+	// from flag/env/config). Its tiny surface is parsed here, separate from the
+	// run/verify/start proxy-resolution path below.
+	if name == "setup-default" {
+		return parseSetupDefault(args[1:])
+	}
 	switch name {
 	case "run", "verify", "start":
 	default:
-		return nil, fmt.Errorf("unknown subcommand %q: expected `run`, `verify`, `start`, `detect-proxy`, or a management verb (ps/logs/inspect/exec/stop/rm/images/commit)", name)
+		return nil, fmt.Errorf("unknown subcommand %q: expected `run`, `verify`, `start`, `detect-proxy`, `setup-default`, or a management verb (ps/logs/inspect/exec/stop/rm/images/commit)", name)
 	}
 
 	rest := args[1:]
@@ -637,6 +648,27 @@ func parseDetectProxy(rest []string) (*Command, error) {
 		}
 	}
 	return cmd, nil
+}
+
+// parseSetupDefault parses the `setup-default` verb's tiny surface: it takes NO
+// flags and NO positionals. It is INTERACTIVE onboarding (it prompts for the
+// proxy), so it does NOT take a --proxy (that would be a usage error, not a
+// silently-ignored flag) and is NOT subject to the run allow-list or the proxy
+// preflight: it is ESTABLISHING the default proxy, not egressing through one. Any
+// flag or positional is refused loudly, keeping the verb's "no proxy, not
+// preflighted, interactive" contract unambiguous.
+func parseSetupDefault(rest []string) (*Command, error) {
+	for _, a := range rest {
+		switch {
+		case a == "--proxy" || strings.HasPrefix(a, "--proxy="):
+			return nil, errors.New("setup-default takes no --proxy: it is INTERACTIVE onboarding that detects/asks for the proxy to persist as the default (pass one transiently with `netcage run --proxy ...` instead)")
+		case strings.HasPrefix(a, "-") && a != "-":
+			return nil, fmt.Errorf("unknown flag %q: setup-default takes no flags (it is interactive onboarding that detects/chooses/verifies/persists a default proxy)", a)
+		default:
+			return nil, fmt.Errorf("setup-default takes no positional arguments, got %q (it is interactive: it detects the proxy and prompts for the choice)", a)
+		}
+	}
+	return &Command{Name: "setup-default"}, nil
 }
 
 // resolveRunPositionals splits the run positionals into the image and the tool

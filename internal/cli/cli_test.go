@@ -848,3 +848,61 @@ func TestPreflight_DetectProxySkipsProxyPreflight(t *testing.T) {
 		t.Fatalf("detect-proxy Preflight should be a no-op (no proxy to check), got: %v", err)
 	}
 }
+
+// TestParse_SetupDefaultCarriesNoProxy asserts `setup-default` is a NETCAGE-ONLY
+// onboarding verb that carries NO proxy at all: it is ESTABLISHING the proxy
+// (interactively), not egressing through one, so it needs neither --proxy nor a
+// resolved proxy source.
+func TestParse_SetupDefaultCarriesNoProxy(t *testing.T) {
+	cmd, err := cli.ParseWithEnv([]string{"setup-default"}, noEnv)
+	if err != nil {
+		t.Fatalf("setup-default should parse with no proxy at all: %v", err)
+	}
+	if cmd.Name != "setup-default" {
+		t.Fatalf("Name = %q, want setup-default", cmd.Name)
+	}
+	if cmd.Proxy.Host != "" || cmd.ProxySource != "" {
+		t.Fatalf("setup-default must carry no proxy: got Proxy=%+v source=%q", cmd.Proxy, cmd.ProxySource)
+	}
+}
+
+// TestParse_SetupDefaultRejectsProxyFlag asserts setup-default takes NO --proxy:
+// it prompts for the proxy interactively, so a --proxy is a usage error (a
+// transient proxy goes on `netcage run --proxy ...`), not a silently-ignored flag.
+func TestParse_SetupDefaultRejectsProxyFlag(t *testing.T) {
+	if _, err := cli.ParseWithEnv([]string{"setup-default", "--proxy", "socks5h://127.0.0.1:9050"}, noEnv); err == nil {
+		t.Fatal("setup-default must reject --proxy (it is interactive onboarding that asks for the proxy)")
+	}
+}
+
+// TestParse_SetupDefaultRejectsPositionals asserts setup-default takes no
+// positional arguments (it is interactive: it detects/prompts).
+func TestParse_SetupDefaultRejectsPositionals(t *testing.T) {
+	if _, err := cli.ParseWithEnv([]string{"setup-default", "127.0.0.1:9050"}, noEnv); err == nil {
+		t.Fatal("setup-default must reject positional arguments (it prompts for the choice)")
+	}
+}
+
+// TestParse_SetupDefaultRejectsUnknownFlag asserts setup-default fails closed on
+// an unknown flag.
+func TestParse_SetupDefaultRejectsUnknownFlag(t *testing.T) {
+	if _, err := cli.ParseWithEnv([]string{"setup-default", "--bogus"}, noEnv); err == nil {
+		t.Fatal("setup-default must reject an unknown flag (fail-closed on the unknown)")
+	}
+}
+
+// TestPreflight_SetupDefaultSkipsProxyPreflight asserts setup-default is NOT run
+// through the proxy preflight (it carries no proxy): Preflight is a no-op for it,
+// exactly like detect-proxy. It is establishing the proxy, not egressing.
+func TestPreflight_SetupDefaultSkipsProxyPreflight(t *testing.T) {
+	cmd, err := cli.ParseWithEnv([]string{"setup-default"}, noEnv)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !cmd.IsProxyless() {
+		t.Fatal("setup-default must be proxyless (no proxy to preflight)")
+	}
+	if err := cmd.Preflight(); err != nil {
+		t.Fatalf("setup-default Preflight should be a no-op (no proxy to check), got: %v", err)
+	}
+}

@@ -7,7 +7,22 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
+
+// ConfigFileMode is the permission the config file is written with: 0600,
+// owner-only. The persisted default is credential-free by construction (see
+// WriteConfig), but the file is written owner-only REGARDLESS, so nothing at
+// rest is world-readable. It is exported so a test can assert the mode.
+const ConfigFileMode os.FileMode = 0o600
+
+// ErrCredentialedProxyNotPersisted is the sentinel WriteConfig returns when asked
+// to persist a proxy carrying embedded user:pass@ credentials. The persisted
+// default is credential-free by construction (ADR-0012 section 2): authed proxies
+// stay in NETCAGE_PROXY / --proxy (transient), so ~/.config/netcage/config.json
+// never accumulates secrets at rest. WriteConfig is the ONE writer, so this is
+// the ONE place the invariant is enforced.
+var ErrCredentialedProxyNotPersisted = errors.New("refusing to persist a proxy with embedded credentials: the netcage config file is credential-free by construction; keep an authed proxy in NETCAGE_PROXY or --proxy (transient) instead")
 
 // ProxySource records which of the three proxy sources supplied the resolved
 // proxy for a run, so downstream verbs can REPORT it (verify prints
@@ -42,7 +57,10 @@ type fileConfig struct {
 	Proxy string `json:"proxy"`
 	// AllowDirect is a JSON array of raw --allow-direct strings (RFC1918 /
 	// link-local only), each validated by the SAME parseAllowDirect on load.
-	AllowDirect []string `json:"allowDirect"`
+	// omitempty so the SINGLE writer emits no `"allowDirect": null` for the common
+	// case (a bare default proxy with no split-tunnel list); a present array still
+	// round-trips the loader unchanged.
+	AllowDirect []string `json:"allowDirect,omitempty"`
 }
 
 // netcageConfigDir returns the netcage config directory
@@ -118,4 +136,130 @@ func loadConfig(lookupEnv func(string) (string, bool)) (loadedConfig, error) {
 	}
 
 	return out, nil
+}
+
+// ConfigView is the current persisted config, surfaced for the setup-default
+// reconfigure PRE-FILL: the raw proxy URL string and the raw allowDirect strings
+// exactly as they sit on disk (so the interactive flow can show "current: ...").
+// Present=false means no config file yet (a first-time setup). It is the READ
+// side of the single-writer seam; setup-default reads it to pre-fill and writes
+// through WriteConfig.
+type ConfigView struct {
+	Present     bool
+	ProxyURL    string
+	AllowDirect []string
+}
+
+// ReadConfigView returns the current persisted config (raw, un-parsed) for the
+// reconfigure pre-fill, resolved from the injectable env lookup so tests point it
+// at a scratch dir and the real ~/.config/netcage is never read. A missing file
+// (or no resolvable config dir) is Present=false, nil error. A present-but-corrupt
+// file is a loud error (setup-default should not silently pre-fill from garbage).
+// It reads the RAW strings (not the validated loadedConfig) because the pre-fill
+// only needs to DISPLAY what is there, and a hand-edited credentialed proxy should
+// still be shown so the user sees what they are replacing.
+func ReadConfigView(lookupEnv func(string) (string, bool)) (ConfigView, error) {
+	dir, ok := netcageConfigDir(lookupEnv)
+	if !ok {
+		return ConfigView{}, nil
+	}
+	path := filepath.Join(dir, configFileName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ConfigView{}, nil
+		}
+		return ConfigView{}, fmt.Errorf("reading netcage config %s: %w", path, err)
+	}
+	var fc fileConfig
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&fc); err != nil {
+		return ConfigView{}, fmt.Errorf("parsing netcage config %s: %w", path, err)
+	}
+	return ConfigView{Present: true, ProxyURL: fc.Proxy, AllowDirect: fc.AllowDirect}, nil
+}
+
+// ConfigPath returns the absolute path of the netcage config file resolved from
+// the injectable env lookup (`$XDG_CONFIG_HOME/netcage/config.json`, else
+// `$HOME/.config/netcage/config.json`). ok=false when no base dir resolves (no
+// XDG_CONFIG_HOME and no HOME). It is exported so setup-default can NAME the file
+// it is about to write in its prompts/warnings. It performs no I/O.
+func ConfigPath(lookupEnv func(string) (string, bool)) (path string, ok bool) {
+	dir, ok := netcageConfigDir(lookupEnv)
+	if !ok {
+		return "", false
+	}
+	return filepath.Join(dir, configFileName), true
+}
+
+// WriteConfig persists the netcage default config (`~/.config/netcage/config.json`,
+// XDG-aware, resolved from the injectable env lookup so tests write to a scratch
+// dir and the real config is untouched). It is the SINGLE config writer
+// (setup-default's persist step); no other code writes this file.
+//
+// It ENFORCES the two ADR-0012 invariants at this one seam:
+//
+//   - Credential-free by construction: a proxy carrying embedded user:pass@
+//     credentials is REFUSED (ErrCredentialedProxyNotPersisted), so the file
+//     never accumulates secrets at rest. The caller directs the user to keep an
+//     authed proxy in NETCAGE_PROXY / --proxy instead.
+//   - Same strict validation as every other path: the proxy round-trips the SAME
+//     socks5h-enforcing ParseProxy (a socks5:// or malformed proxy is rejected
+//     exactly as on the flag), and each allowDirect entry round-trips the SAME
+//     parseAllowDirect (RFC1918 / link-local only). The config path is never
+//     laxer than the flag.
+//
+// The file is written 0600 (owner-only) regardless. The parent directory is
+// created 0700 if absent. proxyURL is required (an empty proxy is refused: the
+// config exists to persist a DEFAULT proxy). allowDirectRaw may be nil/empty.
+func WriteConfig(lookupEnv func(string) (string, bool), proxyURL string, allowDirectRaw []string) error {
+	if strings.TrimSpace(proxyURL) == "" {
+		return errors.New("refusing to persist an empty proxy: setup-default installs a DEFAULT proxy, so a socks5h://host:port is required")
+	}
+	// Round-trip the SAME socks5h-enforcing validator the flag/env paths use, so a
+	// socks5:// (DNS leak) or malformed proxy is rejected here exactly as on the
+	// flag. This is also where the credential refusal fires: a persisted default
+	// is credential-free by construction.
+	proxy, err := ParseProxy(proxyURL)
+	if err != nil {
+		return err
+	}
+	if proxy.Username != "" || proxy.Password != "" {
+		return ErrCredentialedProxyNotPersisted
+	}
+	// Validate each allowDirect entry through the SAME parseAllowDirect the flag
+	// uses, so a persisted direct can never be wider than a flag direct.
+	for _, raw := range allowDirectRaw {
+		if _, aerr := parseAllowDirect(raw); aerr != nil {
+			return fmt.Errorf("refusing to persist allowDirect entry %q: %w", raw, aerr)
+		}
+	}
+
+	dir, ok := netcageConfigDir(lookupEnv)
+	if !ok {
+		return errors.New("cannot resolve a config directory (no XDG_CONFIG_HOME and no HOME); set one to persist a default proxy")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("creating netcage config dir %s: %w", dir, err)
+	}
+
+	fc := fileConfig{Proxy: proxyURL, AllowDirect: allowDirectRaw}
+	blob, err := json.MarshalIndent(fc, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding netcage config: %w", err)
+	}
+	blob = append(blob, '\n')
+
+	path := filepath.Join(dir, configFileName)
+	// Write 0600 (owner-only) regardless. WriteFile applies the mode only when it
+	// CREATES the file, so also Chmod to normalise an existing file's mode down to
+	// 0600 on a reconfigure (a re-run must not leave a looser mode behind).
+	if err := os.WriteFile(path, blob, ConfigFileMode); err != nil {
+		return fmt.Errorf("writing netcage config %s: %w", path, err)
+	}
+	if err := os.Chmod(path, ConfigFileMode); err != nil {
+		return fmt.Errorf("setting netcage config mode on %s: %w", path, err)
+	}
+	return nil
 }
