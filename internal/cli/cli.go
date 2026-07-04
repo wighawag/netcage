@@ -90,11 +90,17 @@ func ParseProxy(raw string) (ProxyConfig, error) {
 // allow-list are rejected: jail-breaching flags with an explanatory message,
 // anything else as an unknown flag.
 type Command struct {
-	Name     string // "run", "verify", "start", or a management verb (ps/logs/inspect/exec/stop/rm/images)
-	Proxy    ProxyConfig
-	Image    string   // required for run (first positional); unused for verify
-	ToolArgv []string // the tool command + args (positionals after the image)
-	Mounts   []string // -v/--volume pass-through values (run)
+	Name  string // "run", "verify", "start", or a management verb (ps/logs/inspect/exec/stop/rm/images)
+	Proxy ProxyConfig
+
+	// ProxySource records which of flag / env / config supplied the resolved
+	// Proxy, so downstream verbs report it (verify prints `source: ...`;
+	// setup-default reads it) without retrofitting the signal. Empty for
+	// management verbs (they carry no proxy).
+	ProxySource ProxySource
+	Image       string   // required for run (first positional); unused for verify
+	ToolArgv    []string // the tool command + args (positionals after the image)
+	Mounts      []string // -v/--volume pass-through values (run)
 
 	// StartName is the netcage-managed container NAME the jail-aware `netcage
 	// start <name>` verb revives (its single positional). It is the TOOL container
@@ -344,6 +350,7 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 
 	var proxyRaw string
 	var proxyFromFlag bool
+	var allowDirectFromFlag bool // any explicit --allow-direct on the CLI (drives REPLACE vs config)
 	var positionals []string
 	endOfFlags := false
 
@@ -488,12 +495,14 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 				return nil, aerr
 			}
 			cmd.AllowDirect = append(cmd.AllowDirect, entry)
+			allowDirectFromFlag = true
 		case strings.HasPrefix(a, "--allow-direct="):
 			entry, aerr := parseAllowDirect(strings.TrimPrefix(a, "--allow-direct="))
 			if aerr != nil {
 				return nil, aerr
 			}
 			cmd.AllowDirect = append(cmd.AllowDirect, entry)
+			allowDirectFromFlag = true
 
 		case strings.HasPrefix(a, "-") && a != "-":
 			// An unlisted/unaudited flag: reject by default (fail-closed on the CLI)
@@ -509,11 +518,24 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 		}
 	}
 
-	// Proxy resolution: flag > env > refuse. Both paths go through the SAME
-	// socks5h-enforcing ParseProxy (the env path is NOT laxer).
+	// Config is a NEW, lowest-priority proxy SOURCE, never a bypass: it is loaded
+	// (and its allowDirect list validated) HERE, then fed into the SAME strict
+	// resolution below. A missing file is a clean no-op; a present-but-broken file
+	// is a loud error (config is not laxer than flag/env). See ADR-0012.
+	conf, err := loadConfig(lookupEnv)
+	if err != nil {
+		return nil, err
+	}
+
+	// Proxy resolution: flag > env > config > refuse. ALL three paths go through
+	// the SAME socks5h-enforcing ParseProxy (no path is laxer), and the winning
+	// SOURCE is recorded so downstream verbs can report it.
+	source := ProxySourceFlag
 	if !proxyFromFlag {
 		if v, ok := lookupEnv(ProxyEnvVar); ok && strings.TrimSpace(v) != "" {
-			proxyRaw = v
+			proxyRaw, source = v, ProxySourceEnv
+		} else if conf.present && strings.TrimSpace(conf.proxyURL) != "" {
+			proxyRaw, source = conf.proxyURL, ProxySourceConfig
 		}
 	}
 	if strings.TrimSpace(proxyRaw) == "" {
@@ -524,6 +546,15 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 		return nil, err
 	}
 	cmd.Proxy = proxy
+	cmd.ProxySource = source
+
+	// --allow-direct precedence is REPLACE, not additive: an explicit CLI
+	// --allow-direct supplies the COMPLETE allowlist and fully overrides the
+	// config list (nothing implicitly rides along). Only when NO CLI
+	// --allow-direct is given does the config allowDirect apply.
+	if !allowDirectFromFlag && conf.present && len(conf.allowDirect) > 0 {
+		cmd.AllowDirect = conf.allowDirect
+	}
 
 	switch name {
 	case "run":
