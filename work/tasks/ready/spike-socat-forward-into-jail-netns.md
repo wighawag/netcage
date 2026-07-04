@@ -10,7 +10,7 @@ covers: [1, 5, 10]
 
 A de-risking spike (end-to-end, throwaway) that proves the chosen forward mechanism is sound BEFORE the `forward` verb is built on it, and records the result as a finding.
 
-Stand up a real netcage jail whose tool runs a trivial HTTP server on a fixed port (e.g. `:3001`). Then, from the HOST, stand up a userspace forward `socat TCP-LISTEN:3001,bind=127.0.0.1,fork` that reaches the in-jail server through the existing podman exec seam (into the sidecar's netns, per ADR-0006, since the tool shares `--network container:<sidecar>`), and confirm:
+Stand up a real netcage jail whose tool runs a trivial HTTP server on a fixed port (e.g. `:3001`). Then, from the HOST, stand up a userspace forward whose LISTENER binds the HOST's `127.0.0.1:3001` (so it is host-reachable) and whose CONNECT side reaches the in-jail server's port. The host-listener / netns-connect split is exactly what this spike must DETERMINE, not assume: a `socat` run INSIDE the netns (via `podman exec`) binding `127.0.0.1` would bind the CONTAINER's loopback, NOT the host's, so it would not be host-reachable. Candidate shapes to try: a host-side `socat TCP-LISTEN:3001,bind=127.0.0.1,fork` that dials the in-jail server (reaching the netns however the exec seam / pasta allows), or a host listener paired with a `podman exec` socat on the connect side. Record which actually works. Confirm:
 
 1. `curl http://127.0.0.1:3001` on the host reaches the in-jail server (loopback bind works).
 2. With the forward active, the forced-egress leak-test still passes: exit-IP is the proxy's, DNS is proxy-side, and killing the proxy fails closed. The forward must add NO OUTPUT rule; egress is exactly as before.

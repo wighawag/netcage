@@ -13,7 +13,7 @@ The forward MECHANISM behind the parsed verb: a new `internal/forward` package (
 End-to-end behaviour:
 
 - Resolve the named container to a netcage-managed jail via the `netcage.managed` label (ADR-0009); refuse a container that is not netcage-managed or not running, loudly.
-- Stand up the forward using the recipe the spike proved (`socat TCP-LISTEN:<port>,bind=<bind>,fork` into the sidecar netns via the podman exec seam, ADR-0006; use the ADR-0014 fallback only if the spike came back negative).
+- Stand up the forward using the recipe the spike proved (a host-side listener binding `<bind>` whose connect side reaches the in-jail server's port; the spike finding names the exact host-listener/netns-connect shape that works. Use the ADR-0014 fallback only if the spike came back negative).
 - Bind `127.0.0.1` by DEFAULT. For `--bind 0.0.0.0`, print a clear WARNING before forwarding, naming what it exposes (the container, the port, and that ANY LAN host can reach the jailed tool's server). This is the guardrailed anonymity opt-in (ADR-0013 / ADR-0005 precedent), not a forced-egress change.
 - TCP only; exactly the one named port; NEVER add an OUTPUT rule (the egress firewall is untouched, so forced egress and fail-closed are exactly as before).
 - Lifetime-bounded: the forward is a host process that ends on Ctrl-C (and dies on reboot); nothing revives it. On exit, leave no listener and no host state behind.

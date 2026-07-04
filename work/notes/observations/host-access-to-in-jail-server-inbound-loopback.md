@@ -77,8 +77,8 @@ without revealing who/where you are): `0.0.0.0` advertises the in-jail server to
 every LAN host, which is a machine correlator and lets a hostile LAN peer probe
 the very tool you jailed. This mirrors ADR-0005 exactly (private direct is fine,
 a PUBLIC direct is a separate louder opt-in). So the LAN bind is ALLOWED but only
-behind an explicit `netcage forward --bind 0.0.0.0 <container> <port>` (or
-`--lan`) that warns what it exposes; the bare verb is always `127.0.0.1`.
+behind an explicit `netcage forward --bind 0.0.0.0 <container> <port>` that
+warns what it exposes; the bare verb is always `127.0.0.1`.
 
 ## Reboot / persistence: nothing about host-access survives, by design
 
@@ -127,9 +127,15 @@ feasible, because:
 - The forward itself: the sidecar owns the netns and the pasta network, but pasta
   port-forwarding is set at `podman run --network pasta:...,-T,<port>` CREATE
   time, so a post-hoc verb cannot ask pasta to add a port to a running sidecar.
-  Two implementable options: (a) a host-side userspace forwarder
-  (`socat TCP-LISTEN:3001,bind=127.0.0.1,fork` -> the netns, entered read-only via
-  the podman exec seam) that lives only while the verb runs; or (b) bake an
+  Two implementable options: (a) a host-side userspace forwarder whose LISTENER
+  runs on the HOST binding the host's `127.0.0.1` (so it is host-reachable) and
+  whose CONNECT side reaches the in-jail server's port in the netns (e.g. a
+  host-side `socat TCP-LISTEN:3001,bind=127.0.0.1,fork` dialing the netns, or a
+  host listener paired with a `podman exec` socat on the connect side). The exact
+  host-listener / netns-connect split is precisely what the de-risking spike must
+  determine (a socat run INSIDE the netns binding `127.0.0.1` binds the
+  CONTAINER's loopback, NOT the host's, so it would not be host-reachable). It
+  lives only while the verb runs; or (b) bake an
   OPT-IN pasta inbound map at run time behind an explicit `--expose-loopback
   <port>` that ONLY ever composes `127.0.0.1`-bound pasta `-T` and adds an INPUT
   accept for that one port, never touching OUTPUT. (a) keeps the run path
