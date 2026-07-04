@@ -41,23 +41,7 @@ No jail-safety guardrail changes: the forward still adds NO OUTPUT/nft rule, is 
 - **`humanOnly` NOT set (prd-level):** no CI / autonomous tasker here; the flag's effect is inert.
 - **`needsAnswers`:** NOT set. The change is a localized parse + wiring extension of an existing verb (ADR-0014) with a settled, familiar syntax and no guardrail change. Remaining choices (exact error strings) are tasking-time details.
 
-## Implementation Decisions
-
-Decided at launch:
-
-- **Parse layer** (`internal/cli` `parseForward`): the second positional becomes `[hostPort:]jailPort`. Split on a single `:`; zero colons => host==jail (today's behaviour); one colon => `hostPort:jailPort`; two or more colons => usage error. Validate each side 1..65535 (reuse/extend `parseForwardPort`). Add a `ForwardHostPort int` field (defaulting to `ForwardPort` when no remap given, so downstream is uniform).
-- **Wiring** (`internal/forward`): `Config` gains `HostPort`; `ListenArgs` binds `TCP-LISTEN:<hostPort>` and the connect side reaches `127.0.0.1:<jailPort>` (the existing `Port` stays the jail/connect port). The start line prints `http://<bind>:<hostPort> -> <container>:<jailPort>`.
-- **No ADR**: this extends the existing verb shape within ADR-0014 (no new invariant, no new verb, no guardrail change). A one-line pointer in the README + the ADR-0014 consequences is enough.
-
-> Trimmed at tasking-time.
-
-## Testing Decisions
-
-- **Parse matrix** (pure, no podman): bare `3001` (host==jail), `8080:3001` (remap), bad host side (`x:3001`, `70000:3001`, `0:3001`), bad jail side (`8080:x`, `8080:99999`), extra colons (`1:2:3`), and that `--bind` still parses alongside.
-- **`ListenArgs` test**: for `8080:3001` the host listener binds `:8080` and the connect side targets `127.0.0.1:3001` (the remap is honoured on the right sides); for the bare form both are the same port.
-- **verify stays green**: the remap changes only the host bind port; no OUTPUT rule, TCP-only, one jail port unchanged, so the forced-egress leak-test is unaffected.
-
-> Also trimmed at tasking-time.
+> Tasked 2026-07-04 (human-driven path). The launch-time Implementation Decisions and Testing Decisions have been relocated into the single emitted task (`forward-port-remap` in `work/tasks/ready/`), which owns what-to-build and how-to-test. No ADR is warranted (this extends the existing verb within ADR-0014: no new invariant, no new verb, no guardrail change; a README + ADR-0014 pointer suffices). The durable framing below (Problem / Solution / User Stories / Out of Scope) remains.
 
 ## Out of Scope
 
