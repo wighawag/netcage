@@ -71,6 +71,8 @@ func run(args []string) int {
 		return runSetupDefault(ctx, cmd)
 	case cmd.Name == "start":
 		return runStart(ctx, cmd)
+	case cmd.Name == "forward":
+		return runForward(ctx, cmd)
 	case cmd.IsManagement():
 		return runManage(ctx, cmd)
 	default:
@@ -217,6 +219,19 @@ func runStart(ctx context.Context, cmd *cli.Command) int {
 		return 1
 	}
 	return res.ToolExit
+}
+
+// runForward is the not-yet-wired dispatch for the `netcage forward <container>
+// <port>` host-access verb (ADR-0014). The CLI PARSE layer is complete and
+// validated (loopback-by-default bind, the guardrailed 0.0.0.0 opt-in, no
+// --proxy, fail-closed on the unknown), but the forward MECHANISM (a host-side
+// socat forwarding into the netcage-managed container's netns) is a SEPARATE
+// task. Until that lands, recognising the verb here and failing loudly with a
+// clear pointer is correct: it proves the parse surface reaches dispatch without
+// pretending the forward works.
+func runForward(_ context.Context, cmd *cli.Command) int {
+	fmt.Fprintf(os.Stderr, "netcage: forward: not yet wired (parsed %s:%d -> %s; the forward mechanism is a separate task)\n", cmd.ForwardBind, cmd.ForwardPort, cmd.ForwardContainer)
+	return 1
 }
 
 // runVerify runs the leak-test against the configured proxy and exits per the
@@ -434,6 +449,7 @@ const usage = `usage:
   netcage verify [--proxy socks5h://[user:pass@]host:port]
   netcage detect-proxy [--json]
   netcage setup-default
+  netcage forward [--bind 127.0.0.1|0.0.0.0] <container> <port>
   netcage ps
   netcage images
   netcage logs|inspect|stop|rm <container>
