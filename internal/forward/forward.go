@@ -1,6 +1,7 @@
 // Package forward implements netcage's host-access verb (ADR-0014): `netcage
-// forward <container> <port>` stands up ONE host `<bind>:<port>` -> in-jail
-// `<port>` INBOUND forward on demand, holds it for the verb's lifetime, and tears
+// forward <container> [hostPort:]jailPort` stands up ONE host `<bind>:<hostPort>`
+// -> in-jail `<jailPort>` INBOUND forward on demand (the bare single-port form
+// maps host==jail), holds it for the verb's lifetime, and tears
 // it down when the verb ends. It is the netcage analogue of `kubectl
 // port-forward` / `ssh -L`: an explicit, out-of-band, auditable action, NOT a
 // property of the run.
@@ -49,14 +50,23 @@ import (
 )
 
 // Config is a resolved forward: the user-named container to forward into, the
-// single TCP port to expose, and the resolved host bind address (127.0.0.1 by
+// in-jail JAIL/connect port and the HOST bind port (which may DIFFER: the
+// `[hostPort:]jailPort` remap), and the resolved host bind address (127.0.0.1 by
 // default, or the guardrailed 0.0.0.0). SidecarContainer is the resolved
 // run-attributable SIDECAR container name the connect side execs into (filled in
 // by Run after the label guard); ListenArgs consumes it. Container is what the
 // user typed (used for the guard + messages).
+//
+// Port is the in-jail server port the connect side reaches (127.0.0.1:<Port> in
+// the shared netns); HostPort is the port the host listener binds. For the bare
+// single-port form they are equal (host port defaults to the jail port at parse,
+// the zero-remap special case); for the `8080:3001` remap HostPort=8080 and
+// Port=3001. Only the HOST bind port is independently choosable; the in-jail
+// connect side is always 127.0.0.1:<Port> (the security surface is unchanged).
 type Config struct {
 	Container string // the user-supplied container name (guarded by label)
-	Port      int    // the single TCP port to expose (validated 1..65535 at parse)
+	Port      int    // the in-jail JAIL/connect port (validated 1..65535 at parse)
+	HostPort  int    // the HOST bind port (validated 1..65535; equals Port for the bare form)
 	Bind      string // resolved host bind: 127.0.0.1 (default) or 0.0.0.0
 
 	// SidecarContainer is the resolved netcage-managed SIDECAR container name the
@@ -90,11 +100,14 @@ const loopbackBind = "127.0.0.1"
 const allInterfacesBind = "0.0.0.0"
 
 // ListenArgs builds the HOST-side socat listener argv the forward stands up (the
-// spike's Shape B). The listener binds the HOST's <bind>:<port> (TCP) and its
+// spike's Shape B). The listener binds the HOST's <bind>:<hostPort> (TCP) and its
 // EXEC connect side reaches the in-jail server via `podman --root <graphroot>
-// exec -i <tool> <connector> 127.0.0.1 <port>`, so the forward is a pure
+// exec -i <sidecar> <connector> 127.0.0.1 <jailPort>`, so the forward is a pure
 // userspace host relay that adds NO firewall rule (the egress-untouched
-// invariant) and is TCP-only (ADR-0003).
+// invariant) and is TCP-only (ADR-0003). The host bind port and the in-jail
+// connect port may DIFFER (the `[hostPort:]jailPort` remap): the listener binds
+// HostPort while the connect side always targets the in-jail Port. For the bare
+// single-port form the two are equal, so it is byte-identical to before.
 //
 // The connector is the plain shape `podman --root <graphroot> exec -i <SIDECAR>
 // nc 127.0.0.1 <port>`. Two load-bearing choices:
@@ -120,13 +133,20 @@ func ListenArgs(cfg Config) []string {
 	if bind == "" {
 		bind = loopbackBind
 	}
-	port := strconv.Itoa(cfg.Port)
+	hostPort := cfg.HostPort
+	if hostPort == 0 {
+		// Defensive default: an unset HostPort (a caller that only set Port) binds the
+		// jail port, preserving the bare single-port behaviour (host == jail).
+		hostPort = cfg.Port
+	}
+	jailPort := strconv.Itoa(cfg.Port)
 	// The connect command runs in the SIDECAR, which shares the tool's netns, so
-	// 127.0.0.1:<port> is the in-jail server. Plain `nc`, no shell wrapper, so
+	// 127.0.0.1:<jailPort> is the in-jail server. Plain `nc`, no shell wrapper, so
 	// socat's no-shell/no-quote EXEC parsing execvp's clean tokens.
 	connect := fmt.Sprintf("podman --root %s exec -i %s nc 127.0.0.1 %s",
-		jail.GraphRoot(), cfg.SidecarContainer, port)
-	listen := fmt.Sprintf("TCP-LISTEN:%s,bind=%s,fork,reuseaddr", port, bind)
+		jail.GraphRoot(), cfg.SidecarContainer, jailPort)
+	// The HOST listener binds the HOST port (which may differ from the jail port).
+	listen := fmt.Sprintf("TCP-LISTEN:%d,bind=%s,fork,reuseaddr", hostPort, bind)
 	return []string{"socat", listen, "EXEC:" + connect}
 }
 
@@ -175,17 +195,25 @@ func Run(ctx context.Context, r jail.Runner, cfg Config, out IO) error {
 	if bind == "" {
 		bind = loopbackBind
 	}
+	hostPort := cfg.HostPort
+	if hostPort == 0 {
+		hostPort = cfg.Port
+	}
 	if bind == allInterfacesBind {
 		// The guardrailed anonymity opt-in (ADR-0013 / ADR-0014): name exactly what
 		// this exposes, BEFORE the forward is stood up, so a LAN exposure of the
-		// untrusted tool's server is never an accident.
+		// untrusted tool's server is never an accident. Name the HOST port that is
+		// actually bound off-box (the remap may differ from the in-jail port).
 		fmt.Fprintf(writerOrDiscard(out.Stderr),
-			"WARNING: exposing %s:%d on ALL interfaces (0.0.0.0); any host on your LAN can reach the jailed tool's server. Ctrl-C to stop.\n",
-			cfg.Container, cfg.Port)
+			"WARNING: exposing %s:%d on ALL interfaces (0.0.0.0:%d); any host on your LAN can reach the jailed tool's server. Ctrl-C to stop.\n",
+			cfg.Container, cfg.Port, hostPort)
 	}
+	// Name BOTH ports honestly: the host bind port -> the in-jail port, so the
+	// operator sees the mapping they actually got (and does not assume they are
+	// equal when a remap was given).
 	fmt.Fprintf(writerOrDiscard(out.Stdout),
 		"forwarding http://%s:%d -> %s:%d (Ctrl-C to stop)\n",
-		bind, cfg.Port, cfg.Container, cfg.Port)
+		bind, hostPort, cfg.Container, cfg.Port)
 
 	// The relay is a plain host userspace process: it blocks here for the verb's
 	// lifetime. ctx cancellation (Ctrl-C / SIGTERM, wired in main) kills socat, and

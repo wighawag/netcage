@@ -167,17 +167,26 @@ netcage forward netcage-run-<id>-tool 3001
 # -> forwarding http://127.0.0.1:3001 -> netcage-run-<id>-tool:3001 (Ctrl-C to stop)
 ```
 
-`forward` stands up ONE host `<bind>:<port>` -> in-jail `<port>` forward for as long as the verb runs, then tears it down on Ctrl-C (nothing revives it, a reboot ends it). Guardrails (see [ADR-0014](docs/adr/0014-host-access-to-in-jail-server-is-a-forward-verb-not-a-publish-flag.md)): **loopback by default** (the bare verb binds `127.0.0.1`, so nothing off-box can reach the server); **TCP only** and **exactly the one named port** (UDP stays hard-dropped, ADR-0003); **netcage-managed containers only** (label-scoped, ADR-0009, a non-netcage or stopped jail is refused loudly); and it **never touches the egress firewall** (no OUTPUT rule, so forced egress and fail-closed are exactly as before, the reply just rides the established inbound socket).
+The port positional is `[hostPort:]jailPort` (the familiar `docker -p` / `kubectl port-forward` order), so you can expose the in-jail server on a **different** host port when `:3001` is already taken or you just want `:8080`:
+
+```sh
+netcage forward netcage-run-<id>-tool 8080:3001
+# -> forwarding http://127.0.0.1:8080 -> netcage-run-<id>-tool:3001 (Ctrl-C to stop)
+```
+
+The bare single-port form (`... 3001`) is the zero-remap special case (host port == jail port), so it is unchanged. Both sides are validated `1-65535`; a bad host side, bad jail side, or extra colons (`1:2:3`) is a loud usage error. Only the **host** bind port is remappable: the in-jail connect side is always `127.0.0.1:<jailPort>` in the shared netns.
+
+`forward` stands up ONE host `<bind>:<hostPort>` -> in-jail `<jailPort>` forward for as long as the verb runs, then tears it down on Ctrl-C (nothing revives it, a reboot ends it). Guardrails (see [ADR-0014](docs/adr/0014-host-access-to-in-jail-server-is-a-forward-verb-not-a-publish-flag.md)): **loopback by default** (the bare verb binds `127.0.0.1`, so nothing off-box can reach the server); **TCP only** and **exactly the one named port** (UDP stays hard-dropped, ADR-0003); **netcage-managed containers only** (label-scoped, ADR-0009, a non-netcage or stopped jail is refused loudly); and it **never touches the egress firewall** (no OUTPUT rule, so forced egress and fail-closed are exactly as before, the reply just rides the established inbound socket).
 
 For LAN access (e.g. viewing the preview from a phone on the same network) `--bind 0.0.0.0` binds all interfaces, but it is a **separate, louder opt-in**: it prints a **warning** naming what it exposes (the container, the port, and that any LAN host can reach the jailed tool's server) before forwarding. No bind value other than `127.0.0.1` and `0.0.0.0` is accepted.
 
 ```sh
-netcage forward --bind 0.0.0.0 netcage-run-<id>-tool 3001
-# -> WARNING: exposing netcage-run-<id>-tool:3001 on ALL interfaces (0.0.0.0); any
+netcage forward --bind 0.0.0.0 netcage-run-<id>-tool 8080:3001
+# -> WARNING: exposing netcage-run-<id>-tool:3001 on ALL interfaces (0.0.0.0:8080); any
 #    host on your LAN can reach the jailed tool's server. Ctrl-C to stop.
 ```
 
-**Nothing about host access persists.** After a reboot, re-establish it explicitly: `netcage start <container>` (revive the jail), relaunch the server if it was a tool-run process, then `netcage forward <container> <port>` again.
+**Nothing about host access persists.** After a reboot, re-establish it explicitly: `netcage start <container>` (revive the jail), relaunch the server if it was a tool-run process, then `netcage forward <container> [hostPort:]jailPort` again.
 
 ## ports: list a jail's open TCP listeners
 

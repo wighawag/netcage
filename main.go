@@ -248,8 +248,9 @@ func runStart(ctx context.Context, cmd *cli.Command) int {
 	return res.ToolExit
 }
 
-// runForward stands up the `netcage forward <container> <port>` host-access verb
-// (ADR-0014): a label-scoped, loopback-by-default, single-port, lifetime-bounded
+// runForward stands up the `netcage forward <container> [hostPort:]jailPort`
+// host-access verb (ADR-0014): a label-scoped, loopback-by-default, single-port
+// (with an optional host-port remap), lifetime-bounded
 // host->jail forward, with a warned `--bind 0.0.0.0` LAN opt-in, that NEVER
 // touches the egress firewall. It resolves the named container to a
 // netcage-managed tool (refusing a non-netcage or stopped jail loudly), warns
@@ -264,6 +265,7 @@ func runForward(ctx context.Context, cmd *cli.Command) int {
 	err := forward.Run(ctx, jail.ExecRunner{}, forward.Config{
 		Container: cmd.ForwardContainer,
 		Port:      cmd.ForwardPort,
+		HostPort:  cmd.ForwardHostPort,
 		Bind:      cmd.ForwardBind,
 	}, forward.IO{Stdout: os.Stdout, Stderr: os.Stderr})
 	if err != nil {
