@@ -4,8 +4,9 @@ slug: netcage-image-store-write-verbs
 ---
 
 > Launch snapshot - records intent at creation, NOT maintained. Current truth:
-> `docs/adr/` (decisions) + the code; remaining work: `work/tasks/`. Settles to
-> Problem / Solution / User Stories / Out of Scope once tasked.
+> `docs/adr/` (decisions) + the code; remaining work: `work/tasks/`. TASKED: the
+> implementation detail lives in `work/tasks/image-store-write-verbs.md`; this prd
+> is trimmed to its durable framing.
 
 ## Problem Statement
 
