@@ -775,3 +775,76 @@ func TestParse_StartRefusesCreateTimeFlags(t *testing.T) {
 		}
 	}
 }
+
+// TestParse_DetectProxyCarriesNoProxy asserts `detect-proxy` is a NETCAGE-ONLY
+// UTILITY verb that is looking FOR a proxy, so it needs NO --proxy set and does
+// NOT fall through to the flag>env>config resolution/refuse (unlike run/verify).
+// It parses with no proxy in the environment and no --proxy flag, and carries an
+// empty ProxySource (it is not a jail/egress verb).
+func TestParse_DetectProxyCarriesNoProxy(t *testing.T) {
+	cmd, err := cli.ParseWithEnv([]string{"detect-proxy"}, noEnv)
+	if err != nil {
+		t.Fatalf("detect-proxy should parse with no proxy at all: %v", err)
+	}
+	if cmd.Name != "detect-proxy" {
+		t.Fatalf("Name = %q, want detect-proxy", cmd.Name)
+	}
+	if cmd.Proxy.Host != "" || cmd.ProxySource != "" {
+		t.Fatalf("detect-proxy must carry no proxy: got Proxy=%+v source=%q", cmd.Proxy, cmd.ProxySource)
+	}
+	if cmd.JSON {
+		t.Fatal("detect-proxy without --json should have JSON=false")
+	}
+}
+
+// TestParse_DetectProxyJSONFlag asserts the `--json` reuse-contract flag is
+// parsed (both bare and any equals form is not needed; --json is boolean).
+func TestParse_DetectProxyJSONFlag(t *testing.T) {
+	cmd, err := cli.ParseWithEnv([]string{"detect-proxy", "--json"}, noEnv)
+	if err != nil {
+		t.Fatalf("detect-proxy --json: %v", err)
+	}
+	if !cmd.JSON {
+		t.Fatal("--json should set JSON=true")
+	}
+}
+
+// TestParse_DetectProxyRejectsProxyFlag asserts detect-proxy carries NO --proxy:
+// it is looking for a proxy, not egressing, so a --proxy is a usage error (not a
+// silently-ignored flag), keeping the verb's "no proxy, not preflighted" contract
+// unambiguous.
+func TestParse_DetectProxyRejectsProxyFlag(t *testing.T) {
+	if _, err := cli.ParseWithEnv([]string{"detect-proxy", "--proxy", "socks5h://127.0.0.1:9050"}, noEnv); err == nil {
+		t.Fatal("detect-proxy must reject --proxy (it is looking FOR a proxy, not egressing)")
+	}
+}
+
+// TestParse_DetectProxyRejectsPositionals asserts detect-proxy takes no
+// positional arguments (a typo should not be silently swallowed).
+func TestParse_DetectProxyRejectsPositionals(t *testing.T) {
+	if _, err := cli.ParseWithEnv([]string{"detect-proxy", "9050"}, noEnv); err == nil {
+		t.Fatal("detect-proxy must reject positional arguments")
+	}
+}
+
+// TestParse_DetectProxyRejectsUnknownFlag asserts detect-proxy fails closed on an
+// unknown flag, like the rest of the surface.
+func TestParse_DetectProxyRejectsUnknownFlag(t *testing.T) {
+	if _, err := cli.ParseWithEnv([]string{"detect-proxy", "--bogus"}, noEnv); err == nil {
+		t.Fatal("detect-proxy must reject an unknown flag (fail-closed on the unknown)")
+	}
+}
+
+// TestPreflight_DetectProxySkipsProxyPreflight asserts detect-proxy is NOT run
+// through the proxy preflight (it carries no proxy): Preflight is a no-op for it,
+// exactly like the pass-through management verbs. A proxy-reachability preflight
+// on a verb that has no proxy would be nonsensical.
+func TestPreflight_DetectProxySkipsProxyPreflight(t *testing.T) {
+	cmd, err := cli.ParseWithEnv([]string{"detect-proxy"}, noEnv)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := cmd.Preflight(); err != nil {
+		t.Fatalf("detect-proxy Preflight should be a no-op (no proxy to check), got: %v", err)
+	}
+}

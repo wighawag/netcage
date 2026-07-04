@@ -10,15 +10,19 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"golang.org/x/term"
 
 	"github.com/wighawag/netcage/internal/cli"
+	"github.com/wighawag/netcage/internal/detectproxy"
 	"github.com/wighawag/netcage/internal/jail"
 	"github.com/wighawag/netcage/internal/manage"
 	"github.com/wighawag/netcage/internal/verify"
@@ -59,6 +63,8 @@ func run(args []string) int {
 	switch {
 	case cmd.Name == "verify":
 		return runVerify(ctx, cmd)
+	case cmd.Name == "detect-proxy":
+		return runDetectProxy(ctx, cmd)
 	case cmd.Name == "start":
 		return runStart(ctx, cmd)
 	case cmd.IsManagement():
@@ -221,10 +227,93 @@ func runVerify(ctx context.Context, cmd *cli.Command) int {
 	return rep.ExitCode()
 }
 
+// runDetectProxy runs the reusable, tool-agnostic proxy DETECTION primitive: it
+// probes the common local SOCKS ports (9050/9150/1080), CONFIRMS each open port
+// really speaks SOCKS5 via an RFC1928 handshake, attaches WEAK, HEDGED,
+// provider-AGNOSTIC process hints, and (best-effort) shows the exit IP of the
+// first confirmed candidate as EVIDENCE the egress is not the host IP (reusing
+// verify's exit-IP machinery). It presents EVIDENCE ONLY and NEVER labels the
+// exit provider. `--json` emits the versioned, provider-field-free reuse contract
+// on stdout instead of the human findings.
+//
+// It carries no proxy and is not preflighted (cli.IsProxyless). The exit-IP step
+// needs podman + network and is BEST-EFFORT: any failure OMITS the evidence
+// (never a false one), so detect-proxy still works with no podman / offline. It
+// exits 0 whenever the probe ran (finding no proxy is a valid, reported result,
+// not an error).
+func runDetectProxy(ctx context.Context, cmd *cli.Command) int {
+	hints := detectproxy.PortHints(runningProcessNames())
+	rep := detectproxy.Probe(detectproxy.DialProber{Hints: hints})
+
+	// Optional exit-IP EVIDENCE for the first confirmed SOCKS5 candidate: reuse
+	// verify's exit-IP machinery. Best-effort and non-fatal (no podman / offline /
+	// unreachable => omit the evidence, never a false one, never a provider label).
+	if port, ok := firstConfirmedPort(rep); ok {
+		pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		proxy := cli.ProxyConfig{Host: "127.0.0.1", Port: fmt.Sprintf("%d", port)}
+		if ip, err := verify.ExitIPForProxy(pctx, verify.DefaultJailRunner, proxy); err == nil {
+			rep.ExitIP = ip
+		}
+		cancel()
+	}
+
+	if cmd.JSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(rep); err != nil {
+			fmt.Fprintf(os.Stderr, "netcage: detect-proxy: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	fmt.Print(rep.Human())
+	return 0
+}
+
+// firstConfirmedPort returns the port of the first candidate that CONFIRMED
+// SOCKS5, for the optional exit-IP evidence (a confirmed SOCKS5 speaker is the
+// only sensible target to probe an exit IP through).
+func firstConfirmedPort(rep detectproxy.Report) (int, bool) {
+	for _, c := range rep.Candidates {
+		if c.SOCKS5 {
+			return c.Port, true
+		}
+	}
+	return 0, false
+}
+
+// runningProcessNames returns the lower-cased basenames of the host's running
+// processes, best-effort, for the WEAK, HEDGED process hints (e.g. a `tor`
+// process -> "likely Tor"). It reads /proc (Linux) and returns an empty slice on
+// any error, so a missing/unreadable /proc simply yields NO hints (never a wrong
+// one). This is the impure shell around detectproxy.PortHints.
+func runningProcessNames() []string {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if _, err := strconv.Atoi(e.Name()); err != nil {
+			continue // not a PID dir
+		}
+		comm, err := os.ReadFile("/proc/" + e.Name() + "/comm")
+		if err != nil {
+			continue
+		}
+		names = append(names, strings.TrimSpace(string(comm)))
+	}
+	return names
+}
+
 const usage = `usage:
   netcage run    [flags] [<image>] [<cmd> <args...>]
   netcage start  [--proxy ...] [--allow-direct ...] [-it] [--rm] <container>
   netcage verify [--proxy socks5h://[user:pass@]host:port]
+  netcage detect-proxy [--json]
   netcage ps
   netcage images
   netcage logs|inspect|stop|rm <container>
@@ -254,6 +343,15 @@ named reusable jailed container is a durable environment. It CARRIES a --proxy
 (and any --allow-direct) and RECONCILES it against the config the container was
 created with: a DIFFERENT proxy/allowlist is REFUSED (remove it and run again, or
 start it with the same jail config) rather than silently reviving a stale jail.
+
+detect-proxy is a netcage-only utility verb: it PROBES the common local SOCKS
+ports (127.0.0.1:9050 Tor, :9150 Tor Browser, :1080 generic), CONFIRMS each open
+port really speaks SOCKS5 via an RFC1928 handshake (an open port is not enough),
+and presents EVIDENCE-ONLY findings (open ports, handshake result, weak hedged
+process hints, and best-effort the exit IP as proof the egress is not the host
+IP). It NEVER names/labels the exit provider. It carries NO --proxy (it is
+looking FOR one, not egressing) and is not preflighted. --json emits a versioned,
+provider-field-free machine contract other tools reuse.
 
 run uses podman-native grammar: the FIRST positional is always the image and the
 tool command + args follow it (like ` + "`podman run [flags] IMAGE [CMD...]`" + `), so
