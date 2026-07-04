@@ -4,8 +4,9 @@ slug: netcage-config-and-proxy-setup
 ---
 
 > Launch snapshot - records intent at creation, NOT maintained. Current truth:
-> `docs/adr/` (decisions) + the code; remaining work: `work/tasks/`. Settles to
-> Problem / Solution / User Stories / Out of Scope once tasked.
+> `docs/adr/` (decisions) + the code; remaining work: `work/tasks/`. TASKED: the
+> implementation detail + the ADR now live in `work/tasks/` (the 4 tasks below)
+> and `docs/adr/`; this prd is trimmed to its durable framing.
 
 ## Problem Statement
 
@@ -46,13 +47,16 @@ The fail-closed invariant is preserved AND made honest without per-run chatter:
   it does NOT fetch/compare the exit IP. We keep it that way (no probe-container
   cost on the hot path).
 - **The "am I actually anonymized / which proxy am I on?" proof lives in `verify`.**
-  `netcage verify` resolves the proxy the SAME as a run (flag > env > config),
-  prints `proxy: ... (source: flag|env|config)`, and now ALSO asserts the exit IP
-  DIFFERS from the host IP. This absorbs the inspector role, so there is NO
-  separate `config show` verb. `verify` is the single "what am I on + is my exit
-  non-host" command; you run it when you want the proof (it pays the probe cost
-  only then). `setup-default` also runs this enhanced `verify` as evidence before
-  writing.
+  `netcage verify` resolves the proxy the SAME as a run (flag > env > config) and
+  ALREADY asserts the exit IP DIFFERS from the host IP (the shipped
+  `forced-egress-exit-ip-differs-from-host` leak check in `internal/verify`,
+  comparing `ExitIPProbe` to `hostExitIP`). The ONLY enhancement this prd adds is
+  that `verify` PRINTS the resolved proxy AND its source
+  (`proxy: ... (source: flag|env|config)`) in its report - so it also answers
+  "which proxy am I on?". Once config is a proxy source (task 1), `verify` gets
+  config resolution for FREE (it uses the CLI-resolved proxy). This absorbs the
+  inspector role, so there is NO separate `config show` verb. `setup-default` runs
+  `verify` as evidence before writing.
 
 **The fail-closed invariant is NOT weakened by any of this** (the load-bearing
 constraint): a config proxy is still socks5h-validated and still preflighted
@@ -105,14 +109,18 @@ change, never the guarantee.
   Consistent with the proxy precedence (a flag, when given, IS the answer). anon-pi
   is unaffected (it always passes explicit `--allow-direct`).
 
-### 2. `netcage verify` (enhanced - the single "what am I on + is my exit non-host" command)
+### 2. `netcage verify` (enhanced - report the resolved proxy + its source)
 
 - Resolves the proxy the SAME as a run: `flag > env > config > refuse`, so `netcage
-  verify` with no `--proxy` proves the config default.
-- Prints the resolved proxy AND its source: `proxy: socks5h://... (source: config)`.
-- ADD an assertion to the existing leak-test: the observed exit IP DIFFERS from the
-  host IP (verify already fetches the exit IP via `ExitIPProbe`; it just does not
-  yet compare it to the host). A same-as-host exit is a LEAK -> fail.
+  verify` with no `--proxy` proves the config default. This falls out of task 1
+  wiring config into CLI proxy resolution (verify uses the CLI-resolved proxy), so
+  it is essentially free.
+- Prints the resolved proxy AND its source in the report:
+  `proxy: socks5h://... (source: flag|env|config)`. This is the ONLY new behaviour.
+- **The exit-IP-vs-host proof ALREADY EXISTS** (the shipped
+  `forced-egress-exit-ip-differs-from-host` leak check compares `ExitIPProbe` to
+  `hostExitIP`; a same-as-host exit already fails as a leak). Do NOT re-add it -
+  task 2 is JUST the resolved-proxy + source line.
 - This absorbs the config-inspector role: there is NO separate `config show` verb.
 
 ### 3. `netcage detect-proxy` (the reusable detection primitive)
@@ -219,7 +227,10 @@ change, never the guarantee.
 
 ## Resolved decisions (grilled 2026-07-04)
 
-All open questions resolved; ready to task.
+All open questions resolved. The implementation detail now lives in the tasks;
+the durable rationale (fail-closed source precedence + credential-free persistence
++ the podman-non-shadowing naming invariant) is relocated to the ADR that task 1
+authors (`docs/adr/`). Kept here as the durable summary:
 
 - **Proxy precedence:** `--proxy` flag > `NETCAGE_PROXY` env > config > refuse.
 - **Config `proxy` shape:** full URL string (round-trips `ParseProxy`).
@@ -227,39 +238,23 @@ All open questions resolved; ready to task.
   `user:pass@`; env/flag still accept it; file is `0600`.
 - **`--allow-direct` vs config list:** REPLACE (flag is the complete set; nothing
   implicitly carried).
-- **Inspector:** no `config show`; `verify` reports resolved proxy + source AND
-  asserts exit IP != host IP.
+- **Inspector:** no `config show`; `verify` reports resolved proxy + source. The
+  exit-IP-vs-host proof ALREADY ships in `verify` (unchanged).
 - **`detect-proxy --json`:** from day one; `schemaVersion`; NO provider field by
   construction.
 - **Naming:** `setup-default` + `detect-proxy` (both podman-collision-free; `init`
   rejected because `podman init` exists).
 
-## Task breakdown (a SEQUENCE, dependency-ordered; all edit `internal/cli`)
+## Tasks
 
-1. **`config-file-and-proxy-precedence`** (foundation; security-critical; blocks the
-   rest). New config module (`~/.config/netcage/config.json`, XDG, `0600`,
-   credential-free invariant); proxy resolution `flag > env > config > refuse` via
-   `ParseProxy`; `allowDirect` list with REPLACE semantics via `parseAllowDirect`.
-   **Authors the ADR (below).**
-2. **`verify-exit-ip-differs-and-source-report`** (blockedBy 1). Enhance `verify`:
-   assert exit IP != host IP; print resolved proxy + source.
-3. **`detect-proxy-verb-with-json`** (blockedBy 2; serialised for the shared
-   `internal/cli` dispatch). Probe 9050/9150/1080 + RFC1928 handshake; `--json`
-   contract (schemaVersion, no provider field); evidence-only honesty.
-4. **`setup-default-onboarding`** (blockedBy 1,2,3). Interactive writer composing
-   detect-proxy + verify + config write; refuses credentialed proxies; re-runnable.
+Decomposed into 4 dependency-ordered tasks in `work/tasks/` (all edit `internal/cli`,
+serialised to keep rebases trivial):
 
-## ADR (ONE, authored in task 1)
-
-Title ~ "netcage config as a new proxy source: fail-closed precedence, credential-
-free persistence, and the podman-non-shadowing naming invariant". Records the two
-durable, hard-to-reverse decisions:
-
-- **Fail-closed source precedence:** config is a NEW proxy source but NEVER a
-  bypass (still socks5h-validated + preflighted every run); the persisted default
-  is credential-free by construction. A future reader must not silently erode this.
-- **Naming invariant:** a netcage-ONLY verb must never shadow a podman verb (with
-  `init` as the cautionary example).
-
-The lighter choices (URL-string storage, REPLACE, `--json` schema shape) are
-done-record notes, not ADR-worthy.
+1. `config-file-and-proxy-precedence` - the config loader + precedence + REPLACE
+   semantics + the ADR. (covers 1, 6)
+2. `verify-report-resolved-proxy-and-source` - the verify source-report line only.
+   (covers 4)
+3. `detect-proxy-verb-with-json` - the probe + SOCKS5 handshake + `--json` contract.
+   (covers 3, 5)
+4. `setup-default-onboarding` - the interactive, credential-free config writer.
+   (covers 1, 2, 7)
