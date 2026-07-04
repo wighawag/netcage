@@ -40,7 +40,6 @@ package forward
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -154,17 +153,17 @@ func ListenArgs(cfg Config) []string {
 //     rule was added and no persistent state written (the spike's "kill socat ->
 //     gone"), so teardown is implicit.
 func Run(ctx context.Context, r jail.Runner, cfg Config, out IO) error {
-	runID, err := resolveManagedTool(ctx, r, cfg.Container)
+	runID, err := jail.ResolveManagedRun(ctx, r, cfg.Container)
 	if err != nil {
 		return err
 	}
-	toolName := toolNameFor(runID)
+	toolName := jail.ToolNameFor(runID)
 	if err := requireToolRunning(ctx, r, toolName); err != nil {
 		return err
 	}
 	// The connector execs into the SIDECAR (shares the tool's netns, ships nc as the
 	// pinned image), not the tool (arbitrary image, may lack nc).
-	cfg.SidecarContainer = sidecarNameFor(runID)
+	cfg.SidecarContainer = jail.SidecarNameFor(runID)
 	// FAIL-FAST before binding the host socket: if the sidecar's `nc` is not
 	// runnable, every socat `fork` child would exit 127 and the listener would spew
 	// a retry storm while appearing to "work". Probe once and fail loud instead.
@@ -218,38 +217,6 @@ func writerOrDiscard(w io.Writer) io.Writer {
 	return w
 }
 
-// ErrNotManaged is returned when a named container is not a netcage-managed one
-// (missing the netcage.managed label), so the forward REFUSES to touch it. It
-// mirrors manage.ErrNotManaged / jail's start resolver: a forward may only reach
-// a netcage-owned netns.
-var ErrNotManaged = errors.New("not a netcage-managed container")
-
-// resolveManagedTool resolves a user-supplied container NAME to the run id of a
-// netcage-MANAGED container, REFUSING a non-netcage or unknown container before
-// any forward work (label-scoping, ADR-0009). It reads the create-time labels
-// (netcage.managed / role / run-id) via one inspect through the Runner seam,
-// mirroring manage.guardManaged / jail.resolveManagedTool. Either the tool or the
-// sidecar name resolves to the same run (both carry the run-id label); the
-// forward always reaches the TOOL's netns, so it resolves to the run id and
-// rebuilds the tool name.
-func resolveManagedTool(ctx context.Context, r jail.Runner, name string) (string, error) {
-	format := fmt.Sprintf("{{ index .Config.Labels %q }}\t{{ index .Config.Labels %q }}\t{{ index .Config.Labels %q }}",
-		jail.LabelManaged, jail.LabelRole, jail.LabelRunID)
-	out, _, err := r.Run(ctx, jail.RunSpec{Name: "podman", Args: []string{"inspect", "--format", format, name}})
-	if err != nil {
-		return "", fmt.Errorf("%q is not a netcage-managed container (inspect failed): %w", name, err)
-	}
-	fields := strings.SplitN(strings.TrimSpace(out), "\t", 3)
-	if len(fields) < 3 || fields[0] != "true" {
-		return "", fmt.Errorf("%q is %w (missing the %s label); refusing to forward into it", name, ErrNotManaged, jail.LabelManaged)
-	}
-	runID := fields[2]
-	if runID == "" {
-		return "", fmt.Errorf("%q is netcage-managed but carries no run id label (%s); cannot resolve its tool container", name, jail.LabelRunID)
-	}
-	return runID, nil
-}
-
 // requireToolRunning REFUSES the forward unless the run's TOOL container is
 // running: a forward reaches the in-jail server, so a stopped jail cannot serve
 // it. Failing loud (pointing at `netcage start`) beats a forward that appears to
@@ -265,6 +232,12 @@ func requireToolRunning(ctx context.Context, r jail.Runner, toolName string) err
 	}
 	return nil
 }
+
+// ErrNotManaged is the forward package's re-export of the shared jail refusal, so
+// existing callers/tests that referenced forward.ErrNotManaged keep working while
+// the resolution itself converges on jail.ResolveManagedRun (one home, not a
+// forked copy). A forward may only reach a netcage-owned netns.
+var ErrNotManaged = jail.ErrNotManaged
 
 // requireConnector FAIL-FASTs the forward when the sidecar's `nc` connector is
 // not runnable, BEFORE the host socket is bound. Without this, socat's per-
@@ -284,16 +257,4 @@ func requireConnector(ctx context.Context, r jail.Runner, sidecarName string) er
 		return fmt.Errorf("cannot forward: the sidecar %q has no runnable `nc` connector (%w); the pinned redirector image should ship it - this indicates a changed/broken sidecar image", sidecarName, err)
 	}
 	return nil
-}
-
-// toolNameFor / sidecarNameFor rebuild the run-attributable container names from a
-// run id, matching jail's naming convention (netcage-run-<id>-<role>). The
-// forward REQUIRES the tool running (it serves) but execs the CONNECTOR into the
-// sidecar (shares the netns, pinned image ships nc), so it needs both names.
-func toolNameFor(runID string) string {
-	return "netcage-run-" + runID + "-tool"
-}
-
-func sidecarNameFor(runID string) string {
-	return "netcage-run-" + runID + "-sidecar"
 }
