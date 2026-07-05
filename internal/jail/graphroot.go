@@ -1,41 +1,72 @@
 package jail
 
-import "os"
+import (
+	"os"
+	"strconv"
+)
 
-// defaultGraphRoot is netcage's username-free podman graphroot (podman's global
-// `--root`): the disk-backed, world-writable-sticky, USERNAME-FREE path under
+// graphRootBase is the fixed, username-free stem of netcage's podman graphroot
+// (podman's global `--root`): the disk-backed, world-writable-sticky path under
 // /var/tmp where image layers + containers live (Leak 2 of the host-identity
 // hardening prd; ADR-0013). Rootless podman's DEFAULT graphroot is
 // ~/.local/share/containers/storage, so the overlay lowerdir/upperdir SOURCE
 // paths in the container's /proc/self/mountinfo embed /home/<user>, leaking the
-// operator's account name. Pointing --root here makes those paths username-free.
+// operator's account name. Pointing --root under /var/tmp makes those paths
+// username-free.
 //
 // Why /var/tmp (ADR-0013 + the tested observation): it is world-writable-sticky
 // (drwxrwxrwt, so the user's subdir needs NO root and NO provisioning helper),
 // DISK-backed (survives reboots, so kept runs per ADR-0009 and the image cache
-// persist, unlike RAM-backed /tmp / $XDG_RUNTIME_DIR), and username-free. The
-// subpath is a fixed neutral name (no username, no uid) so mountinfo carries
-// neither. Storage semantics are EXACTLY today's home-folder store, only the
-// path changes: persistent, self-healing (podman re-inits + re-pulls on demand
-// if the dir is wiped), holding the image cache + kept containers.
-const defaultGraphRoot = "/var/tmp/netcage-storage"
+// persist, unlike RAM-backed /tmp / $XDG_RUNTIME_DIR), and username-free.
+// Storage semantics are EXACTLY today's home-folder store, only the path
+// changes: persistent, self-healing (podman re-inits + re-pulls on demand if
+// the dir is wiped), holding the image cache + kept containers.
+const graphRootBase = "/var/tmp/netcage-storage"
 
-// graphRootEnv lets a TEST isolate real storage under a scratch dir (the
-// shared-write isolation rule: an integration test that stands up real podman
-// MUST NOT touch the developer's ~/.local/share/containers/storage). It is NOT a
-// user-facing knob: production always resolves to defaultGraphRoot. It mirrors
-// NETCAGE_DNS_BIN, the existing test-only env seam in this package.
+// defaultGraphRoot is the UID-SCOPED default graphroot: graphRootBase with the
+// running user's numeric uid appended (`/var/tmp/netcage-storage-<uid>`).
+//
+// Why uid-scoped, not a single fixed path (ADR-0017): netcage never mkdir's the
+// store - podman creates it lazily on first use - so a single shared
+// /var/tmp/netcage-storage is created OWNED BY the first user to run netcage,
+// and a SECOND Unix user on the same host then collides (rootless podman's
+// per-user subuid-owned overlay tree cannot cohabit one path across two users;
+// /var/tmp's sticky bit protects only the top level). That broke "two Unix
+// accounts run netcage on one host" - the exact case anon-pi hits when it runs
+// netcage as a dedicated `anon` user to scrub the operator's login name from the
+// -v mount sources. Appending the uid gives each user a distinct, self-owned
+// store with zero config, fixing the collision.
+//
+// A numeric uid in the path is name-free enough for Leak 2 (ADR-0017): Leak 2 is
+// about the operator's login NAME, not a uid; the in-jail tool sees
+// /var/tmp/netcage-storage-1000, which carries a uid but not the account name.
+// This consciously RELAXES ADR-0013's "no username AND no uid" aspiration to "no
+// username; a numeric uid is allowed", because a uid keeps the default
+// self-healing (an opaque random subdir would force netcage to remember the
+// path) while making multi-user operation correct.
+func defaultGraphRoot() string {
+	return graphRootBase + "-" + strconv.Itoa(os.Getuid())
+}
+
+// graphRootEnv is a SUPPORTED, OPTIONAL override (ADR-0017): point netcage's
+// whole store at an explicit path (a specific disk, a tmpfs, a deployment
+// convention). When unset, netcage resolves the uid-scoped defaultGraphRoot,
+// which already handles the multi-user case, so this override is a convenience,
+// not a requirement. Tests ALSO use it to isolate real storage under a scratch
+// dir (the shared-write isolation rule: an integration test that stands up real
+// podman MUST NOT touch the developer's ~/.local/share/containers/storage) - the
+// same mechanism, aimed at a temp dir.
 const graphRootEnv = "NETCAGE_GRAPHROOT"
 
-// graphRoot resolves the podman graphroot path: the NETCAGE_GRAPHROOT test
-// override when set, else the fixed username-free defaultGraphRoot. Kept as one
-// pure resolver so every podman invocation shares ONE store (never a split), and
-// so a test can point it at a scratch dir without touching the real store.
+// graphRoot resolves the podman graphroot path: the NETCAGE_GRAPHROOT override
+// when set, else the uid-scoped defaultGraphRoot. Kept as one pure resolver so
+// every podman invocation shares ONE store (never a split), and so a caller (or
+// a test) can point it at an explicit path without touching the default store.
 func graphRoot() string {
 	if p := os.Getenv(graphRootEnv); p != "" {
 		return p
 	}
-	return defaultGraphRoot
+	return defaultGraphRoot()
 }
 
 // GraphRoot exports the resolved graphroot for the ONE caller that spawns podman

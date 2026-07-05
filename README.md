@@ -112,7 +112,7 @@ netcage's one **guarantee** is **network egress confinement**: every TCP and DNS
 **Hidden (in addition to the network guarantee):**
 
 - **Host machine name.** The tool container gets a synthesized localhost-only `/etc/hosts` and a fixed neutral `--hostname`, so a tool reading `/etc/hosts` or `hostname` does not learn your machine's name.
-- **Operator username.** Podman's storage graphroot is relocated to a username-free path (`/var/tmp/netcage-storage`), so the overlay source paths in the container's `/proc/self/mountinfo` no longer embed `/home/<you>`.
+- **Operator username.** Podman's storage graphroot is relocated to a username-free path under `/var/tmp` (`/var/tmp/netcage-storage-<uid>`, scoped by your numeric user id so multiple users on one host do not collide), so the overlay source paths in the container's `/proc/self/mountinfo` no longer embed `/home/<you>`. The path carries a numeric uid, not your login name.
 - **Host NIC name / MAC.** The in-netns interface is given a fixed name (`netcage0`) instead of being named after your host's default-route NIC (whose systemd `enx<MAC>` name re-exposes the NIC MAC).
 
 **NOT hidden (accepted residual):**
@@ -136,13 +136,13 @@ netcage run --proxy socks5h://127.0.0.1:9050 -it -v /srv/work/foo:/work   # sour
 
 ### Clearing netcage's storage
 
-netcage's relocated storage lives at **`/var/tmp/netcage-storage`** (the graphroot: image cache + kept containers). To clear it, use podman's own reset, which removes the store cleanly:
+netcage's relocated storage lives at **`/var/tmp/netcage-storage-<uid>`** (the graphroot: image cache + kept containers), where `<uid>` is your numeric user id, so different users on the same host keep separate, non-colliding stores. (Run `id -u` to see yours; if you set the `NETCAGE_GRAPHROOT` override, use that path instead.) To clear it, use podman's own reset, which removes the store cleanly:
 
 ```sh
-podman --root /var/tmp/netcage-storage system reset --force
+podman --root /var/tmp/netcage-storage-"$(id -u)" system reset --force
 ```
 
-**Do not `rm -rf` it.** The rootless overlay `diff/` tree is owned by id-mapped subuids, so a plain `rm -rf /var/tmp/netcage-storage` fails with permission errors. Clearing the store costs only a re-pull of images on the next run (podman self-heals a missing graphroot), but it also discards any kept containers, exactly as losing the home store would.
+**Do not `rm -rf` it.** The rootless overlay `diff/` tree is owned by id-mapped subuids, so a plain `rm -rf` fails with permission errors. Clearing the store costs only a re-pull of images on the next run (podman self-heals a missing graphroot), but it also discards any kept containers, exactly as losing the home store would.
 
 ## start: resume a kept jailed container
 

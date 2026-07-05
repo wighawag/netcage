@@ -127,7 +127,7 @@ func passThroughVerbArgs(verb string, args []string) []string {
 func refuseUserRoot(verb string, args []string) error {
 	for _, a := range args {
 		if a == "--root" || strings.HasPrefix(a, "--root=") {
-			return fmt.Errorf("netcage owns the image store location, so `netcage %s` refuses a user-supplied --root: it is injected automatically (the single %s store); honouring your --root would split the store and hide the result from `netcage run`", verb, "/var/tmp/netcage-storage")
+			return fmt.Errorf("netcage owns the image store location, so `netcage %s` refuses a user-supplied --root: it is injected automatically (the single netcage store, a uid-scoped path under /var/tmp or the NETCAGE_GRAPHROOT override; ADR-0017); honouring your --root would split the store and hide the result from `netcage run`", verb)
 		}
 	}
 	return nil

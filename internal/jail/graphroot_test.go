@@ -2,20 +2,24 @@ package jail
 
 import (
 	"context"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/wighawag/netcage/internal/cli"
 )
 
-// TestGraphRoot_UsernameFreeVarTmpDefault pins Leak 2's core property: the
-// resolved graphroot is a username-free path UNDER /var/tmp (so the overlay
-// lowerdir/upperdir SOURCE paths in the container's /proc/self/mountinfo no
-// longer embed /home/<user>). The default is a fixed neutral subpath; an env
-// override (NETCAGE_GRAPHROOT) exists ONLY so tests can isolate real storage
-// under a scratch dir (the shared-write isolation rule), never to carry a
-// username by default.
-func TestGraphRoot_UsernameFreeVarTmpDefault(t *testing.T) {
+// TestGraphRoot_UidScopedUsernameFreeVarTmpDefault pins the default's two
+// properties (ADR-0017): the resolved graphroot is a username-free path UNDER
+// /var/tmp (so the overlay lowerdir/upperdir SOURCE paths in the container's
+// /proc/self/mountinfo no longer embed /home/<user>, Leak 2), AND it is
+// UID-SCOPED (carries the running user's numeric uid), so two different Unix
+// users on one host get distinct, non-colliding stores. A numeric uid is
+// name-free (it is not the login NAME), which is what Leak 2 requires; the uid
+// is what fixes the multi-user collision. An env override (NETCAGE_GRAPHROOT)
+// bypasses this default entirely.
+func TestGraphRoot_UidScopedUsernameFreeVarTmpDefault(t *testing.T) {
 	t.Setenv("NETCAGE_GRAPHROOT", "") // force the default, ignoring any ambient override
 	got := graphRoot()
 	if !strings.HasPrefix(got, "/var/tmp/") {
@@ -24,9 +28,39 @@ func TestGraphRoot_UsernameFreeVarTmpDefault(t *testing.T) {
 	if strings.Contains(got, "/home/") {
 		t.Fatalf("graphroot %q must be username-free (no /home/<user> path); that is the whole point of Leak 2", got)
 	}
+	// UID-scoped: the path must end with the running user's numeric uid, so a
+	// second Unix user resolves a different store (fixes the multi-user collision).
+	uid := strconv.Itoa(os.Getuid())
+	if !strings.HasSuffix(got, "-"+uid) {
+		t.Fatalf("graphroot %q must be uid-scoped (end with -%s) so distinct users get distinct stores (ADR-0017)", got, uid)
+	}
 }
 
-func TestGraphRoot_EnvOverrideForTestIsolation(t *testing.T) {
+// TestDefaultGraphRoot_DistinctPerUid pins the collision fix directly: the
+// uid-scoped default is a pure function of the uid, so two different uids map to
+// two different paths (the property that lets a login user and a dedicated
+// account both run netcage on one host without colliding on the store).
+func TestDefaultGraphRoot_DistinctPerUid(t *testing.T) {
+	// defaultGraphRoot() reads os.Getuid() (no arg to inject), so assert the
+	// composition rule it implements: base + "-" + uid, and that two uids differ.
+	p1000 := graphRootBase + "-" + strconv.Itoa(1000)
+	p1001 := graphRootBase + "-" + strconv.Itoa(1001)
+	if p1000 == p1001 {
+		t.Fatalf("two uids must map to different graphroots; got %q for both", p1000)
+	}
+	// And the live resolver matches the rule for the current process's uid.
+	t.Setenv("NETCAGE_GRAPHROOT", "")
+	want := graphRootBase + "-" + strconv.Itoa(os.Getuid())
+	if got := defaultGraphRoot(); got != want {
+		t.Fatalf("defaultGraphRoot() = %q, want uid-scoped %q", got, want)
+	}
+}
+
+// TestGraphRoot_EnvOverrideHonoured pins the SUPPORTED optional override
+// (ADR-0017): NETCAGE_GRAPHROOT, when set, points the whole store at that path
+// verbatim, bypassing the uid-scoped default. (This same mechanism is what tests
+// use to isolate storage under a scratch dir.)
+func TestGraphRoot_EnvOverrideHonoured(t *testing.T) {
 	t.Setenv("NETCAGE_GRAPHROOT", "/tmp/scratch-store")
 	if got := graphRoot(); got != "/tmp/scratch-store" {
 		t.Fatalf("NETCAGE_GRAPHROOT override not honoured: got %q, want /tmp/scratch-store", got)
