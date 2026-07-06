@@ -10,7 +10,7 @@ netcage runs on a **Linux kernel** (see [Platform](#platform) for macOS/Windows,
 
 - **Rootless [Podman](https://podman.io/) 5.x** using the **pasta** rootless network backend (Podman 5's default on netavark). The host-loopback reachback and the forced-egress jail are built on it (ADR-0002). Podman is the ONLY runtime tool netcage invokes: the jail's firewall and DNS forwarder run inside the sidecar container via `podman exec` (ADR-0006), so the host needs no `nft`/`nsenter`.
 - **`/dev/net/tun`** available to the rootless user (the redirector sidecar is a TUN device).
-- A running **SOCKS5h proxy** to send egress through (local Tor, `ssh -D`, a remote SOCKS5 endpoint, ...). Only `socks5h://` is accepted; plain `socks5://` resolves DNS locally and is a leak, so it is rejected.
+- A running **SOCKS5h proxy** to send egress through (local Tor, `ssh -D`, a remote SOCKS5 endpoint, ...). Only `socks5h://` is accepted; plain `socks5://` resolves DNS locally and is a leak, so it is rejected. Supply it per-run with `--proxy`/`NETCAGE_PROXY`, or persist a default once with `netcage setup-default` (see [Configuring a default proxy](#configuring-a-default-proxy-setup-default)) so a bare `netcage run` needs no `--proxy`.
 
 The redirector sidecar and the default dev image are **pinned by digest** and pulled by Podman on first use; there is nothing extra to install or publish. First run pulls them (and caches them).
 
@@ -47,14 +47,19 @@ Download a prebuilt Linux archive (amd64 / arm64 / armv7 / armv6) from the [Rele
 ## Usage
 
 ```
-netcage run    [flags] [<image>] [<cmd> <args...>]
-netcage start  [--proxy ...] [--allow-direct ...] [-it] [--rm] <container>
-netcage verify [--proxy socks5h://[user:pass@]host:port]
+netcage run          [flags] [<image>] [<cmd> <args...>]
+netcage start        [--proxy ...] [--allow-direct ...] [-it] [--rm] <container>
+netcage verify       [--proxy socks5h://[user:pass@]host:port]
+netcage detect-proxy [--json]
+netcage setup-default
+netcage forward      [--bind 127.0.0.1|0.0.0.0] <container> [hostPort:]jailPort
+netcage ports        <container> [--json]
+netcage ps | images | inspect | logs | exec | stop | rm | commit | build | pull | load
 ```
 
 `run` uses podman-native grammar: the image is the first positional and the tool command + args follow it, like `podman run [flags] IMAGE [CMD...]`.
 
-The proxy is **required**: pass `--proxy socks5h://[user:pass@]host:port` or set `NETCAGE_PROXY` (the flag wins). If neither is set, the run refuses (fail-closed).
+The proxy is **required**, and it is resolved from three sources in this order: **`--proxy` flag > `NETCAGE_PROXY` env > config file** (`~/.config/netcage/config.json`, written by `netcage setup-default`). If none of the three yields a proxy, the run refuses (fail-closed). The config file is the lowest-priority default, so env/flag always win, and a config-sourced proxy is still validated (`socks5h://` only) and preflighted on every run exactly like a flag/env one. See [Configuring a default proxy](#configuring-a-default-proxy-setup-default) and [ADR-0012](docs/adr/0012-config-is-a-new-fail-closed-proxy-source-never-a-bypass.md).
 
 ### Examples
 
@@ -103,7 +108,39 @@ The allow-list is **curated and fail-closed**: a flag is allowed only if it cann
 netcage verify --proxy socks5h://127.0.0.1:9050
 ```
 
-It exits non-zero if any assertion fails, so CI can gate on it. Run it during development/CI, not per use.
+It resolves the proxy the same way `run` does (`--proxy` > `NETCAGE_PROXY` > config file), so a bare `netcage verify` tests your persisted default, and it prints which source supplied the proxy (`source: flag|env|config`). It exits non-zero if any assertion fails, so CI can gate on it. Run it during development/CI, not per use.
+
+## Configuring a default proxy: setup-default
+
+So netcage is a true drop-in `podman` replacement, you can persist a **default proxy** once and then run `netcage run <image>` with no `--proxy`. `netcage setup-default` is the interactive, re-runnable onboarding verb that writes it (it is the ONLY thing that writes the config file):
+
+```sh
+netcage setup-default
+```
+
+It **detects** a local SOCKS proxy (via `detect-proxy`), lets you **choose** a detected candidate or enter one, **verifies** it (shows the exit IP as evidence it differs from your host IP), **warns once** about the silent-default tradeoff (from then on a bare `run` egresses through the persisted proxy without you naming it), and **persists** the choice to `~/.config/netcage/config.json` (`0600`, XDG-aware). It is re-runnable and **confirms before overwriting** an existing config.
+
+The persisted default is **credential-free by construction**: `setup-default` **refuses** to write a proxy carrying embedded `user:pass@` credentials, so the file never accumulates secrets at rest (backups / dotfile repos / screen-shares stay safe). Keep an authed proxy in `NETCAGE_PROXY` / `--proxy` instead (transient). The config is a new proxy **source**, never a bypass: its `proxy` round-trips the same `socks5h://`-enforcing validator, each `allowDirect` entry round-trips the same RFC1918/link-local guardrail, and a config-sourced proxy is still preflighted fail-closed on every run. A missing config is a clean no-op (you still hit the fail-closed refusal); a present-but-broken one is a loud error. See [ADR-0012](docs/adr/0012-config-is-a-new-fail-closed-proxy-source-never-a-bypass.md).
+
+The file is small and hand-editable if you prefer:
+
+```json
+{
+  "proxy": "socks5h://127.0.0.1:9050",
+  "allowDirect": ["192.168.1.150:8080"]
+}
+```
+
+`allowDirect` is optional (the [split tunnel](#split-tunnel-reach-one-local-service-directly) list). A CLI `--allow-direct` **replaces** the config list for that run (it never rides along additively). A hand-edited credentialed proxy still loads (the credential-free rule constrains what netcage *writes*, not what it reads), matching how env/flag already carry credentials.
+
+### detect-proxy: find a local SOCKS proxy
+
+`detect-proxy` is the detection primitive `setup-default` drives, also usable standalone. It **probes the common local SOCKS ports** (`127.0.0.1:9050` Tor, `:9150` Tor Browser, `:1080` generic), **confirms** each open port really speaks SOCKS5 via an RFC1928 handshake (an open port is not enough), and prints **evidence-only** findings (open ports, handshake result, weak hedged process hints, and best-effort the exit IP as proof the egress is not your host IP). It never names or labels the exit provider, carries no `--proxy` (it is looking *for* one), and does no egress of its own.
+
+```sh
+netcage detect-proxy          # human-readable evidence findings
+netcage detect-proxy --json   # a versioned, provider-field-free machine contract
+```
 
 ## What netcage hides and what it does NOT
 
@@ -213,7 +250,7 @@ netcage ports netcage-run-<id>-tool --json
 
 The field names `address` (string), `port` (int), and `loopbackOnly` (bool) are the contract; the array is sorted stably (by port, then address) and an empty result is `[]`. A caller (e.g. an agent) uses this to show a pick-list and then `netcage forward` the chosen port, without the user knowing the port in advance.
 
-## Manage netcage containers: ps / logs / inspect / exec / stop / rm / images
+## Manage netcage containers: ps / logs / inspect / exec / stop / rm / commit / images
 
 The pass-through management verbs let you inspect and manage the containers a kept `netcage run` leaves behind with familiar podman vocabulary, **scoped to netcage's own containers** via the `netcage.managed` label (ADR-0009) so you never see (or act on) unrelated podman containers:
 
@@ -224,10 +261,24 @@ netcage inspect <container>   # full podman inspect JSON
 netcage exec -it <container> <cmd>   # run a command inside the existing jailed netns
 netcage stop    <container>   # stop a jailed container (its baked firewall re-applies on restart)
 netcage rm      <container>   # remove the whole tool+sidecar pair (no orphaned sidecar)
+netcage commit  <container> <image>   # snapshot a jailed container's filesystem to a new image
 netcage images                # the images netcage uses
 ```
 
 These are inspection/lifecycle **only**: none stands up or tears down a jail, none egresses (so none needs a `--proxy`), and `exec` enters the container's **existing** jailed netns (never a fresh un-jailed one) and refuses if the jail is not running (`netcage start <c>` first). A non-netcage container is refused loudly.
+
+### Image store: build / pull / load
+
+`netcage build`, `pull`, and `load` are the **write side** of netcage's image store, siblings of the read verb `images`. netcage relocates podman's store to a username-free graphroot (see [Clearing netcage's storage](#clearing-netcages-storage)), so these write into the **same** store `netcage run` and `netcage images` read: a locally built or pulled image is then visible to `netcage run <image>`. They forward their arguments verbatim to the underlying `podman build`/`pull`/`load` against that store:
+
+```sh
+netcage build -t my/tool .          # build into netcage's store
+netcage pull docker.io/library/alpine:latest
+netcage load -i my-tool.tar
+netcage run --proxy socks5h://127.0.0.1:9050 -it my/tool   # now visible
+```
+
+They act on images (not run-labelled containers), do not egress a jail, and **refuse a user-supplied `--root`** (honouring it would split the single store; relocate the whole store with `NETCAGE_GRAPHROOT` instead). See [ADR-0013](docs/adr/0013-host-identity-hardening-scope.md) and [ADR-0017](docs/adr/0017-graphroot-default-is-uid-scoped-for-multi-user-hosts.md).
 
 ### Machine-readable ps and inspect (podman-faithful)
 
@@ -302,6 +353,15 @@ The security rationale lives in the ADRs under [`docs/adr/`](docs/adr/):
 - **0004** the default dev image is a pinned buildpack-deps base.
 - **0005** the split-tunnel LAN allowlist is a guardrailed hole in forced egress.
 - **0006** the sidecar owns its firewall + DNS forwarder; netcage never uses host nsenter (podman is the only host dependency).
+- **0009** `--rm` is honoured; a kept pair is left fail-closed by its baked firewall; verbs are label-scoped.
+- **0010** the widened run-flag allowlist is vetted network-irrelevant (curated, fail-closed).
+- **0011** `netcage start` revives the jail and refuses a changed proxy/allowlist.
+- **0012** the config file is a new fail-closed proxy SOURCE, never a bypass; the persisted default is credential-free.
+- **0013** host-identity hardening scope (what a jail hides and what it does not).
+- **0014** host access to an in-jail server is a `forward` verb, not a `--publish` flag.
+- **0015** `ports` lists jail listeners via the sidecar's `/proc`, with a JSON reuse contract.
+- **0016** the pass-through query verbs forward podman's read-only output flags.
+- **0017** the graphroot default is uid-scoped (`/var/tmp/netcage-storage-<uid>`) for multi-user hosts; `NETCAGE_GRAPHROOT` is a supported override.
 
 ## Development
 
