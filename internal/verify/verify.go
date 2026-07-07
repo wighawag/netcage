@@ -231,6 +231,60 @@ func DirectReachableProbe(ctx context.Context, run JailRunner, cfg jail.Config, 
 	return strings.Contains(res.ToolStdout, egressMarker), nil
 }
 
+// NoClearLANDNSProbe runs a probe through a SPLIT-TUNNEL-ACTIVE jail that aims a
+// DIRECT clear-DNS query (tcp/udp 53) at the ALLOWED LAN resolver and reports
+// whether it got a clear answer STRAIGHT from the LAN. cfg's ToolArgv must print
+// directAnsweredMarker iff the direct clear query resolved (the LEAK), and MUST
+// NOT print it when the query was dropped / unanswered.
+//
+// This is the row-2 (Tails leak catalogue) probe. It is the black-hole/counter
+// shape mandated by ADR-0003 and dns-through-socks-is-tcp-not-udp.md, NOT the
+// naive "direct dig must time out": under netcage the tool's ORDINARY DNS is
+// served by the loopback forwarder, so a query CAN answer; the leak is whether a
+// query aimed DIRECTLY at the LAN resolver (bypassing the forwarder) answers
+// from the LAN. answered=true means --allow-direct opened a clear-DNS hole (a
+// FAILURE); answered=false means it was dropped and DNS stays on the proxy path.
+// A jail-run error is propagated (no verdict), never a false pass.
+func NoClearLANDNSProbe(ctx context.Context, run JailRunner, cfg jail.Config, directAnsweredMarker string) (directAnswered bool, err error) {
+	res, err := run(ctx, cfg)
+	if err != nil {
+		return false, fmt.Errorf("no-clear-LAN-DNS probe: jail run: %w", err)
+	}
+	return strings.Contains(res.ToolStdout, directAnsweredMarker), nil
+}
+
+// NoClearLANDNSAssertion renders the row-2 verdict from the two observations the
+// live probe makes (plus any probe error), as a pure function so the message
+// split is unit-testable without podman (it is exported so the podman-gated
+// integration probe in verify_test can reuse the exact same verdict logic):
+//
+//   - probeErr != nil: the probe/jail itself errored, so there is NO verdict on
+//     the hole. Surfaced as an Err (a failure), never a false pass or a false
+//     leak claim.
+//   - directAnswered: a clear-DNS query aimed DIRECTLY at the allowed LAN
+//     resolver got an answer from the LAN => --allow-direct opened the exact
+//     clear-DNS hole Tails forbids (a @LAN-resolver query can reveal the local
+//     network's public IP). FAIL, naming the leak.
+//   - !forwarderResolved: the direct was dropped (good) but the loopback
+//     DNS-over-SOCKS forwarder did NOT resolve, so DNS is not actually served
+//     the RIGHT way (a merely-dead resolver is not proof the hole is closed).
+//     FAIL.
+//   - !directAnswered && forwarderResolved: the direct clear query was dropped
+//     AND DNS still resolves via the proxy-side forwarder. PASS: the split-tunnel
+//     hole carries no direct clear DNS to the LAN.
+func NoClearLANDNSAssertion(directAnswered, forwarderResolved bool, probeErr error) Assertion {
+	if probeErr != nil {
+		return Assertion{Ok: false, Err: fmt.Errorf("the no-clear-LAN-DNS probe could not run (a jail/runtime error, NOT a verdict on the hole): %w", probeErr)}
+	}
+	if directAnswered {
+		return Assertion{Ok: false, Detail: "LEAK: a clear DNS query aimed DIRECTLY at the allowed LAN resolver was answered from the LAN; --allow-direct opened a clear-DNS hole (a @LAN-resolver query can reveal the local network's public IP). DNS must stay on the proxy-side forwarder."}
+	}
+	if !forwarderResolved {
+		return Assertion{Ok: false, Detail: "the direct clear-DNS query was dropped (good) but the loopback DNS-over-SOCKS forwarder did NOT resolve: DNS is not being served over the proxy path, so the hole is not proven closed the right way"}
+	}
+	return Assertion{Ok: true, Detail: "direct clear DNS to the LAN resolver is dropped; DNS is served by the jail's loopback DNS-over-SOCKS forwarder (no direct clear query egresses to the LAN)"}
+}
+
 // SplitTunnelChecks composes the allowlist-aware leak-test check list: the three
 // CORE leak assertions (exit-IP is the proxy's, DNS is proxy-side, fail-closed on
 // proxy-kill) ALWAYS run, and each DIRECT-reachability check is appended AFTER
