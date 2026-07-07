@@ -329,6 +329,24 @@ func runPodman(ctx context.Context, r Runner, args ...string) (stdout, stderr st
 	return r.Run(ctx, RunSpec{Name: "podman", Args: args})
 }
 
+// PullImage pulls an image into netcage's graphroot on the HOST's normal network
+// (a plain `podman pull`, NOT inside the jail netns), so it does NOT egress
+// through the forced-egress proxy. It goes through the Runner seam, so the
+// graphroot `--root` is injected and the pull lands in the SAME store the jail
+// runs from. Callers use it to make a probe image PRESENT before a timed jail
+// run, so the run never pays a large image pull through a slow proxy. A pull
+// error carries podman's own stderr diagnostic.
+//
+// It is idempotent-ish: pulling an already-present digest is a cheap no-op for
+// podman (it revalidates the manifest and returns success), so it is safe to
+// call unconditionally before the probe.
+func PullImage(ctx context.Context, r Runner, ref string) error {
+	if _, serr, err := runPodman(ctx, r, "pull", ref); err != nil {
+		return fmt.Errorf("pull image %s: %w%s", ref, err, stderrSuffix(serr))
+	}
+	return nil
+}
+
 // sidecarProxyURL converts the user-facing socks5h:// proxy into the socks5://
 // form tun2socks expects. tun2socks rejects the socks5h scheme but resolves
 // remotely by construction, so socks5:// IS socks5h semantics for the tunnel

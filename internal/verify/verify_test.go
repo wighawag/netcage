@@ -116,6 +116,85 @@ func TestFailClosedProbe_JailErrorCountsAsNoEgress(t *testing.T) {
 	}
 }
 
+// --- glibc DNS-over-TCP: the message-split verdict (pure) ---
+
+// TestDNSOverTCPAssertion_PassOnResolvedIP: the container ran and getent returned
+// an IP => PASS with the DNS-over-TCP-works detail.
+func TestDNSOverTCPAssertion_PassOnResolvedIP(t *testing.T) {
+	a := dnsOverTCPAssertion("1.1.1.1", nil, nil)
+	if !a.Ok {
+		t.Fatalf("a resolved IP must PASS; got %+v", a)
+	}
+	if !strings.Contains(a.Detail, "1.1.1.1") || !strings.Contains(a.Detail, "DNS-over-TCP via the proxy works") {
+		t.Fatalf("pass detail must name the IP and the working TCP path; got %q", a.Detail)
+	}
+}
+
+// TestDNSOverTCPAssertion_EmptyOutputBlamesForwarder: the container RAN (no
+// errors) but getent returned nothing => the genuine TCP-forwarder failure, and
+// ONLY here may the message blame the in-jail DNS forwarder.
+func TestDNSOverTCPAssertion_EmptyOutputBlamesForwarder(t *testing.T) {
+	a := dnsOverTCPAssertion("", nil, nil)
+	if a.Ok {
+		t.Fatal("empty getent output must FAIL")
+	}
+	if a.Err != nil {
+		t.Fatalf("a ran-but-empty result is a Detail verdict, not an Err; got Err=%v", a.Err)
+	}
+	if !strings.Contains(a.Detail, "not answering over TCP") || !strings.Contains(a.Detail, "probe container ran") {
+		t.Fatalf("only the ran-but-empty case may blame the forwarder, and must say the container ran; got %q", a.Detail)
+	}
+}
+
+// TestDNSOverTCPAssertion_PullErrorIsNotAForwarderVerdict: a pre-pull failure is
+// a setup/network problem reported as an Err, and must NOT claim the forwarder is
+// broken (the false-negative this whole fix removes).
+func TestDNSOverTCPAssertion_PullErrorIsNotAForwarderVerdict(t *testing.T) {
+	a := dnsOverTCPAssertion("", nil, errors.New("pull timeout"))
+	if a.Ok {
+		t.Fatal("a pull failure must FAIL the assertion")
+	}
+	if a.Err == nil {
+		t.Fatal("a pull failure must be surfaced as an Err (its own cause), not a Detail")
+	}
+	msg := a.Err.Error()
+	if !strings.Contains(msg, "NOT a DNS-over-TCP failure") {
+		t.Fatalf("a pull failure must explicitly disclaim a DNS-over-TCP verdict; got %q", msg)
+	}
+	if strings.Contains(strings.ToLower(msg), "not answering over tcp") {
+		t.Fatalf("a pull failure must NOT blame the forwarder; got %q", msg)
+	}
+}
+
+// TestDNSOverTCPAssertion_RunErrorIsNotAForwarderVerdict: a jail/runtime error
+// (podman/timeout) means the probe produced no verdict; report THAT, never a
+// forwarder claim.
+func TestDNSOverTCPAssertion_RunErrorIsNotAForwarderVerdict(t *testing.T) {
+	a := dnsOverTCPAssertion("", errors.New("context deadline exceeded"), nil)
+	if a.Ok {
+		t.Fatal("a jail-run error must FAIL the assertion")
+	}
+	if a.Err == nil {
+		t.Fatal("a jail-run error must be surfaced as an Err, not a Detail")
+	}
+	msg := a.Err.Error()
+	if !strings.Contains(msg, "NOT necessarily a DNS-over-TCP failure") {
+		t.Fatalf("a jail-run error must disclaim a definite DNS-over-TCP verdict; got %q", msg)
+	}
+	if strings.Contains(strings.ToLower(msg), "not answering over tcp") {
+		t.Fatalf("a jail-run error must NOT blame the forwarder; got %q", msg)
+	}
+}
+
+// TestDNSOverTCPAssertion_PullErrorTakesPrecedence: if the pull failed, the
+// probe never ran, so pullErr is reported even if a runErr is also present.
+func TestDNSOverTCPAssertion_PullErrorTakesPrecedence(t *testing.T) {
+	a := dnsOverTCPAssertion("", errors.New("run err"), errors.New("pull err"))
+	if a.Err == nil || !strings.Contains(a.Err.Error(), "pull err") {
+		t.Fatalf("pull failure must be reported first (the probe never ran); got %+v", a)
+	}
+}
+
 // --- split-tunnel: direct-reachability probe (pure orchestration) ---
 
 func TestDirectReachableProbe_ReachedWhenMarkerPresent(t *testing.T) {

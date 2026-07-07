@@ -64,3 +64,47 @@ const Digest = "sha256:4efddd9a54ddc095e672b2fdf514f1ee4d3bb6e1f6ffc988b022c75e6
 func ImageReference() string {
 	return Repository + "@" + Digest
 }
+
+// DNSProbeRepository is the repository of the SMALL glibc image `netcage verify`
+// uses for its glibc DNS-over-TCP check. It is intentionally NOT the broad
+// buildpack-deps default: the DNS check only needs glibc + getent, so a ~80 MB
+// debian:*-slim is used instead of the ~950 MB buildpack-deps. This keeps verify
+// fast and, crucially, cheap to have present in netcage's store BEFORE the timed
+// jail run so the DNS probe never pays a large image pull through the proxy (the
+// pull that made a slow-proxy verify time out and misreport the TCP-DNS path as
+// broken). Pinned by digest for the same reproducibility reason as the default.
+const DNSProbeRepository = "docker.io/library/debian"
+
+// DNSProbeTag records, for human/audit reference only, the release DNSProbeDigest
+// corresponds to. Like Tag it is NOT used to build the pull reference (a tag is
+// mutable); DNSProbeImageReference pins by DNSProbeDigest alone.
+const DNSProbeTag = "bookworm-slim"
+
+// DNSProbeDigest is the immutable content digest of the glibc DNS-probe image.
+//
+// Provenance (auditable, same method as Digest above):
+//
+//	Image:    docker.io/library/debian   (small glibc base with getent)
+//	Tag:      bookworm-slim               (Debian stable slim at pin time)
+//	Digest:   sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df
+//	Obtained: 2026-07-07 from the Docker registry manifest API:
+//
+//	  TOKEN=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/debian:pull" | jq -r .token)
+//	  curl -sI -H "Authorization: Bearer $TOKEN" \
+//	    -H "Accept: application/vnd.oci.image.index.v1+json" \
+//	    -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
+//	    "https://registry-1.docker.io/v2/library/debian/manifests/bookworm-slim" \
+//	    | grep -i docker-content-digest
+//	  # -> docker-content-digest: sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df
+//
+// It is a manifest-list (multi-arch) so the digest resolves on amd64 and arm64
+// alike. To re-pin: run the command above, confirm the digest, and update
+// DNSProbeTag + DNSProbeDigest together.
+const DNSProbeDigest = "sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df"
+
+// DNSProbeImageReference is the fully-pinned glibc DNS-probe image reference,
+// repository@digest. `netcage verify` uses exactly this small, immutable image
+// for its glibc use-vc/TCP DNS check.
+func DNSProbeImageReference() string {
+	return DNSProbeRepository + "@" + DNSProbeDigest
+}

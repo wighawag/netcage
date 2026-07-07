@@ -113,6 +113,13 @@ func DefaultJailRunner(ctx context.Context, cfg jail.Config) (jail.Result, error
 	return jail.Run(ctx, jail.ExecRunner{}, cfg)
 }
 
+// DefaultRunner is the real podman Runner (ExecRunner) used for host-network
+// podman steps that are NOT a jail run, e.g. pre-pulling the DNS-probe image
+// before the timed jail run (jail.PullImage). Like DefaultJailRunner it carries
+// the graphroot `--root` injection through ExecRunner, so the pull lands in the
+// same store the jail runs from.
+var DefaultRunner jail.Runner = jail.ExecRunner{}
+
 // Check is one named leak check: it runs (typically a probe through the jail)
 // and returns the assertion result. The orchestrator composes the three.
 type Check struct {
@@ -279,11 +286,17 @@ func RunCommandVerify(ctx context.Context, proxy cli.ProxyConfig, source cli.Pro
 	// which HONOURS resolv.conf's `options use-vc` and queries DNS over TCP. This
 	// is the exact path a UDP-only forwarder broke while musl (alpine) still
 	// worked, so exercising it here stops that regression from passing verify.
-	// The default dev image is buildpack-deps (glibc + getent).
+	//
+	// The image is the SMALL glibc debian:*-slim probe base (devimage.
+	// DNSProbeImageReference), NOT the heavyweight buildpack-deps default: the
+	// check only needs glibc + getent, and a large image pull is what made a
+	// slow-proxy verify time out and misreport the TCP-DNS path as broken. The
+	// image is pre-pulled on the HOST network BELOW (outside the jail/proxy) so the
+	// timed jail run never pays that pull.
 	dnsCfg := jail.Config{
 		Proxy:               proxy,
 		ProxyOnHostLoopback: isHostLoopback(proxy.Host),
-		Image:               devimage.ImageReference(),
+		Image:               devimage.DNSProbeImageReference(),
 		Ephemeral:           true, // internal one-shot: remove both, no residue
 		ToolArgv: []string{
 			"sh", "-c",
@@ -311,16 +324,18 @@ func RunCommandVerify(ctx context.Context, proxy cli.ProxyConfig, source cli.Pro
 			return Assertion{Ok: true, Detail: "jail exit IP " + jailIP + " differs from host " + hostIP + " (forced egress active)"}
 		}},
 		{Name: "dns-resolves-over-tcp-glibc", Run: func(ctx context.Context) Assertion {
-			out, err := DNSProbe(ctx, DefaultJailRunner, dnsCfg)
-			if err != nil {
-				return Assertion{Ok: false, Err: err}
+			// Pre-pull the small glibc probe image on the HOST network (NOT through the
+			// jail/proxy) so the timed jail run below never pays an image pull, then run
+			// the probe. dnsOverTCPAssertion turns the three outcomes (pull failed /
+			// jail run errored / container ran) into the verdict, so ONLY a container
+			// that ran and returned empty is blamed on the TCP forwarder.
+			pullErr := jail.PullImage(ctx, DefaultRunner, devimage.DNSProbeImageReference())
+			var out string
+			var runErr error
+			if pullErr == nil {
+				out, runErr = DNSProbe(ctx, DefaultJailRunner, dnsCfg)
 			}
-			if ip := firstIP(out); ip != "" {
-				return Assertion{Ok: true, Detail: "glibc getaddrinfo resolved " + dnsProbeName + " to " + ip + " (DNS-over-TCP via the proxy works)"}
-			}
-			return Assertion{Ok: false, Detail: "glibc getaddrinfo could NOT resolve " + dnsProbeName +
-				" in the jail: the in-jail DNS forwarder is not answering over TCP (resolv.conf sets use-vc). " +
-				"A UDP-only forwarder breaks glibc images; check netcage-dns."}
+			return dnsOverTCPAssertion(out, runErr, pullErr)
 		}},
 	})
 	// Record the resolved proxy + its source on the report so it also answers
@@ -328,6 +343,37 @@ func RunCommandVerify(ctx context.Context, proxy cli.ProxyConfig, source cli.Pro
 	rep.Proxy = proxy
 	rep.Source = source
 	return rep
+}
+
+// dnsOverTCPAssertion renders the verdict of the glibc DNS-over-TCP check from
+// its three distinct outcomes, so an infrastructure failure is NEVER misreported
+// as "the forwarder is not answering over TCP" (the false-negative that made a
+// slow-proxy verify condemn a healthy TCP-DNS path). It is a pure function so the
+// message split is unit-testable without podman:
+//
+//   - pullErr != nil: the small glibc probe image could not be prepared (a
+//     setup/network problem on the HOST side, before the jail even ran). NOT a
+//     DNS-over-TCP verdict.
+//   - runErr != nil: the jail/probe container itself errored (podman/runtime/
+//     timeout), so it produced no verdict on the forwarder. NOT (necessarily) a
+//     DNS-over-TCP failure.
+//   - out has an IP: glibc getaddrinfo resolved over TCP (use-vc). PASS.
+//   - out empty, no errors: the container RAN and getent returned nothing. THIS
+//     is the genuine TCP-forwarder failure the check is for; only here do we
+//     blame the in-jail DNS forwarder.
+func dnsOverTCPAssertion(out string, runErr, pullErr error) Assertion {
+	if pullErr != nil {
+		return Assertion{Ok: false, Err: fmt.Errorf("could not prepare the glibc DNS-probe image (a setup/network problem, NOT a DNS-over-TCP failure): %w", pullErr)}
+	}
+	if runErr != nil {
+		return Assertion{Ok: false, Err: fmt.Errorf("the glibc DNS probe could not run (a jail/runtime error, NOT necessarily a DNS-over-TCP failure): %w", runErr)}
+	}
+	if ip := firstIP(out); ip != "" {
+		return Assertion{Ok: true, Detail: "glibc getaddrinfo resolved " + dnsProbeName + " to " + ip + " (DNS-over-TCP via the proxy works)"}
+	}
+	return Assertion{Ok: false, Detail: "glibc getaddrinfo could NOT resolve " + dnsProbeName +
+		" in the jail even though the probe container ran: the in-jail DNS forwarder is not answering over TCP (resolv.conf sets use-vc). " +
+		"A UDP-only forwarder breaks glibc images; check netcage-dns."}
 }
 
 // dnsProbeName is a stable public hostname the glibc DNS check resolves. Its

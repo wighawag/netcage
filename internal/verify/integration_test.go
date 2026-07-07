@@ -258,9 +258,9 @@ func TestVerify_DNSResolvesProxySideNotHost(t *testing.T) {
 // glibc's getaddrinfo (getent) honours resolv.conf's `options use-vc` and
 // queries DNS over TCP, so it exercises the forwarder's TCP listener. A UDP-only
 // forwarder answers alpine/musl but leaves glibc images (node/debian/
-// buildpack-deps) unable to resolve; this test (default dev image = buildpack-
-// deps = glibc) fails if that regresses. It complements the musl nslookup test
-// above.
+// buildpack-deps) unable to resolve; this test (verify's glibc DNS-probe image =
+// small debian:*-slim = glibc) fails if that regresses. It complements the musl
+// nslookup test above.
 func TestVerify_DNSResolvesOverTCPForGlibc(t *testing.T) {
 	requirePodman(t)
 
@@ -281,14 +281,14 @@ func TestVerify_DNSResolvesOverTCPForGlibc(t *testing.T) {
 		Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
 		ProxyOnHostLoopback: true,
 		DNSUpstream:         upstreamName + ":" + resolverPort,
-		Image:               devimage.ImageReference(), // buildpack-deps: glibc + getent
+		Image:               devimage.DNSProbeImageReference(), // small debian:*-slim: glibc + getent
 		ToolArgv: []string{
 			"sh", "-c",
 			"getent ahostsv4 " + uniqueName + " 2>&1 || true",
 		},
 		RunID: runID("vdnsglibc"),
 	}
-	// buildpack-deps is a large image; allow a generous cold-pull budget.
+	// The small debian:*-slim probe image still allows a generous cold-pull budget.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
