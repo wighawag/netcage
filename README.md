@@ -31,6 +31,14 @@ curl -fsSL https://github.com/wighawag/netcage/releases/latest/download/install.
 
 The installer is served as a release asset (stable storage). The same script also lives at [`install.sh`](https://github.com/wighawag/netcage/blob/main/install.sh) in the repo; prefer not to pipe to `sh`? Download it, read it, then run it. The armv6/armv7 builds cover older Raspberry Pi models.
 
+### System-wide install (all users / dedicated-account use)
+
+```sh
+curl -fsSL https://github.com/wighawag/netcage/releases/latest/download/install.sh | PREFIX=/usr/local/bin sh
+```
+
+Run this in a root shell (or with `sudo`) to install **both** binaries to `/usr/local/bin`, a shared system `PATH` dir. A per-user `~/.local/bin` install is invisible to other accounts, so multi-user or dedicated-account setups (e.g. a launcher that runs netcage under a separate hardened account) need netcage on a shared system `PATH`.
+
 ### go install
 
 ```sh
