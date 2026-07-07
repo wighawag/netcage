@@ -393,6 +393,62 @@ func NonTCPUDPDroppedAssertion(udpReached, quic443Reached bool, probeErr error) 
 	return Assertion{Ok: true, Detail: "raw non-53 UDP is dropped: neither a generic non-53 UDP datagram nor a UDP/443 (QUIC) datagram from the jail reached the real network (netcage hard-drops all UDP, ADR-0003; a real client degrades to TCP)"}
 }
 
+// ICMPDroppedProbe runs a probe through the jail that fires an ICMP echo (`ping`)
+// at an off-box host and reports whether a reply came back. cfg's ToolArgv must
+// send a single-packet, short-deadline ping to an off-box address and print
+// pingRepliedMarker IFF the ping got a reply, and MUST NOT print it when the ping
+// was dropped, timed out, or `ping` itself was missing/errored (any of those is
+// the fail-closed no-reply outcome).
+//
+// It is the Tails row-4 probe (ICMP / raw sockets leaking the real IP). netcage's
+// jail confines non-TCP: ICMP does not ride the TUN-to-SOCKS path (the TUN table
+// is only `default dev tun0` and tun2socks relays TCP, so a raw ICMP echo has no
+// route out), so the reply must NEVER come back and the marker must be ABSENT. A
+// marker's PRESENCE is a LEAK (an ICMP packet carrying the real source IP reached
+// the network and was answered). A jail-run error is propagated (no verdict),
+// never a false pass. Mirroring anonctl's `pingAsAnon`, a missing `ping` binary
+// or any ping error is treated by the caller's script as no-reply = the
+// fail-closed PASS.
+func ICMPDroppedProbe(ctx context.Context, run JailRunner, cfg jail.Config, pingRepliedMarker string) (pingReplied bool, err error) {
+	res, err := run(ctx, cfg)
+	if err != nil {
+		return false, fmt.Errorf("icmp-dropped probe: jail run: %w", err)
+	}
+	return strings.Contains(res.ToolStdout, pingRepliedMarker), nil
+}
+
+// ICMPDroppedAssertion renders the Tails row-4 verdict (ICMP / raw sockets leaking
+// the real IP) from the single observation the live probe makes (plus any probe
+// error), as a pure function so the message split is unit-testable without podman
+// (it is exported so the podman-gated integration probe can reuse the exact same
+// verdict logic). The PASS is that an ICMP echo (`ping`) from the jail to an
+// off-box address gets NO reply: it is dropped, so no real-source-IP ICMP packet
+// reaches the network. Its INTENT matches anonctl's equivalent `icmp-drop`
+// assertion (assert ICMP is dropped, not proxied), with the SAME PMTU resolution
+// (netcage does NOT tune PMTU / set tcp_mtu_probing; it is documented as a caveat,
+// see the README/ADR-0003 UDP-drop note):
+//
+//   - probeErr != nil: the probe/jail itself errored, so there is NO verdict on
+//     the ICMP drop. Surfaced as an Err (a failure), never a false pass or a false
+//     leak claim.
+//   - pingReplied: an ICMP echo from the jail got a reply => an ICMP packet
+//     carrying the real source IP reached the real network and was answered (the
+//     raw-socket leak Tails forbids). FAIL, naming the ICMP leak.
+//   - !pingReplied: the ping got no reply (dropped / timed out / no `ping`
+//     binary). PASS: no real-source-IP ICMP leaves the jail (netcage confines
+//     non-TCP; a jailed tool that needs the network uses forced TCP over
+//     tun2socks, and netcage deliberately does NOT tune PMTU for the dropped ICMP,
+//     revisited only if a real tool's PMTU breaks).
+func ICMPDroppedAssertion(pingReplied bool, probeErr error) Assertion {
+	if probeErr != nil {
+		return Assertion{Ok: false, Err: fmt.Errorf("the icmp-dropped probe could not run (a jail/runtime error, NOT a verdict on the ICMP drop): %w", probeErr)}
+	}
+	if pingReplied {
+		return Assertion{Ok: false, Detail: "LEAK: an ICMP echo (ping) from the jail to an off-box address got a REPLY; an ICMP packet carrying the real source IP reached the real network (the raw-socket leak). All ICMP from the jail must be dropped."}
+	}
+	return Assertion{Ok: true, Detail: "ICMP is dropped: an ICMP echo (ping) from the jail to an off-box address got no reply, so no real-source-IP ICMP packet reaches the network (netcage confines non-TCP; forced traffic rides tun2socks TCP, and PMTU is deliberately not tuned, revisit only if a tool breaks)"}
+}
+
 // SplitTunnelChecks composes the allowlist-aware leak-test check list: the three
 // CORE leak assertions (exit-IP is the proxy's, DNS is proxy-side, fail-closed on
 // proxy-kill) ALWAYS run, and each DIRECT-reachability check is appended AFTER

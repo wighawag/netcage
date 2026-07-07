@@ -398,6 +398,49 @@ func TestNonTCPUDPDroppedAssertion_ProbeErrorIsNotAVerdict(t *testing.T) {
 	}
 }
 
+// --- ICMP dropped (Tails row 4, pure render) ---
+
+// TestICMPDroppedAssertion_PassWhenNoReply is the row-4 pass: an ICMP echo
+// (`ping`) from the jail to an off-box address got NO reply (it was dropped), so
+// no real-source-IP ICMP packet reached the network. netcage's jail confines
+// non-TCP (ICMP does not ride the TUN-to-SOCKS path), so the ping fails closed.
+// PASS.
+func TestICMPDroppedAssertion_PassWhenNoReply(t *testing.T) {
+	a := ICMPDroppedAssertion(false /*pingReplied*/, nil)
+	if !a.Ok {
+		t.Fatalf("a dropped ping (no reply) must PASS; got %+v", a)
+	}
+	if !strings.Contains(strings.ToLower(a.Detail), "icmp") {
+		t.Fatalf("pass detail should name the ICMP property; got %q", a.Detail)
+	}
+}
+
+// TestICMPDroppedAssertion_FailWhenPingReplied is the leak: an ICMP echo from the
+// jail got a REPLY, so an ICMP packet with the real source IP reached the network
+// and came back. Must FAIL and name the ICMP leak.
+func TestICMPDroppedAssertion_FailWhenPingReplied(t *testing.T) {
+	a := ICMPDroppedAssertion(true /*pingReplied*/, nil)
+	if a.Ok {
+		t.Fatal("a ping that got a reply is an ICMP LEAK (a real-source-IP packet reached the network); must FAIL")
+	}
+	if !strings.Contains(strings.ToLower(a.Detail), "icmp") {
+		t.Fatalf("leak detail must name the ICMP path; got %q", a.Detail)
+	}
+}
+
+// TestICMPDroppedAssertion_ProbeErrorIsNotAVerdict: a probe/jail error means we
+// got no verdict on the ICMP drop; report it as an Err (a failure), never a
+// false pass and never a false leak claim.
+func TestICMPDroppedAssertion_ProbeErrorIsNotAVerdict(t *testing.T) {
+	a := ICMPDroppedAssertion(false, errors.New("context deadline exceeded"))
+	if a.Ok {
+		t.Fatal("a probe error must FAIL the assertion")
+	}
+	if a.Err == nil {
+		t.Fatal("a probe error must be surfaced as an Err, not a silent Detail verdict")
+	}
+}
+
 // --- split-tunnel: allowlist-aware report composition (pure orchestration) ---
 
 // pass/fail check builders for composition tests.
