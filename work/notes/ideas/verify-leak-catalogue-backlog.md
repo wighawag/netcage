@@ -5,6 +5,8 @@ slug: verify-leak-catalogue-backlog
 status: proposed
 ---
 
+> TASKED 2026-07-07: the four spawn tasks below now exist in `work/tasks/ready/` (`verify-ipv6-egress-fails-closed`, `verify-non-tcp-udp-dropped`, `verify-icmp-dropped`, `verify-jail-loopback-confined`). This idea remains as the design record; do not re-task it.
+
 ## The idea
 
 `work/notes/findings/learning-from-anonctl-tails-leak-catalogue.md` maps a decade of Tails adversarial review into a `verify`-assertion backlog for netcage. Findings are meant to be acted on: netcage's `verify` today asserts the happy path (`forced-egress-exit-ip-differs-from-host`, `dns-resolves-over-tcp-glibc`) but does not PROVE several leak classes the jail already closes. Grow `verify` so the forced-egress guarantee is proven against the full leak surface, not just the happy path.
