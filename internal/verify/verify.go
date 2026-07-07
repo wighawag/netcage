@@ -449,6 +449,70 @@ func ICMPDroppedAssertion(pingReplied bool, probeErr error) Assertion {
 	return Assertion{Ok: true, Detail: "ICMP is dropped: an ICMP echo (ping) from the jail to an off-box address got no reply, so no real-source-IP ICMP packet reaches the network (netcage confines non-TCP; forced traffic rides tun2socks TCP, and PMTU is deliberately not tuned, revisit only if a tool breaks)"}
 }
 
+// JailLoopbackConfinedProbe runs a probe through the jail that fires TWO loopback
+// attempts and reports which succeeded. cfg's ToolArgv must attempt a connection
+// to a DIFFERENT loopback destination than the jail's own forwarder (a host
+// service reached via the pasta host-loopback reachback on a NON-proxy port) and
+// print otherLoopbackMarker IFF that connection egressed, AND separately resolve
+// a name through the jail's OWN intended loopback (the in-jail DNS-over-SOCKS
+// forwarder at 127.0.0.1:53) and print forwarderMarker IFF it resolved. Neither
+// marker must be printed when the respective attempt was dropped / failed.
+//
+// It is the Tails row-6 probe (a different loopback service as an escape hatch).
+// The jail's only intended local peer is its own DNS-over-SOCKS forwarder; any
+// OTHER 127.0.0.1 destination is an escape hatch and must be dropped. The most
+// leak-prone seam is the pasta host-loopback reachback (ADR-0002), which accepts
+// EXACTLY the proxy port and DROPs everything else to the mapped host loopback,
+// so an off-target loopback probe is a meaningful test. otherLoopbackReached=true
+// means the jail pivoted to another loopback service (a LEAK); forwarderReachable
+// makes the assertion non-vacuous (else "everything on loopback is dropped" would
+// pass trivially and hide a broken forwarder). A jail-run error is propagated (no
+// verdict), never a false pass.
+func JailLoopbackConfinedProbe(ctx context.Context, run JailRunner, cfg jail.Config, otherLoopbackMarker, forwarderMarker string) (otherLoopbackReached, forwarderReachable bool, err error) {
+	res, err := run(ctx, cfg)
+	if err != nil {
+		return false, false, fmt.Errorf("jail-loopback-confined probe: jail run: %w", err)
+	}
+	return strings.Contains(res.ToolStdout, otherLoopbackMarker), strings.Contains(res.ToolStdout, forwarderMarker), nil
+}
+
+// JailLoopbackConfinedAssertion renders the Tails row-6 verdict (a different
+// loopback service used as an escape hatch) from the two observations the live
+// probe makes (plus any probe error), as a pure function so the message split is
+// unit-testable without podman (it is exported so the podman-gated integration
+// probe can reuse the exact same verdict logic). The PASS is confinement: the
+// jail reaches its OWN intended loopback (the in-jail DNS-over-SOCKS forwarder)
+// but NOT any other 127.0.0.1 service. Its INTENT matches anonctl's
+// `bypass-loopback-closure` (only the intended loopback works, everything else is
+// dropped):
+//
+//   - probeErr != nil: the probe/jail itself errored, so there is NO verdict on
+//     the confinement. Surfaced as an Err (a failure), never a false pass or a
+//     false leak claim.
+//   - otherLoopbackReached: a connection to a DIFFERENT loopback destination (a
+//     host service reached via the pasta host-loopback reachback on a non-proxy
+//     port) egressed => the jail pivoted to another loopback service as an escape
+//     hatch (the exact Tails row-6 leak). FAIL, naming the loopback escape hatch.
+//   - !forwarderReachable: the other loopback was dropped (good) but the jail's
+//     OWN intended loopback (the DNS forwarder) is NOT reachable, so DNS is not
+//     actually served the RIGHT way (a merely-dead loopback is not proof the
+//     confinement is right; "everything dropped" would pass vacuously). FAIL.
+//   - !otherLoopbackReached && forwarderReachable: the other loopback was dropped
+//     AND the jail's own forwarder still resolves. PASS: the jail is confined to
+//     its own loopback.
+func JailLoopbackConfinedAssertion(otherLoopbackReached, forwarderReachable bool, probeErr error) Assertion {
+	if probeErr != nil {
+		return Assertion{Ok: false, Err: fmt.Errorf("the jail-loopback-confined probe could not run (a jail/runtime error, NOT a verdict on the confinement): %w", probeErr)}
+	}
+	if otherLoopbackReached {
+		return Assertion{Ok: false, Detail: "LEAK: a connection from the jail REACHED a DIFFERENT loopback service (a host service via the pasta host-loopback reachback on a non-proxy port); the jail pivoted to another 127.0.0.1 destination as an escape hatch. The jail's only intended local peer is its own DNS-over-SOCKS forwarder; every other loopback destination must be dropped."}
+	}
+	if !forwarderReachable {
+		return Assertion{Ok: false, Detail: "the other loopback destination was dropped (good) but the jail's OWN intended loopback (the DNS-over-SOCKS forwarder) is NOT reachable: DNS is not being served over the loopback forwarder, so the confinement is not proven the right way (a merely-dead loopback would pass vacuously)"}
+	}
+	return Assertion{Ok: true, Detail: "the jail is confined to its own loopback: it reaches its intended DNS-over-SOCKS forwarder (127.0.0.1:53) but a connection to a DIFFERENT loopback service (via the pasta host-loopback reachback on a non-proxy port) is dropped (ADR-0002 narrows the reachback to exactly the proxy port)"}
+}
+
 // SplitTunnelChecks composes the allowlist-aware leak-test check list: the three
 // CORE leak assertions (exit-IP is the proxy's, DNS is proxy-side, fail-closed on
 // proxy-kill) ALWAYS run, and each DIRECT-reachability check is appended AFTER
