@@ -497,13 +497,30 @@ func (c Config) writeSplitTunnelAccepts(b *strings.Builder) {
 	for _, a := range c.AllowDirect {
 		daddr := a.Network.String()
 		if a.Port == 0 {
-			// Port omitted => all TCP ports to that net (TCP-only; UDP stays dropped).
+			// Port omitted => all TCP ports to that net (TCP-only; UDP stays dropped),
+			// EXCEPT the clear-DNS ports: a DROP for each precedes the all-ports accept
+			// so an all-ports allow never carries direct clear DNS to a LAN resolver
+			// (Tails row 2). iptables is first-match, so the DROP shadows the accept for
+			// those ports; 53 stays on the loopback DNS-over-SOCKS forwarder. An explicit
+			// :53/:853/:5353 is already rejected at the CLI, so this is only the
+			// port-omitted case.
+			for _, p := range clearDNSExcludePorts {
+				b.WriteString(fmt.Sprintf("iptables -A OUTPUT -p tcp -d %s --dport %d -j DROP\n", daddr, p))
+			}
 			b.WriteString(fmt.Sprintf("iptables -A OUTPUT -p tcp -d %s -j ACCEPT\n", daddr))
 		} else {
 			b.WriteString(fmt.Sprintf("iptables -A OUTPUT -p tcp -d %s --dport %d -j ACCEPT\n", daddr, a.Port))
 		}
 	}
 }
+
+// clearDNSExcludePorts are the clear-DNS(-ish) TCP ports an all-ports
+// (port-omitted) --allow-direct DROPS to the allowed net so the split-tunnel
+// hole never carries direct DNS to a LAN resolver (Tails row 2: a @LAN-resolver
+// query can reveal the local network's public IP). They mirror cli.clearDNSPorts
+// (53 clear DNS, 853 DoT, 5353 mDNS); an EXPLICIT one of these is refused at the
+// CLI, so the exclusion here is the defense for the all-ports case only.
+var clearDNSExcludePorts = []int{53, 853, 5353}
 
 // writeSplitTunnelDrops appends the RFC1918 / link-local defense-in-depth DROPs
 // (prd story 7), and ONLY for a NON-EMPTY allowlist. They are emitted in the
@@ -554,6 +571,11 @@ func (c Config) firewallVerifyRules(proxyPort string) (v4, v6 []string) {
 	}
 	for _, a := range c.AllowDirect {
 		if a.Port == 0 {
+			// The clear-DNS-port DROPs precede the all-ports accept (row 2). `iptables -S`
+			// renders a dport DROP as `-d <net> -p tcp -m tcp --dport N -j DROP`.
+			for _, p := range clearDNSExcludePorts {
+				v4 = append(v4, fmt.Sprintf("-A OUTPUT -d %s -p tcp -m tcp --dport %d -j DROP", a.Network.String(), p))
+			}
 			v4 = append(v4, fmt.Sprintf("-A OUTPUT -d %s -p tcp -j ACCEPT", a.Network.String()))
 		} else {
 			v4 = append(v4, fmt.Sprintf("-A OUTPUT -d %s -p tcp -m tcp --dport %d -j ACCEPT", a.Network.String(), a.Port))

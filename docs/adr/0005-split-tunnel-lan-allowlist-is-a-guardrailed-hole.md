@@ -19,6 +19,7 @@ Both halves are required together; the spike (`work/notes/findings/spike-split-t
 - **RFC1918 / link-local only.** Allowed directs are restricted to private ranges so a user cannot accidentally allow a PUBLIC IP that would be a real anonymity leak (validated at the CLI boundary, `--allow-direct`). A public-IP direct, if ever wanted, is a separate louder opt-in, NOT this feature.
 - **IP / CIDR only, no hostnames.** A LAN hostname cannot resolve through the proxy (DNS is proxy-side, socks5h) and a local-resolver exception would be another hole; bare IP/CIDR sidesteps it.
 - **TCP only.** UDP stays hard-dropped (ADR-0003) even to an allowlisted host: the existing `meta l4proto udp drop` is untouched, and the accept rules are TCP-only by construction. Directs are TCP-only.
+- **Never a clear-DNS hole (ADR-0018).** An explicit `:53`/`:853`/`:5353` allow is rejected at the CLI, and a port-omitted (all-ports) allow EXCLUDES those clear-DNS ports from its accept (they stay on the loopback DNS-over-SOCKS forwarder), so `--allow-direct` can never carry direct clear DNS to a LAN resolver (a @LAN-resolver query can reveal the local network's public IP). See ADR-0018; the all-ports accept described below is the non-DNS-port shape.
 - **Still fail-closed for everything else.** The accept is for exactly the named `daddr` (+ port) placed BEFORE the drops; it is not a policy flip. Everything not named still goes to the proxy or is dropped.
 
 ## Considered options

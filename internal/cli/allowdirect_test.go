@@ -176,6 +176,44 @@ func TestParse_AllowDirect_RejectsBadPort(t *testing.T) {
 	}
 }
 
+// TestParse_AllowDirect_RejectsClearDNSPort checks the row-2 Tails guardrail
+// (learning-from-anonctl-tails-leak-catalogue.md): an explicit clear-DNS port is
+// refused LOUDLY, naming the value + why (a LAN DNS resolver can reveal the
+// local network's public IP, a deanonymization vector; DNS must stay on the
+// proxy-side socks5h path). At minimum 53; 853 (DoT) and 5353 (mDNS) are refused
+// too so no clear-DNS-ish port can be opened directly to the LAN. This mirrors
+// anonctl's sibling lan-exemption reject (kept consistent by design).
+func TestParse_AllowDirect_RejectsClearDNSPort(t *testing.T) {
+	for _, v := range []string{
+		"192.168.1.1:53",   // clear TCP-DNS to a LAN resolver (the headline hole)
+		"10.0.0.53:53",     // same, another private range
+		"192.168.1.1:853",  // DoT
+		"192.168.1.1:5353", // mDNS
+	} {
+		_, err := cli.ParseWithEnv(runArgs("--allow-direct", v), noEnv)
+		if err == nil {
+			t.Fatalf("clear-DNS port in %q accepted; want a loud rejection (it can reveal the LAN's public IP)", v)
+		}
+		if !strings.Contains(err.Error(), v) {
+			t.Fatalf("rejection %q should name the offending value %q", err, v)
+		}
+		if !strings.Contains(strings.ToLower(err.Error()), "dns") {
+			t.Fatalf("rejection %q should explain WHY (a DNS hole reveals the LAN's public IP)", err)
+		}
+	}
+}
+
+// TestParse_AllowDirect_AllowsNonDNSPorts guards against over-rejection: a
+// port-omitted allow and ordinary service ports (8080, 443, 22) still parse, so
+// the clear-DNS reject is scoped to the DNS ports only.
+func TestParse_AllowDirect_AllowsNonDNSPorts(t *testing.T) {
+	for _, v := range []string{"192.168.1.1", "192.168.1.150:8080", "10.0.0.5:443", "172.16.5.5:22", "192.168.1.1:5354"} {
+		if _, err := cli.ParseWithEnv(runArgs("--allow-direct", v), noEnv); err != nil {
+			t.Fatalf("non-DNS allow %q rejected; want accepted: %v", v, err)
+		}
+	}
+}
+
 // TestParse_AllowDirect_MissingValueRejected checks a trailing --allow-direct
 // with no value fails loud (matching the other value-taking flags).
 func TestParse_AllowDirect_MissingValueRejected(t *testing.T) {

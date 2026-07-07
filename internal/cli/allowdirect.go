@@ -16,7 +16,10 @@ import (
 //
 // Network is always non-nil. A bare IP is normalised to a host route (/32 for
 // IPv4). Port is the TCP destination port, or 0 meaning "all ports on this
-// network" (a bare IP or CIDR with no `:port`). The entry is TCP-only by
+// network" (a bare IP or CIDR with no `:port`). Port is never a clear-DNS port:
+// an explicit :53/:853/:5353 is REJECTED at parse time, and the all-ports case
+// (Port==0) EXCLUDES the clear-DNS ports at rule emission, so --allow-direct can
+// never carry direct clear DNS to a LAN resolver (the Tails row-2 rule). The entry is TCP-only by
 // construction (ADR-0003 hard-blocks UDP even to allowlisted hosts); TCP is
 // implicit here and is enforced at the jail-wiring layer, not encoded per entry.
 type DirectAllow struct {
@@ -32,6 +35,21 @@ type DirectAllow struct {
 // if ever wanted, is a separate louder opt-in, NOT part of this feature. An
 // allowlisted network must be FULLY contained in one of these (a prefix that
 // straddles public space is refused).
+// clearDNSPorts are the ports --allow-direct REFUSES as an explicit destination:
+// opening a direct clear-DNS hole to a LAN resolver is exactly the Tails-forbidden
+// leak (row 2 of learning-from-anonctl-tails-leak-catalogue.md) because a
+// `@192.168.x.x` DNS query can reveal the local network's public IP (a
+// deanonymization vector). DNS must stay on the jail's proxy-side (socks5h)
+// DNS-over-SOCKS forwarder, never direct to the LAN. 53 is clear DNS (the
+// headline hole); 853 (DoT) and 5353 (mDNS) are refused too so no clear-DNS-ish
+// port can be opened directly. This mirrors anonctl's sibling LAN-exemption
+// reject; the two guardrail shapes are kept consistent by design.
+var clearDNSPorts = map[int]string{
+	53:   "clear DNS",
+	853:  "DNS-over-TLS",
+	5353: "mDNS",
+}
+
 var privateRanges = func() []*net.IPNet {
 	cidrs := []string{
 		"10.0.0.0/8",     // RFC1918
@@ -53,9 +71,12 @@ var privateRanges = func() []*net.IPNet {
 // parseAllowDirect parses one --allow-direct value into a validated DirectAllow.
 // It accepts an IP or a CIDR, each optionally suffixed with `:port`, and REJECTS
 // (loudly, naming the value + reason): a hostname or otherwise non-IP/CIDR
-// literal; a malformed value; an out-of-range or non-numeric port; and any
-// address/network NOT fully within the private/link-local ranges (a public
-// destination that would leak). This is the fail-loud-at-startup security gate.
+// literal; a malformed value; an out-of-range or non-numeric port; an explicit
+// clear-DNS port (53/853/5353), which would open a direct DNS hole to a LAN
+// resolver that can reveal the local network's public IP (row 2 of the Tails
+// leak catalogue); and any address/network NOT fully within the
+// private/link-local ranges (a public destination that would leak). This is the
+// fail-loud-at-startup security gate.
 func parseAllowDirect(raw string) (DirectAllow, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
@@ -76,6 +97,12 @@ func parseAllowDirect(raw string) (DirectAllow, error) {
 		return DirectAllow{}, fmt.Errorf(
 			"--allow-direct %q is not a private address: only RFC1918 / link-local ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16) may be reached directly; a public destination would leak your real IP around the jail",
 			raw)
+	}
+
+	if kind, isDNS := clearDNSPorts[port]; isDNS {
+		return DirectAllow{}, fmt.Errorf(
+			"--allow-direct %q targets port %d (%s): a direct DNS hole to a LAN resolver is refused because a @LAN-resolver query can reveal the local network's public IP (deanonymization); DNS stays on the jail's proxy-side socks5h forwarder, never direct to the LAN",
+			raw, port, kind)
 	}
 
 	return DirectAllow{Network: network, Port: port, Raw: raw}, nil

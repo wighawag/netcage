@@ -6,6 +6,7 @@ package verify_test
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -568,6 +569,113 @@ func TestVerify_SplitTunnelReportGreenOnlyWhenLeakTightAndDirectReachable(t *tes
 	}
 	if rep.ExitCode() != 0 {
 		t.Fatalf("green split-tunnel report must exit 0; got %d", rep.ExitCode())
+	}
+}
+
+// TestVerify_AllowDirectIsNotAClearDNSHole is the row-2 (Tails leak catalogue)
+// live assertion: with --allow-direct ACTIVE for an ALL-PORTS allow, a clear DNS
+// query (tcp AND udp 53) aimed DIRECTLY at the allowed LAN resolver does NOT get
+// a clear answer from the LAN (it is dropped by the 53-exclusion), while the
+// jail's loopback DNS-over-SOCKS forwarder STILL resolves. This proves
+// --allow-direct cannot be used as a clear-DNS hole to a LAN resolver (which
+// could reveal the local network's public IP).
+//
+// It is the black-hole/counter probe mandated by ADR-0003 and
+// dns-through-socks-is-tcp-not-udp.md, NOT the naive "a direct dig must time
+// out": the CONTROL leg proves the direct host/route is genuinely UP (a non-53
+// TCP connect to the allowed host SUCCEEDS over the split-tunnel), so the SILENCE
+// on port 53 is the firewall DROP, not an unreachable host. The stand-in allowed
+// LAN host is the pasta-mapped host loopback (mappedHostLoopback), the one
+// host-service address a jail netns reaches deterministically without a real LAN
+// peer (the same stand-in the other split-tunnel verify cases use). The allow is
+// PORT-OMITTED (all ports), so the all-ports 53-exclusion rule is what is under
+// test.
+func TestVerify_AllowDirectIsNotAClearDNSHole(t *testing.T) {
+	requirePodman(t)
+
+	// A reachable non-53 TCP service at the allowed LAN host (the pasta map -> host
+	// loopback): the CONTROL leg connects to it to prove the direct host is UP, so
+	// silence on :53 is a DROP not an unreachable host.
+	controlPort, stopControl := startHTTPExitEcho(t)
+	defer stopControl()
+
+	// The fixture is the DNS-over-SOCKS upstream so the jail's loopback forwarder
+	// resolves uniqueName proxy-side (the DNS-still-served leg).
+	resolverPort := startDNSOverTCP(t)
+	fx := socks5hfixture.New(socks5hfixture.Options{
+		ExitIP:         exitIP,
+		AllowIPConnect: true,
+		KnownHosts:     map[string]string{upstreamName: resolverIP},
+	})
+	if err := fx.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("fixture start: %v", err)
+	}
+	defer fx.Close()
+	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
+
+	// The allow is PORT-OMITTED (all TCP ports) for the pasta map, so the run is
+	// split-tunnel active AND the all-ports 53-exclusion rule is exercised.
+	allowAllPorts := []cli.DirectAllow{{
+		Network: &net.IPNet{IP: net.ParseIP(mappedHostLoopback), Mask: net.CIDRMask(32, 32)},
+		Port:    0, // all ports
+		Raw:     mappedHostLoopback,
+	}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	const (
+		controlMarker   = "CONTROL-UP"
+		directDNSMarker = "DIRECT-DNS-ANSWERED"
+	)
+
+	check := verify.Check{Name: "allow-direct-not-a-dns-hole", Run: func(ctx context.Context) verify.Assertion {
+		// Three legs in one jailed probe:
+		//   CONTROL: a non-53 TCP connect to the allowed host succeeds (host is UP).
+		//   DIRECT-DNS: clear DNS (nslookup names the LAN resolver as the server) on
+		//     tcp AND udp 53 to the allowed host -> must get NO answer (dropped). It
+		//     prints directDNSMarker ONLY if a direct clear query answered (the leak).
+		//   FORWARDER: the ordinary loopback resolver resolves uniqueName proxy-side.
+		script := strings.Join([]string{
+			"if nc -z -w 4 " + mappedHostLoopback + " " + controlPort + " 2>/dev/null; then echo " + controlMarker + "; fi",
+			// TCP clear DNS straight at the LAN resolver on :53 (nslookup uses TCP for
+			// -vc); if it answers, the hole is open.
+			"if nslookup -vc -type=A -timeout=3 example.com " + mappedHostLoopback + " >/dev/null 2>&1; then echo " + directDNSMarker + "; fi",
+			// UDP clear DNS straight at the LAN resolver on :53; if it answers, the hole is open.
+			"if nslookup -type=A -timeout=3 example.com " + mappedHostLoopback + " >/dev/null 2>&1; then echo " + directDNSMarker + "; fi",
+			// The forwarder leg: the jail's own resolv.conf resolver (loopback) resolves the unique name.
+			"nslookup " + uniqueName + " 2>&1 || true",
+		}, "; ")
+		cfg := jail.Config{
+			Ephemeral:           true, // internal one-shot: remove-both, no residue
+			Proxy:               cli.ProxyConfig{Host: "127.0.0.1", Port: proxyPort},
+			ProxyOnHostLoopback: true,
+			Image:               "docker.io/library/alpine:latest",
+			DNSUpstream:         upstreamName + ":" + resolverPort,
+			AllowDirect:         allowAllPorts,
+			ToolArgv:            []string{"sh", "-c", script},
+			RunID:               runID("vdnshole"),
+		}
+		res, err := verify.DefaultJailRunner(ctx, cfg)
+		if err != nil {
+			return verify.NoClearLANDNSAssertion(false, false, err)
+		}
+		out := res.ToolStdout
+		// CONTROL must be up, else silence on :53 could be an unreachable host, not a
+		// drop -> the probe has no verdict.
+		if !strings.Contains(out, controlMarker) {
+			return verify.NoClearLANDNSAssertion(false, false,
+				fmt.Errorf("control leg failed: the allowed host %s was not reachable on the non-53 port, so a silent :53 is not provably a DROP; output:\n%s", mappedHostLoopback, out))
+		}
+		directAnswered := strings.Contains(out, directDNSMarker)
+		forwarderResolved := strings.Contains(out, answerIP) && sawHost(fx.ResolvedHosts(), upstreamName)
+		return verify.NoClearLANDNSAssertion(directAnswered, forwarderResolved, nil)
+	}}
+
+	rep := verify.Run(ctx, []verify.Check{check})
+	t.Logf("no-clear-LAN-DNS report:\n%s", rep.String())
+	if !rep.Ok() {
+		t.Fatalf("--allow-direct must NOT be a clear-DNS hole (row 2): direct clear DNS to the LAN resolver must be dropped while the forwarder still resolves:\n%s", rep.String())
 	}
 }
 
