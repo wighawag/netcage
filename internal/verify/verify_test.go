@@ -342,6 +342,62 @@ func TestIPv6EgressFailsClosedAssertion_ProbeErrorIsNotAVerdict(t *testing.T) {
 	}
 }
 
+// --- non-53 UDP incl. UDP/443 (QUIC) dropped (Tails row 5, pure render) ---
+
+// TestNonTCPUDPDroppedAssertion_PassWhenBothUDPPathsDropped is the row-5 pass:
+// NEITHER a raw non-53 UDP datagram to an off-box host NOR a UDP/443 (QUIC)
+// datagram from the jail reached the real network (both markers absent). netcage
+// hard-drops ALL UDP (ADR-0003, "UDP is dropped, period"), so both raw-UDP egress
+// paths fail closed. PASS.
+func TestNonTCPUDPDroppedAssertion_PassWhenBothUDPPathsDropped(t *testing.T) {
+	a := NonTCPUDPDroppedAssertion(false /*udpReached*/, false /*quic443Reached*/, nil)
+	if !a.Ok {
+		t.Fatalf("both raw-UDP paths dropped must PASS; got %+v", a)
+	}
+	if !strings.Contains(strings.ToLower(a.Detail), "udp") {
+		t.Fatalf("pass detail should name the UDP property; got %q", a.Detail)
+	}
+}
+
+// TestNonTCPUDPDroppedAssertion_FailWhenGenericUDPReached is the raw-UDP leak: a
+// generic non-53 UDP datagram from the jail reached the real network => raw UDP
+// bypassed the hard-drop. Must FAIL and name the raw-UDP leak.
+func TestNonTCPUDPDroppedAssertion_FailWhenGenericUDPReached(t *testing.T) {
+	a := NonTCPUDPDroppedAssertion(true /*udpReached*/, false, nil)
+	if a.Ok {
+		t.Fatal("a raw non-53 UDP datagram that reached the real network is a LEAK; must FAIL")
+	}
+	if !strings.Contains(strings.ToLower(a.Detail), "udp") {
+		t.Fatalf("leak detail must name the raw-UDP path; got %q", a.Detail)
+	}
+}
+
+// TestNonTCPUDPDroppedAssertion_FailWhenQUIC443Reached is the QUIC leak: a
+// UDP/443 (QUIC / HTTP-3) datagram from the jail reached the real network => the
+// QUIC case specifically escaped. Must FAIL and name the UDP/443 (QUIC) leak.
+func TestNonTCPUDPDroppedAssertion_FailWhenQUIC443Reached(t *testing.T) {
+	a := NonTCPUDPDroppedAssertion(false, true /*quic443Reached*/, nil)
+	if a.Ok {
+		t.Fatal("a UDP/443 (QUIC) datagram that reached the real network is a LEAK; must FAIL")
+	}
+	if !strings.Contains(a.Detail, "443") {
+		t.Fatalf("leak detail must name the UDP/443 (QUIC) path; got %q", a.Detail)
+	}
+}
+
+// TestNonTCPUDPDroppedAssertion_ProbeErrorIsNotAVerdict: a probe/jail error means
+// we got no verdict on the UDP drop; report it as an Err (a failure), never a
+// false pass and never a false leak claim.
+func TestNonTCPUDPDroppedAssertion_ProbeErrorIsNotAVerdict(t *testing.T) {
+	a := NonTCPUDPDroppedAssertion(false, false, errors.New("context deadline exceeded"))
+	if a.Ok {
+		t.Fatal("a probe error must FAIL the assertion")
+	}
+	if a.Err == nil {
+		t.Fatal("a probe error must be surfaced as an Err, not a silent Detail verdict")
+	}
+}
+
 // --- split-tunnel: allowlist-aware report composition (pure orchestration) ---
 
 // pass/fail check builders for composition tests.

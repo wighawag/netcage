@@ -118,6 +118,8 @@ netcage verify --proxy socks5h://127.0.0.1:9050
 
 It resolves the proxy the same way `run` does (`--proxy` > `NETCAGE_PROXY` > config file), so a bare `netcage verify` tests your persisted default, and it prints which source supplied the proxy (`source: flag|env|config`). It exits non-zero if any assertion fails, so CI can gate on it. Run it during development/CI, not per use.
 
+The fixture-backed leak-test also proves the broader leak surface the jail closes, including that **raw non-53 UDP is dropped**: a UDP/443 (QUIC / HTTP-3) datagram from the jail is dropped like all other UDP (ADR-0003), so a real client that tries HTTP-3 is expected to **degrade to TCP** rather than leak (that TCP fallback is client behaviour, not something netcage tests). This does not break DNS: DNS still works over the proxy because the in-jail forwarder converts it to TCP (it is not a UDP path), and the UDP-drop assertion targets non-53 UDP only.
+
 ## Configuring a default proxy: setup-default
 
 So netcage is a true drop-in `podman` replacement, you can persist a **default proxy** once and then run `netcage run <image>` with no `--proxy`. `netcage setup-default` is the interactive, re-runnable onboarding verb that writes it (it is the ONLY thing that writes the config file):
