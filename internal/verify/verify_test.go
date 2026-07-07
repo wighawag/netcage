@@ -285,6 +285,63 @@ func TestNoClearLANDNSAssertion_ProbeErrorIsNotAVerdict(t *testing.T) {
 	}
 }
 
+// --- IPv6 egress fails-closed (Tails row 3, pure render) ---
+
+// TestIPv6EgressFailsClosedAssertion_PassWhenBothV6PathsDropped is the row-3
+// pass: NEITHER a v6-literal TCP attempt NOR a v6 DNS/AAAA attempt from the jail
+// reached the real network (both markers absent). netcage does not carry v6 (no
+// v6 default route out of the netns; egress v6 UDP is hard-dropped), so both v6
+// egress paths fail closed. PASS.
+func TestIPv6EgressFailsClosedAssertion_PassWhenBothV6PathsDropped(t *testing.T) {
+	a := IPv6EgressFailsClosedAssertion(false /*v6TCPReached*/, false /*v6DNSReached*/, nil)
+	if !a.Ok {
+		t.Fatalf("both v6 paths dropped must PASS; got %+v", a)
+	}
+	if !strings.Contains(strings.ToLower(a.Detail), "ipv6") && !strings.Contains(strings.ToLower(a.Detail), "v6") {
+		t.Fatalf("pass detail should name the v6 property; got %q", a.Detail)
+	}
+}
+
+// TestIPv6EgressFailsClosedAssertion_FailWhenV6TCPReached is the v6-TCP leak: a
+// v6-literal TCP connect from the jail reached the real network => v6 is a
+// bypass of the forced egress (the classic transparent-proxy leak). Must FAIL
+// and name the v6 TCP leak.
+func TestIPv6EgressFailsClosedAssertion_FailWhenV6TCPReached(t *testing.T) {
+	a := IPv6EgressFailsClosedAssertion(true /*v6TCPReached*/, false, nil)
+	if a.Ok {
+		t.Fatal("a v6-literal TCP that reached the real network is a LEAK; must FAIL")
+	}
+	if !strings.Contains(strings.ToLower(a.Detail), "tcp") {
+		t.Fatalf("leak detail must name the v6 TCP path; got %q", a.Detail)
+	}
+}
+
+// TestIPv6EgressFailsClosedAssertion_FailWhenV6DNSReached is the v6-DNS leak: a
+// v6 DNS/AAAA path from the jail reached the real network => v6 DNS bypassed the
+// proxy-side resolver. Must FAIL and name the v6 DNS leak.
+func TestIPv6EgressFailsClosedAssertion_FailWhenV6DNSReached(t *testing.T) {
+	a := IPv6EgressFailsClosedAssertion(false, true /*v6DNSReached*/, nil)
+	if a.Ok {
+		t.Fatal("a v6 DNS/AAAA path that reached the real network is a LEAK; must FAIL")
+	}
+	if !strings.Contains(strings.ToLower(a.Detail), "dns") {
+		t.Fatalf("leak detail must name the v6 DNS path; got %q", a.Detail)
+	}
+}
+
+// TestIPv6EgressFailsClosedAssertion_ProbeErrorIsNotAVerdict: a probe/jail error
+// means we got no verdict on the v6 drop; report it as an Err (a failure), never
+// a false pass and never a false leak claim.
+func TestIPv6EgressFailsClosedAssertion_ProbeErrorIsNotAVerdict(t *testing.T) {
+	a := IPv6EgressFailsClosedAssertion(false, false, errors.New("context deadline exceeded"))
+	if a.Ok {
+		t.Fatal("a probe error must FAIL the assertion")
+	}
+	if a.Err == nil {
+		t.Fatal("a probe error must be surfaced as an Err, not a silent Detail verdict")
+	}
+}
+
 // --- split-tunnel: allowlist-aware report composition (pure orchestration) ---
 
 // pass/fail check builders for composition tests.

@@ -285,6 +285,58 @@ func NoClearLANDNSAssertion(directAnswered, forwarderResolved bool, probeErr err
 	return Assertion{Ok: true, Detail: "direct clear DNS to the LAN resolver is dropped; DNS is served by the jail's loopback DNS-over-SOCKS forwarder (no direct clear query egresses to the LAN)"}
 }
 
+// IPv6EgressFailsClosedProbe runs a probe through the jail that attempts BOTH v6
+// egress paths and reports which reached the real network. cfg's ToolArgv must
+// try a v6-literal TCP connect and a v6 DNS/AAAA lookup, printing v6TCPMarker iff
+// the v6 TCP attempt egressed and v6DNSMarker iff the v6 DNS attempt egressed,
+// and MUST NOT print either when the attempt was dropped / unrouted.
+//
+// It is the Tails row-3 probe (IPv6 as a total bypass). netcage does not carry
+// v6 at all: the jail's forced egress is v4-through-the-TUN (CLONE_MAIN=0 leaves
+// the netns with only a v4 `default dev tun0`, so v6 TCP is unrouted) and egress
+// v6 UDP is hard-dropped (firewallScript's ip6tables DROP, ADR-0003 parity), so
+// BOTH markers must be ABSENT. A marker's PRESENCE is a LEAK. A jail-run error is
+// propagated (no verdict), never a false pass.
+func IPv6EgressFailsClosedProbe(ctx context.Context, run JailRunner, cfg jail.Config, v6TCPMarker, v6DNSMarker string) (v6TCPReached, v6DNSReached bool, err error) {
+	res, err := run(ctx, cfg)
+	if err != nil {
+		return false, false, fmt.Errorf("ipv6-egress-fails-closed probe: jail run: %w", err)
+	}
+	return strings.Contains(res.ToolStdout, v6TCPMarker), strings.Contains(res.ToolStdout, v6DNSMarker), nil
+}
+
+// IPv6EgressFailsClosedAssertion renders the Tails row-3 verdict (IPv6 as a total
+// bypass) from the two observations the live probe makes (plus any probe error),
+// as a pure function so the message split is unit-testable without podman (it is
+// exported so the podman-gated integration probe can reuse the exact same verdict
+// logic). The PASS is that netcage does not carry v6: neither a v6-literal TCP
+// attempt nor a v6 DNS/AAAA attempt from the jail reaches the real network. Its
+// INTENT matches anonctl's equivalent v6-drop assertion (assert v6 is dropped,
+// not proxied):
+//
+//   - probeErr != nil: the probe/jail itself errored, so there is NO verdict on
+//     the v6 drop. Surfaced as an Err (a failure), never a false pass or a false
+//     leak claim.
+//   - v6TCPReached: a v6-literal TCP connect from the jail reached the real
+//     network => v6 bypassed the forced egress (the classic transparent-proxy
+//     leak: v4 forced, v6 in the clear). FAIL, naming the v6 TCP leak.
+//   - v6DNSReached: a v6 DNS/AAAA path from the jail reached the real network =>
+//     v6 DNS bypassed the proxy-side resolver. FAIL, naming the v6 DNS leak.
+//   - neither reached: BOTH v6 egress paths failed closed (v6 TCP unrouted, v6
+//     UDP/DNS dropped). PASS: netcage does not carry v6.
+func IPv6EgressFailsClosedAssertion(v6TCPReached, v6DNSReached bool, probeErr error) Assertion {
+	if probeErr != nil {
+		return Assertion{Ok: false, Err: fmt.Errorf("the ipv6-egress-fails-closed probe could not run (a jail/runtime error, NOT a verdict on the v6 drop): %w", probeErr)}
+	}
+	if v6TCPReached {
+		return Assertion{Ok: false, Detail: "LEAK: a v6-literal TCP connect from the jail REACHED the real network; IPv6 bypassed the forced egress (the classic transparent-proxy leak: v4 forced, v6 in the clear). All v6 egress must fail closed."}
+	}
+	if v6DNSReached {
+		return Assertion{Ok: false, Detail: "LEAK: a v6 DNS/AAAA path from the jail REACHED the real network; IPv6 DNS bypassed the proxy-side resolver. All v6 egress must fail closed."}
+	}
+	return Assertion{Ok: true, Detail: "IPv6 egress fails closed: neither a v6-literal TCP connect nor a v6 DNS/AAAA path from the jail reached the real network (netcage does not carry v6: v6 TCP is unrouted, egress v6 UDP is dropped)"}
+}
+
 // SplitTunnelChecks composes the allowlist-aware leak-test check list: the three
 // CORE leak assertions (exit-IP is the proxy's, DNS is proxy-side, fail-closed on
 // proxy-kill) ALWAYS run, and each DIRECT-reachability check is appended AFTER
