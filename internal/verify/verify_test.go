@@ -441,6 +441,64 @@ func TestICMPDroppedAssertion_ProbeErrorIsNotAVerdict(t *testing.T) {
 	}
 }
 
+// --- jail loopback confined (Tails row 6, pure render) ---
+
+// TestJailLoopbackConfinedAssertion_PassWhenForwarderReachableAndOtherLoopbackDropped
+// is the row-6 pass: the jail's OWN intended loopback (the in-jail
+// DNS-over-SOCKS forwarder) IS reachable, while a DIFFERENT 127.0.0.1 service
+// (the pasta host-loopback reachback aimed at a non-proxy port) is DROPPED. The
+// jail is confined to its own loopback: only the intended peer works. PASS.
+func TestJailLoopbackConfinedAssertion_PassWhenForwarderReachableAndOtherLoopbackDropped(t *testing.T) {
+	a := JailLoopbackConfinedAssertion(false /*otherLoopbackReached*/, true /*forwarderReachable*/, nil)
+	if !a.Ok {
+		t.Fatalf("forwarder reachable + other loopback dropped must PASS; got %+v", a)
+	}
+	if !strings.Contains(strings.ToLower(a.Detail), "loopback") {
+		t.Fatalf("pass detail should name the loopback-confinement property; got %q", a.Detail)
+	}
+}
+
+// TestJailLoopbackConfinedAssertion_FailWhenOtherLoopbackReached is the row-6
+// leak: a connection to a DIFFERENT 127.0.0.1 service (a host service reached via
+// the pasta host-loopback reachback on a non-proxy port) egressed, so the jail
+// pivoted to another loopback destination as an escape hatch. Must FAIL and name
+// the loopback leak.
+func TestJailLoopbackConfinedAssertion_FailWhenOtherLoopbackReached(t *testing.T) {
+	a := JailLoopbackConfinedAssertion(true /*otherLoopbackReached*/, true, nil)
+	if a.Ok {
+		t.Fatal("reaching a DIFFERENT loopback service is an escape-hatch LEAK; must FAIL")
+	}
+	if !strings.Contains(strings.ToLower(a.Detail), "loopback") {
+		t.Fatalf("leak detail must name the other-loopback escape hatch; got %q", a.Detail)
+	}
+}
+
+// TestJailLoopbackConfinedAssertion_FailWhenForwarderUnreachable guards
+// NON-VACUITY: the other loopback is dropped (good) but the jail's OWN intended
+// loopback (the DNS forwarder) is NOT reachable, so "everything on loopback is
+// dropped" would pass trivially and hide a broken forwarder. That is not a pass:
+// the assertion must FAIL (a jail that cannot reach its own forwarder is not
+// proof the confinement is right).
+func TestJailLoopbackConfinedAssertion_FailWhenForwarderUnreachable(t *testing.T) {
+	a := JailLoopbackConfinedAssertion(false, false /*forwarderReachable*/, nil)
+	if a.Ok {
+		t.Fatal("other loopback dropped but the jail's own forwarder unreachable is NOT a pass; the intended loopback must work (non-vacuous)")
+	}
+}
+
+// TestJailLoopbackConfinedAssertion_ProbeErrorIsNotAVerdict: a probe/jail error
+// means we got no verdict on the confinement; report it as an Err (a failure),
+// never a false pass and never a false leak claim.
+func TestJailLoopbackConfinedAssertion_ProbeErrorIsNotAVerdict(t *testing.T) {
+	a := JailLoopbackConfinedAssertion(false, true, errors.New("context deadline exceeded"))
+	if a.Ok {
+		t.Fatal("a probe error must FAIL the assertion")
+	}
+	if a.Err == nil {
+		t.Fatal("a probe error must be surfaced as an Err, not a silent Detail verdict")
+	}
+}
+
 // --- split-tunnel: allowlist-aware report composition (pure orchestration) ---
 
 // pass/fail check builders for composition tests.
