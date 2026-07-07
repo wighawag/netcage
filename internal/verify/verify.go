@@ -337,6 +337,62 @@ func IPv6EgressFailsClosedAssertion(v6TCPReached, v6DNSReached bool, probeErr er
 	return Assertion{Ok: true, Detail: "IPv6 egress fails closed: neither a v6-literal TCP connect nor a v6 DNS/AAAA path from the jail reached the real network (netcage does not carry v6: v6 TCP is unrouted, egress v6 UDP is dropped)"}
 }
 
+// NonTCPUDPDroppedProbe runs a probe through the jail that fires BOTH raw-UDP
+// egress attempts and reports which reached the real network. cfg's ToolArgv must
+// send a raw non-53 UDP datagram to an off-box host and a UDP/443 (QUIC) datagram
+// to an off-box host, printing udpMarker iff the generic non-53 UDP attempt
+// egressed and quic443Marker iff the UDP/443 attempt egressed, and MUST NOT print
+// either when the datagram was dropped / unanswered.
+//
+// It is the Tails row-5 probe (raw non-53 UDP incl. UDP/443 QUIC). netcage
+// hard-drops ALL UDP unconditionally (ADR-0003: "UDP is dropped, period"), so
+// BOTH markers must be ABSENT. A marker's PRESENCE is a LEAK. Note this does NOT
+// conflict with DNS: DNS still works DESPITE the UDP drop because the in-jail
+// DNS-over-SOCKS forwarder is a client-side UDP->TCP conversion (ADR-0003 /
+// dns-through-socks-is-tcp-not-udp.md), and this probe targets NON-53 UDP. A
+// jail-run error is propagated (no verdict), never a false pass.
+func NonTCPUDPDroppedProbe(ctx context.Context, run JailRunner, cfg jail.Config, udpMarker, quic443Marker string) (udpReached, quic443Reached bool, err error) {
+	res, err := run(ctx, cfg)
+	if err != nil {
+		return false, false, fmt.Errorf("non-tcp-udp-dropped probe: jail run: %w", err)
+	}
+	return strings.Contains(res.ToolStdout, udpMarker), strings.Contains(res.ToolStdout, quic443Marker), nil
+}
+
+// NonTCPUDPDroppedAssertion renders the Tails row-5 verdict (raw non-53 UDP incl.
+// UDP/443 QUIC) from the two observations the live probe makes (plus any probe
+// error), as a pure function so the message split is unit-testable without podman
+// (it is exported so the podman-gated integration probe can reuse the exact same
+// verdict logic). The PASS is that netcage hard-drops ALL UDP: neither a generic
+// non-53 UDP datagram nor a UDP/443 (QUIC / HTTP-3) datagram from the jail reaches
+// the real network. Its INTENT matches anonctl's equivalent non-tcp-udp-drop
+// assertion (assert UDP is dropped, not proxied):
+//
+//   - probeErr != nil: the probe/jail itself errored, so there is NO verdict on
+//     the UDP drop. Surfaced as an Err (a failure), never a false pass or a false
+//     leak claim.
+//   - udpReached: a raw non-53 UDP datagram from the jail reached the real network
+//     => raw UDP bypassed the hard-drop (a leak surface for QUIC/HTTP3/ping-style
+//     traffic). FAIL, naming the raw-UDP leak.
+//   - quic443Reached: a UDP/443 (QUIC / HTTP-3) datagram from the jail reached the
+//     real network => the QUIC case specifically escaped. FAIL, naming the UDP/443
+//     leak.
+//   - neither reached: BOTH raw-UDP egress paths failed closed. PASS: netcage
+//     hard-drops all UDP (a real client is expected to degrade to TCP; that is
+//     client behaviour, not asserted here).
+func NonTCPUDPDroppedAssertion(udpReached, quic443Reached bool, probeErr error) Assertion {
+	if probeErr != nil {
+		return Assertion{Ok: false, Err: fmt.Errorf("the non-tcp-udp-dropped probe could not run (a jail/runtime error, NOT a verdict on the UDP drop): %w", probeErr)}
+	}
+	if udpReached {
+		return Assertion{Ok: false, Detail: "LEAK: a raw non-53 UDP datagram from the jail REACHED the real network; raw UDP bypassed the hard-drop (a leak surface for QUIC/HTTP3/ping-style traffic). All UDP must be dropped (ADR-0003)."}
+	}
+	if quic443Reached {
+		return Assertion{Ok: false, Detail: "LEAK: a UDP/443 (QUIC / HTTP-3) datagram from the jail REACHED the real network; the QUIC case specifically escaped. All UDP must be dropped (ADR-0003)."}
+	}
+	return Assertion{Ok: true, Detail: "raw non-53 UDP is dropped: neither a generic non-53 UDP datagram nor a UDP/443 (QUIC) datagram from the jail reached the real network (netcage hard-drops all UDP, ADR-0003; a real client degrades to TCP)"}
+}
+
 // SplitTunnelChecks composes the allowlist-aware leak-test check list: the three
 // CORE leak assertions (exit-IP is the proxy's, DNS is proxy-side, fail-closed on
 // proxy-kill) ALWAYS run, and each DIRECT-reachability check is appended AFTER
