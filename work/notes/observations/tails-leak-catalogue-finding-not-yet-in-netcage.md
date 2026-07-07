@@ -1,0 +1,3 @@
+# Tails leak-catalogue finding referenced but not present in netcage findings
+
+2026-07-07: The task `allow-direct-must-not-be-a-dns-hole` and the idea note `work/notes/ideas/verify-leak-catalogue-backlog.md` both reference `work/notes/findings/learning-from-anonctl-tails-leak-catalogue.md` as the row-2 source, but that findings file does not exist in this repo (only the canonical analysis in the sibling anonctl repo's `tails-network-filter-lessons.md` exists). Not load-bearing for the fix (the anonctl analysis + ADR-0003/0005 were sufficient), but the catalogue finding may want importing into netcage's `work/notes/findings/` so the remaining backlog rows have a local anchor.

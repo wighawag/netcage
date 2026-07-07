@@ -3,6 +3,7 @@ package jail
 import (
 	"errors"
 	"net"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -150,6 +151,55 @@ func TestFirewallScript_AllowlistAcceptsBeforeDropsWithRFC1918Drops(t *testing.T
 	// UDP hard-drop is untouched (ADR-0003): directs are TCP-only.
 	if !strings.Contains(rs, "iptables -A OUTPUT -p udp -j DROP") {
 		t.Fatalf("UDP must still be hard-dropped even with an allowlist\ngot:\n%s", rs)
+	}
+}
+
+// TestFirewallScript_AllPortsAllowExcludesClearDNS: a PORT-OMITTED (all-TCP-ports)
+// allow must NOT carry clear DNS to the LAN host (row 2 of the Tails leak
+// catalogue). The all-ports accept would otherwise include tcp/53, opening a
+// direct clear TCP-DNS hole to a LAN resolver (which can reveal the local
+// network's public IP). The fix: emit a DROP for the clear-DNS ports (53/853/5353)
+// to that net BEFORE the all-ports accept, so 53 falls to the loopback
+// DNS-over-SOCKS forwarder (never direct to the LAN) while every other TCP port
+// stays reachable. iptables is first-match, so the DROP shadows the accept for 53.
+func TestFirewallScript_AllPortsAllowExcludesClearDNS(t *testing.T) {
+	c := cfg()
+	c.ProxyOnHostLoopback = true
+	c.AllowDirect = []cli.DirectAllow{allow(t, "192.168.1.150", 0)} // all TCP ports
+	rs := c.firewallScript("9050")
+
+	allPortsAccept := "iptables -A OUTPUT -p tcp -d 192.168.1.150/32 -j ACCEPT"
+	if !strings.Contains(rs, allPortsAccept) {
+		t.Fatalf("all-ports allow must still accept non-DNS TCP %q\ngot:\n%s", allPortsAccept, rs)
+	}
+
+	// The clear-DNS ports must be DROPPED to that net, and each drop must precede
+	// the all-ports accept (iptables first-match: the DROP must shadow the accept).
+	acceptIdx := strings.Index(rs, allPortsAccept)
+	for _, port := range []int{53, 853, 5353} {
+		drop := "iptables -A OUTPUT -p tcp -d 192.168.1.150/32 --dport " + strconv.Itoa(port) + " -j DROP"
+		idx := strings.Index(rs, drop)
+		if idx < 0 {
+			t.Fatalf("all-ports allow must DROP clear-DNS port %d to the net %q\ngot:\n%s", port, drop, rs)
+		}
+		if idx > acceptIdx {
+			t.Fatalf("clear-DNS DROP for %d must PRECEDE the all-ports accept (first-match); drop at %d, accept at %d\n%s", port, idx, acceptIdx, rs)
+		}
+	}
+}
+
+// TestFirewallScript_PortScopedAllowCarriesNoDNSExclusion: a PORT-SCOPED allow
+// (an explicit non-DNS port) needs NO 53-exclusion drop, because it only opens
+// that one port; the guardrail already rejects an explicit :53 at the CLI. So the
+// 53-drop shape appears ONLY for the port-omitted (all-ports) case, keeping the
+// per-port rule minimal.
+func TestFirewallScript_PortScopedAllowCarriesNoDNSExclusion(t *testing.T) {
+	c := cfg()
+	c.ProxyOnHostLoopback = true
+	c.AllowDirect = []cli.DirectAllow{allow(t, "192.168.1.150", 8080)}
+	rs := c.firewallScript("9050")
+	if strings.Contains(rs, "--dport 53 -j DROP") {
+		t.Fatalf("a port-scoped (non-DNS) allow must not emit a 53-exclusion drop\ngot:\n%s", rs)
 	}
 }
 

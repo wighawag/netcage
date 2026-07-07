@@ -320,7 +320,7 @@ netcage run --proxy socks5h://127.0.0.1:9050 \
   -it -v ./work my/agent-image agent
 ```
 
-Guardrails (see ADR-0005): **off by default** (an empty allowlist is byte-identical to the strict jail); **private ranges only** (public IPs / hostnames / malformed values are rejected loudly at startup, because a public direct would be a real anonymity leak); **TCP only** (UDP stays hard-dropped even to an allowlisted host, ADR-0003); and everything outside the allowlist stays leak-proof. `verify` proves the jail is still leak-tight for all non-allowlisted traffic when a split tunnel is active.
+Guardrails (see ADR-0005): **off by default** (an empty allowlist is byte-identical to the strict jail); **private ranges only** (public IPs / hostnames / malformed values are rejected loudly at startup, because a public direct would be a real anonymity leak); **TCP only** (UDP stays hard-dropped even to an allowlisted host, ADR-0003); **never a clear-DNS hole** (an explicit `:53`/`:853`/`:5353` is rejected loudly, and a port-omitted "all ports" allow excludes those clear-DNS ports, so a LAN resolver is un-allowable and DNS stays on the proxy-side forwarder, ADR-0018, because a `@LAN-resolver` query could reveal your network's public IP); and everything outside the allowlist stays leak-proof. `verify` proves the jail is still leak-tight for all non-allowlisted traffic when a split tunnel is active, including that `--allow-direct` carries no direct clear DNS to the LAN.
 
 ## Platform
 

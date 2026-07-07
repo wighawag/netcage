@@ -229,6 +229,62 @@ func TestDirectReachableProbe_JailErrorIsNotReached(t *testing.T) {
 	}
 }
 
+// --- split-tunnel: no-clear-LAN-DNS assertion (row 2, pure render) ---
+
+// TestNoClearLANDNSAssertion_PassWhenDirectDroppedAndForwarderResolves is the
+// row-2 pass: with --allow-direct active, a DIRECT clear-DNS query aimed at the
+// allowed LAN resolver is NOT answered directly (dropped / no clear answer), AND
+// the loopback DNS-over-SOCKS forwarder STILL resolves. The black-hole/counter
+// shape (NOT "direct dig must time out"): the pass is "no direct clear answer
+// from the LAN", proven alongside the forwarder still working.
+func TestNoClearLANDNSAssertion_PassWhenDirectDroppedAndForwarderResolves(t *testing.T) {
+	a := NoClearLANDNSAssertion(false /*directAnswered*/, true /*forwarderResolved*/, nil)
+	if !a.Ok {
+		t.Fatalf("direct DROPPED + forwarder resolves must PASS; got %+v", a)
+	}
+	if !strings.Contains(strings.ToLower(a.Detail), "forwarder") {
+		t.Fatalf("pass detail should credit the forwarder path; got %q", a.Detail)
+	}
+}
+
+// TestNoClearLANDNSAssertion_FailWhenDirectAnswered is the leak: a DIRECT clear
+// query to the LAN resolver got an answer => --allow-direct opened a clear-DNS
+// hole to the LAN (the exact Tails row-2 leak). Must FAIL and name the leak.
+func TestNoClearLANDNSAssertion_FailWhenDirectAnswered(t *testing.T) {
+	a := NoClearLANDNSAssertion(true /*directAnswered*/, true, nil)
+	if a.Ok {
+		t.Fatal("a direct clear-DNS answer from the LAN resolver is a LEAK; must FAIL")
+	}
+	if !strings.Contains(strings.ToLower(a.Detail), "clear") || !strings.Contains(strings.ToLower(a.Detail), "dns") {
+		t.Fatalf("leak detail must name the clear-DNS hole; got %q", a.Detail)
+	}
+}
+
+// TestNoClearLANDNSAssertion_FailWhenForwarderBroken guards the OTHER half: the
+// direct is dropped (good) but the loopback forwarder does NOT resolve, so DNS
+// is not actually served over the proxy path. That is not a pass: the assertion
+// must FAIL (a jail whose DNS is simply dead is not proof the hole is closed the
+// RIGHT way).
+func TestNoClearLANDNSAssertion_FailWhenForwarderBroken(t *testing.T) {
+	a := NoClearLANDNSAssertion(false, false /*forwarderResolved*/, nil)
+	if a.Ok {
+		t.Fatal("direct dropped but forwarder dead is NOT a pass; DNS must be served over the proxy path")
+	}
+}
+
+// TestNoClearLANDNSAssertion_ProbeErrorIsNotAVerdict: a probe/jail error means we
+// got no verdict on the hole; report it as an Err (a failure), never a false
+// pass and never a false leak claim.
+func TestNoClearLANDNSAssertion_ProbeErrorIsNotAVerdict(t *testing.T) {
+	a := NoClearLANDNSAssertion(false, true, errors.New("context deadline exceeded"))
+	if a.Ok {
+		t.Fatal("a probe error must FAIL the assertion")
+	}
+	if a.Err == nil {
+		t.Fatal("a probe error must be surfaced as an Err, not a silent Detail verdict")
+	}
+}
+
 // --- split-tunnel: allowlist-aware report composition (pure orchestration) ---
 
 // pass/fail check builders for composition tests.
