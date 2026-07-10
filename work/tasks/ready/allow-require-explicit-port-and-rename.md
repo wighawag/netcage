@@ -1,0 +1,58 @@
+---
+title: --allow requires an explicit port (drop the all-ports / bare-IP form) and rename --allow-direct -> --allow
+slug: allow-require-explicit-port-and-rename
+blockedBy: []
+covers: []
+---
+
+## What to build
+
+Two coupled, deliberately BACKWARD-INCOMPATIBLE changes to netcage's split-tunnel direct exemption (no compat aliases, no migration shims: a clean break, netcage does not care about backward compatibility at this point). This is the exact netcage analogue of anonctl's landed `allow-require-explicit-port-and-rename` (anonctl ADR-0007); the two tools share the `--allow` vocabulary and the intent, and this keeps them aligned. See `work/notes/idea-loopback-reachback-for-a-host-local-service.md` (the prerequisite-finding section).
+
+1. **Port is MANDATORY. Drop the all-ports (bare-IP / port-omitted) form entirely.** Today `--allow-direct 192.168.1.150` (or a bare `10.0.0.0/24`) opens `iptables -A OUTPUT -p tcp -d <host> -j ACCEPT` for EVERY TCP port except the clear-DNS ports, direct and un-anonymized. That is a real DEANONYMIZATION leak, not just a wide hole: if the exempted LAN host runs ANY forwarding proxy on some other port (an `ssh -D` SOCKS on 1080, a squid/HTTP proxy on 3128, a Tor SOCKS on 9050, a socat/reverse tunnel), the jailed tool can dial that proxy directly and egress to the WHOLE internet from your real IP, around the forced path. The clear-DNS exclusion (ADR-0018) patched one symptom; the disease is "all ports", and a forwarding-proxy port deanonymizes MORE than a DNS port (arbitrary traffic, not just name lookups). The only defensible granularity for an anonymity jail is "reach exactly THIS service", so a direct hole must ALWAYS be an exact `IP:port` (or `CIDR:port`). REJECT a port-omitted value LOUDLY at config time, naming the value and telling the user to add `:port`.
+
+2. **Rename the flag `--allow-direct` -> `--allow`, and the config key `allowDirect` -> `allow`.** With the port now always explicit (and, in the sibling task `allow-host-loopback-reachback`, host loopback added), one flag covers all direct-destination classes; `--allow` reads as "allow this exact destination directly, whatever its class", and netcage dispatches on the address the user already typed. Clean break across the whole user-facing surface: the CLI flag (space and `=` forms, the dangling-value error), the config JSON key, the usage/README text, and the ADR text. netcage mirrors anonctl's `--allow` vocabulary so the two stay aligned.
+
+## Why this is its own task (a prerequisite)
+
+The port-mandatory tightening is a security fix to SHIPPED behaviour and stands alone; the host-loopback reachback (`allow-host-loopback-reachback`) layers on top and is much simpler once "exact host:port only" is the invariant (LAN and host-loopback holes become the same exact-host:port shape, differing only in the per-class guardrail). Landing this first makes that task a clean addition rather than a tangle. Serialized before `allow-host-loopback-reachback`.
+
+## Blast radius (every site the grep found; adapt to what is actually there)
+
+- **`internal/cli/allowdirect.go`**: `parseAllowDirect` must REJECT a port-omitted value (`Port == 0` after split) LOUDLY, naming the value + "add :port". Remove the "Port 0 = all ports" contract from `DirectAllow`'s doc comment and the `parseAllowDirect`/`splitAllowDirectPort` comments. Keep the explicit clear-DNS-port rejection (`clearDNSPorts`) and the private-range guardrail (`networkWithinPrivateRanges`) unchanged. Consider renaming the file/symbols (`parseAllowDirect` -> `parseAllow`, `DirectAllow` stays fine as a type name) for coherence, but the operator-facing surface is what MUST change.
+- **`internal/jail/jail.go`**: `writeSplitTunnelAccepts` — the `a.Port == 0` branch (the all-ports accept with the clear-DNS-port DROP exclusion, `clearDNSExcludePorts`) becomes DEAD once `Port == 0` cannot reach the generator, and MUST be removed, so no code path emits an all-TCP accept. Every entry now emits an exact `--dport <port>` accept. Update `firewallVerifyRules` (the `Port == 0` verify shape) and the comments that explain the all-ports/clear-DNS-exclusion rationale.
+- **`internal/cli/cli.go`**: rename the `--allow-direct` token (space `case a == "--allow-direct"` and `--allow-direct=` prefix forms), the dangling-value error message, the unknown-flag help string that lists `--allow-direct`, and the `AllowDirect` field doc comments (the flag name in prose). The `AllowDirect []DirectAllow` field name is internal; renaming it is optional tidiness (the operator-facing flag is NOT optional).
+- **`internal/cli/config.go`**: rename the JSON key `allowDirect` -> `allow` on the `Config.AllowDirect` struct tag; update the parse-error hint string (`expected {"proxy":...,"allowDirect":[...]}` -> `"allow"`), the doc comments, and route each config `allow` entry through the SAME port-mandatory `parseAllowDirect`.
+- **`internal/setupdefault/setupdefault.go` + `main.go` `WriteConfig`**: the writer emits the `allow` key; carry-through of an existing list still works. Fixtures that use bare IPs must become `IP:port`.
+- **`internal/verify/verify.go`**: the `DirectReachableProbe` / clear-DNS-hole assertion comments mention `--allow-direct`; rename in prose. The assertion MEANING is unchanged (a named direct is reachable, non-allowlisted stays tight, no direct clear DNS), re-expressed for an exact-port exemption (no all-ports case to probe).
+- **`main.go`**: rename every `--allow-direct` in the usage string and the `start` operating-notes; update any `defaults.json` example to `{"allow": ["192.168.1.150:8080"]}`.
+- **`README.md`**: rename `--allow-direct` -> `--allow` everywhere (lines ~59, 99, 146, 205, 319, 323, 327, 346), rename the `allowDirect` JSON key -> `allow` (line ~142), and rewrite the split-tunnel section to state a port is REQUIRED and WHY (an all-ports hole to a host running a forwarding proxy is a deanonymization vector). Note netcage mirrors anonctl's `--allow` vocabulary.
+- **`docs/adr/`**: correct ADR-0005 (and ADR-0018's all-ports-excludes-clear-DNS framing) where they document the port-omitted / all-ports form, to "port is mandatory; the all-ports form is removed as a deanonymization risk". Add a short ADR recording the port-mandatory decision + rationale (a forwarding proxy on an unspecified port is a real leak; "reach exactly this service" is the only defensible granularity), OR amend ADR-0005 with a Status/Decision note. Keep ADR-0018's clear-DNS-hole rule valid (it now only concerns an explicit `:53`/`:853`/`:5353`, which is still rejected).
+- **Tests**: every test that builds a port-omitted exemption must be updated to an explicit port, and a port-omitted-is-rejected case added. Sites include `internal/cli/config_test.go` (the `192.168.1.0/24` bare fixture, the REPLACE test), `internal/cli/cli_test.go`, `internal/cli/allowdirect_test.go` (if present), `internal/jail/splittunnel_test.go` (the all-ports accept / clear-DNS-exclusion assertions become the exact-port shape), `internal/jail/jail_test.go`, `internal/setupdefault/setupdefault_test.go`, and any verify integration test that used an all-ports LAN exemption.
+
+## Acceptance criteria
+
+- [ ] A port-omitted direct exemption (`--allow 192.168.1.150`, `--allow 10.0.0.0/24`, or the same in the config `allow` list) is REJECTED loudly at config time, naming the value and instructing the user to add `:port`. There is NO code path that emits an all-TCP (port-omitted) accept any more; `firewallScript`/`writeSplitTunnelAccepts` only ever emits an exact `--dport <port>` accept.
+- [ ] An exact `--allow <IP|CIDR>:<port>` still works: the exempted host:port is reachable directly over the LAN, everything else stays forced/dropped, and an explicit `:53`/`:853`/`:5353` is still rejected; the private-range guardrail (RFC1918 / link-local only) is unchanged.
+- [ ] The flag is `--allow` (not `--allow-direct`) and the config key is `allow` (not `allowDirect`); the whole test suite, usage text, README, and ADRs are consistent with the new names, with NO lingering `--allow-direct` / `allowDirect` operator-facing tokens.
+- [ ] `verify`'s split-tunnel and never-a-clear-DNS-hole assertions still pass, re-expressed for exact-port exemptions.
+- [ ] Unit tests cover: port-omitted rejected (flag AND config); `:53`/`:853`/`:5353` rejected; public/hostname/malformed rejected; a valid `IP:port` and `CIDR:port` accepted; the empty allowlist still yields the byte-identical strict-jail firewall (no RFC1918 drops, no accepts).
+- [ ] The empty-allowlist == today invariant is preserved (ADR-0005): an empty `allow` produces byte-identical `SidecarRunArgs` + `firewallScript` to before this change.
+
+## Blocked by
+
+- None: can start immediately.
+
+## Prompt
+
+> Goal: make netcage's split-tunnel direct exemption PORT-MANDATORY (DROP the all-ports / bare-IP form, which is a deanonymization leak when the exempted host runs a forwarding proxy on an unspecified port) and rename `--allow-direct` -> `--allow` (and the config key `allowDirect` -> `allow`). This is a deliberate BACKWARD-INCOMPATIBLE clean break: no compat aliases, no migration. Prerequisite for `allow-host-loopback-reachback`. It is the exact netcage analogue of anonctl's landed `allow-require-explicit-port-and-rename` (anonctl ADR-0007) — read that for the shared vocabulary, but netcage's mechanism (iptables in the sidecar netns + TUN_EXCLUDED_ROUTES) is its own; do not copy anonctl's per-UID nftables shapes.
+>
+> FIRST, check drift (WORK-CONTRACT.md "Drift is a needs-attention signal"): grep the repo for `allow-direct` / `allowDirect` / `AllowDirect` / `Port == 0` and read `internal/cli/allowdirect.go`, `internal/cli/config.go`, `internal/cli/cli.go`, `internal/jail/jail.go` (`firewallScript`, `writeSplitTunnelAccepts`, `writeSplitTunnelDrops`, `firewallVerifyRules`, `excludedRoutes`), `internal/verify/verify.go`, `internal/setupdefault`, `main.go` usage, the README, and ADR-0005 / ADR-0018. Adapt to what actually landed. If a dependency landed differently than this task assumes, route to needs-attention rather than building on a stale premise.
+>
+> The security core: `parseAllowDirect` must reject a port-omitted value (`Port == 0`) LOUDLY (name the value, say "add :port"). Then the `a.Port == 0` all-ports branch in `writeSplitTunnelAccepts` (and its `clearDNSExcludePorts` DROP exclusion) becomes dead and MUST be removed, so no exemption can ever open more than one exact TCP port. Keep the explicit clear-DNS-port rejection and the private-range guardrail. Every exemption now emits `-p tcp -d <net> --dport <port> -j ACCEPT`. Update `firewallVerifyRules` accordingly.
+>
+> The rename: `--allow-direct` -> `--allow` in the CLI (space + `=` forms, dangling-value error, unknown-flag help list), the config JSON key `allowDirect` -> `allow` (struct tag + parse-error hint + doc), the `main.go` usage/start operating-notes and any `{"allow": ["192.168.1.150:8080"]}` example, and the README everywhere.
+>
+> Fix EVERY test that builds a port-omitted exemption to use an explicit port, add the port-omitted-is-rejected unit test (flag AND config), and keep the empty-allowlist == today byte-identical assertion GREEN (ADR-0005). Re-express the verify split-tunnel / clear-DNS assertions for exact-port exemptions.
+>
+> Correct ADR-0005 (and ADR-0018's all-ports framing) and add/amend an ADR recording the port-mandatory decision + rationale (a forwarding proxy on an unspecified port is a real deanonymization vector, so "reach exactly this service" is the only defensible granularity). RECORD non-obvious in-scope decisions per the task-template guidance. Run the repo's gate (`go test ./...` / whatever `verify` maps to) green before done.
