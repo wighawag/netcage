@@ -462,11 +462,68 @@ func (c Config) firewallScript(proxyPort string) string {
 	// --- BROAD DROPs after, in one contiguous block (DROP-first residual bound) ---
 	b.WriteString("iptables -A OUTPUT -p udp -j DROP\n")  // every other (egress) IPv4 UDP dropped
 	b.WriteString("ip6tables -A OUTPUT -p udp -j DROP\n") // every other (egress) IPv6 UDP dropped
-	if c.ProxyOnHostLoopback {
+	if c.mapExists() {
+		// The map DROP closer keeps every NON-named host-loopback port closed. It is
+		// present whenever the map exists (a host-loopback proxy OR a host-loopback
+		// --allow, ADR-0019), so the named-port accepts above (the proxy-port reachback
+		// and each host-model accept) are the ONLY holes in the map; everything else on
+		// mappedHostLoopback is dropped. It sits in the broad-DROP block AFTER those
+		// accepts (DROP-first residual bound).
 		b.WriteString(fmt.Sprintf("iptables -A OUTPUT -d %s -j DROP\n", mappedHostLoopback)) // nothing else on the host loopback
 	}
-	c.writeSplitTunnelDrops(&b) // RFC1918 / link-local defense-in-depth drops
+	c.writeSplitTunnelDrops(&b) // RFC1918 / link-local defense-in-depth drops (LAN class only)
 	return b.String()
+}
+
+// hasHostLoopbackAllow reports whether any --allow entry is a host-loopback
+// destination (ADR-0019), so the pasta map + its excluded route + its DROP closer
+// are emitted for the host-model case, INDEPENDENT of proxy locality. A host
+// model on loopback needs the map even with a REMOTE proxy (the model reachback
+// is orthogonal to the proxy reachback). With no host-loopback allow this is
+// false, so a remote-proxy jail stays byte-identical to today (no map).
+func (c Config) hasHostLoopbackAllow() bool {
+	for _, a := range c.AllowDirect {
+		if a.HostLoopback {
+			return true
+		}
+	}
+	return false
+}
+
+// hasLANAllow reports whether any --allow entry is a LAN (RFC1918/link-local)
+// destination, so the RFC1918 defense-in-depth DROPs are emitted only when there
+// is a LAN direct to defend (a host-loopback-only allowlist keeps the strict-jail
+// LAN shape, adding only the map rules). A mixed allowlist emits both.
+func (c Config) hasLANAllow() bool {
+	for _, a := range c.AllowDirect {
+		if !a.HostLoopback {
+			return true
+		}
+	}
+	return false
+}
+
+// mapExists reports whether the pasta host-loopback map (mappedHostLoopback) is
+// present in the jail: either the proxy is on host loopback (the reachback the
+// sidecar dials) OR there is a host-loopback --allow (the model reachback). The
+// map's `-j DROP` closer, its `--map-host-loopback` pasta option, and its
+// mappedHostLoopback/32 excluded route are ALL gated on this predicate, so they
+// appear together whenever the map exists and NONE appears when it does not
+// (ADR-0005 off-by-default for the model case).
+func (c Config) mapExists() bool {
+	return c.ProxyOnHostLoopback || c.hasHostLoopbackAllow()
+}
+
+// allowDest is the iptables DESTINATION for one --allow entry's accept rule. A
+// LAN entry targets its own network (a /32 for a bare IP); a host-loopback entry
+// is REWRITTEN to the reserved in-jail pasta map address (the user types the
+// HOST's 127.0.0.1, netcage rewrites it to the reachback map at rule-emit time,
+// ADR-0019). This is the class-dispatch at the rule-emit seam.
+func allowDest(a cli.DirectAllow) string {
+	if a.HostLoopback {
+		return mappedHostLoopback
+	}
+	return a.Network.String()
 }
 
 // rfc1918DropRanges are the private / link-local ranges the split-tunnel block
@@ -504,7 +561,11 @@ var rfc1918DropRanges = []string{
 // has NO RFC1918 drops at all; its fail-closed comes from the TUN-only route).
 func (c Config) writeSplitTunnelAccepts(b *strings.Builder) {
 	for _, a := range c.AllowDirect {
-		b.WriteString(fmt.Sprintf("iptables -A OUTPUT -p tcp -d %s --dport %d -j ACCEPT\n", a.Network.String(), a.Port))
+		// allowDest dispatches on the entry's class: a LAN entry accepts its own /32;
+		// a host-loopback entry accepts the rewritten pasta map address (ADR-0019).
+		// Emitted before the map DROP closer, so a host-model accept is a hole in the
+		// map exactly like the proxy-port reachback accept.
+		b.WriteString(fmt.Sprintf("iptables -A OUTPUT -p tcp -d %s --dport %d -j ACCEPT\n", allowDest(a), a.Port))
 	}
 }
 
@@ -514,7 +575,13 @@ func (c Config) writeSplitTunnelAccepts(b *strings.Builder) {
 // is accepted and every other private-range host is a clean DROP. These ranges
 // are IPv4-only, matching the previous nft `ip daddr` rules.
 func (c Config) writeSplitTunnelDrops(b *strings.Builder) {
-	if len(c.AllowDirect) == 0 {
+	// The RFC1918/link-local defense-in-depth drops defend a LAN direct (they make
+	// a non-allowlisted neighbour on the allowed host's range a clean DROP). A
+	// host-loopback-only allowlist has no LAN direct to defend, so it keeps the
+	// strict-jail LAN shape (adding only the map accept + map DROP closer), which
+	// preserves the byte-identical invariant for a remote-proxy-plus-host-model jail
+	// (ADR-0005). A mixed allowlist emits these for its LAN half.
+	if !c.hasLANAllow() {
 		return
 	}
 	for _, r := range rfc1918DropRanges {
@@ -550,21 +617,41 @@ func (c Config) firewallVerifyRules(proxyPort string) (v4, v6 []string) {
 		"-A OUTPUT -p udp -j DROP",
 	}
 	if c.ProxyOnHostLoopback {
+		// The proxy-port reachback accept on the shared map (the closer is added once
+		// below, gated on mapExists, so it is not duplicated when a host-loopback allow
+		// also needs it).
 		v4 = append(v4,
 			fmt.Sprintf("-A OUTPUT -d %s/32 -p tcp -m tcp --dport %s -j ACCEPT", mappedHostLoopback, proxyPort),
-			fmt.Sprintf("-A OUTPUT -d %s/32 -j DROP", mappedHostLoopback),
 		)
 	}
 	for _, a := range c.AllowDirect {
 		// Every entry is an exact port (the all-ports form was removed, ADR-0020).
-		v4 = append(v4, fmt.Sprintf("-A OUTPUT -d %s -p tcp -m tcp --dport %d -j ACCEPT", a.Network.String(), a.Port))
+		// allowDest rewrites a host-loopback entry to the map address (ADR-0019); a LAN
+		// entry keeps its own /32. allowDest returns a bare host address for the map,
+		// normalised to /32 in the canonical `iptables -S` form.
+		v4 = append(v4, fmt.Sprintf("-A OUTPUT -d %s -p tcp -m tcp --dport %d -j ACCEPT", verifyDest(a), a.Port))
 	}
-	if len(c.AllowDirect) > 0 {
+	if c.mapExists() {
+		// The map DROP closer, asserted whenever the map exists (proxy OR host-model),
+		// so the fail-loud layer catches a half-applied host-loopback hole.
+		v4 = append(v4, fmt.Sprintf("-A OUTPUT -d %s/32 -j DROP", mappedHostLoopback))
+	}
+	if c.hasLANAllow() {
 		for _, r := range rfc1918DropRanges {
 			v4 = append(v4, fmt.Sprintf("-A OUTPUT -d %s -j DROP", r))
 		}
 	}
 	return v4, v6
+}
+
+// verifyDest is allowDest in the canonical `iptables -S` form: a host-loopback
+// entry's map address is rendered as a /32 (iptables normalises a bare host
+// address to /32 on save), while a LAN entry's network already carries its mask.
+func verifyDest(a cli.DirectAllow) string {
+	if a.HostLoopback {
+		return mappedHostLoopback + "/32"
+	}
+	return a.Network.String()
 }
 
 // checkRulesPresent asserts every rule in want appears (line-exact, ignoring
@@ -613,7 +700,12 @@ func (c Config) SidecarRunArgs() []string {
 	// sidecar's dialer can reach the host-loopback proxy through the pasta map. The
 	// route out is still the TUN, so neither opt affects forced egress.
 	pastaOpts := []string{"-I", pastaIfName}
-	if c.ProxyOnHostLoopback {
+	if c.mapExists() {
+		// The pasta host-loopback map is present whenever the map exists: a
+		// host-loopback proxy (the sidecar's reachback) OR a host-loopback --allow (the
+		// model reachback), INDEPENDENT of proxy locality (ADR-0019). A remote-proxy
+		// jail with a host model on loopback still needs the map, and a remote-proxy
+		// jail with no host-loopback allow does NOT get it (off-by-default).
 		pastaOpts = append(pastaOpts, "--map-host-loopback", mappedHostLoopback)
 	}
 	network := "pasta:" + strings.Join(pastaOpts, ",")
@@ -661,10 +753,25 @@ func (c Config) SidecarRunArgs() []string {
 // appended in allowlist order, each as its normalised CIDR (a bare IP is already
 // a /32 host route from the CLI parse), so a per-host exclusion exposes only that
 // /32 (the spike proved per-host `/32` exclusion is per-host, not per-/24).
+//
+// A host-loopback --allow entry (ADR-0019) is rewritten to the pasta map
+// address (mappedHostLoopback/32) via allowDest, so the model's dial to the map
+// egresses the real NIC via pasta, not the TUN (the enabler half). When the proxy
+// is ALSO host loopback the map route is SHARED with the proxy reachback /32, so
+// it is deduplicated (one map address, one excluded route), not appended twice.
 func (c Config) excludedRoutes() string {
 	routes := []string{c.proxyReachbackAddr() + "/32"}
+	seen := map[string]bool{routes[0]: true}
 	for _, a := range c.AllowDirect {
-		routes = append(routes, a.Network.String())
+		route := allowDest(a)
+		if a.HostLoopback {
+			route += "/32" // the map address is a bare host; exclude its /32 host route
+		}
+		if seen[route] {
+			continue // the shared map route is already excluded (host-loopback proxy)
+		}
+		seen[route] = true
+		routes = append(routes, route)
 	}
 	return strings.Join(routes, ",")
 }
