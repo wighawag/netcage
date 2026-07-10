@@ -30,6 +30,20 @@ type DirectAllow struct {
 	Network *net.IPNet // the allowed destination network (a /32 for a bare IP)
 	Port    int        // exact TCP port, always 1..65535 (a port-omitted value is rejected)
 	Raw     string     // the original flag value, preserved for diagnostics
+
+	// HostLoopback marks the SECOND class of --allow (ADR-0019): a same-host
+	// HOST-loopback destination (127.0.0.0/8) the jailed tool reaches DIRECTLY via
+	// the pasta host-loopback map, NOT a LAN destination reached over the real NIC.
+	// The two classes ride the SAME flag/slice; netcage DISPATCHES on the typed
+	// address at parse time (here) and rewrites the typed 127.0.0.1 to the reserved
+	// in-jail map address at rule-emit time (internal/jail). A host-loopback entry
+	// is guarded by a STRICTER port-blocklist than the LAN class (the well-known
+	// anonymizer/control ports + the configured proxy port), because host loopback
+	// is where the anonymizer's control surface lives. False == the LAN class
+	// (Network is an RFC1918/link-local destination). Network stays the RAW
+	// 127.0.0.x/32 for a host-loopback entry (stored as typed); the map-address
+	// rewrite is a rule-emit concern, not a parse concern.
+	HostLoopback bool
 }
 
 // privateRanges is the ONLY set of destination ranges --allow accepts:
@@ -52,6 +66,48 @@ var clearDNSPorts = map[int]string{
 	53:   "clear DNS",
 	853:  "DNS-over-TLS",
 	5353: "mDNS",
+}
+
+// hostLoopbackRange is the destination class that dispatches a --allow to the
+// host-loopback branch: 127.0.0.0/8 (the HOST's loopback). A --allow whose
+// address falls in this range is a same-host HOST-loopback exemption reached via
+// the pasta map (ADR-0019), NOT a LAN exemption. It is checked BEFORE the LAN
+// private-range guardrail so a loopback address is not mis-rejected as "not a
+// private address" (loopback is not in privateRanges by design: the two classes
+// have distinct guardrails).
+var hostLoopbackRange = func() *net.IPNet {
+	_, n, err := net.ParseCIDR("127.0.0.0/8")
+	if err != nil {
+		panic("cli: bad built-in host-loopback range") // unreachable: constant
+	}
+	return n
+}()
+
+// hostLoopbackBlockedPorts is the context-free half of the STRICTER host-loopback
+// port-blocklist (ADR-0019): well-known anonymizer/control ports that are REFUSED
+// LOUDLY at parse time on the host-loopback class, naming the port + reason. Its
+// completeness is a LOAD-BEARING invariant: this feature opens host loopback to
+// the tool for exactly the named ports, so "the tool cannot dial the anonymizer's
+// control surface" now rests on this list being complete (a missing port would be
+// an exemptable hole into that surface). These are host-INDEPENDENT (the same
+// conventional ports on any host loopback), so they belong in this context-free
+// parse; the CONFIGURED proxy port is host/config-dependent and is refused where
+// the proxy config is known (refuseHostLoopbackProxyPort, the run wiring). A LAN
+// --allow is NEVER subject to this blocklist (a LAN host's :9050 is a different
+// socket than host loopback).
+var hostLoopbackBlockedPorts = map[int]string{
+	53:   "clear DNS: DNS stays on the jail's proxy-side socks5h forwarder, never a direct loopback query (ADR-0018)",
+	9050: "conventional Tor SocksPort: allowing it lets the tool skip the forced path",
+	9150: "conventional Tor Browser SocksPort: allowing it lets the tool skip the forced path",
+	9051: "conventional Tor CONTROL port: a self-deanonymization vector (GETINFO / SIGNAL NEWNYM / circuit inspection)",
+	1080: "conventional generic SOCKS port: allowing it lets the tool skip the forced path",
+}
+
+// networkWithinHostLoopback reports whether the whole network is contained in
+// 127.0.0.0/8 (the host-loopback class). It reuses the same both-endpoints check
+// as the LAN guardrail so a straddling prefix cannot half-qualify.
+func networkWithinHostLoopback(n *net.IPNet) bool {
+	return rangeContainsNetwork(hostLoopbackRange, n)
 }
 
 var privateRanges = func() []*net.IPNet {
@@ -111,9 +167,24 @@ func parseAllowDirect(raw string) (DirectAllow, error) {
 		return DirectAllow{}, err
 	}
 
+	// Class-dispatch (ADR-0019): a host-loopback address (127.0.0.0/8) is the
+	// SECOND class of --allow, reached via the pasta map, guarded by a STRICTER
+	// port-blocklist. It is checked BEFORE the LAN private-range guardrail so a
+	// loopback address is not mis-rejected as "not a private address" (loopback is
+	// deliberately NOT in privateRanges). The user types the HOST's loopback; the
+	// map-address rewrite happens at rule-emit time, so Network stays the raw /32.
+	if networkWithinHostLoopback(network) {
+		if reason, blocked := hostLoopbackBlockedPorts[port]; blocked {
+			return DirectAllow{}, fmt.Errorf(
+				"--allow %q targets host-loopback port %d (%s): host loopback is where the anonymizer's control surface lives, so this port is refused (a --allow 127.0.0.1:<port> reaches a HOST service via the reachback, not the container's own loopback)",
+				raw, port, reason)
+		}
+		return DirectAllow{Network: network, Port: port, Raw: raw, HostLoopback: true}, nil
+	}
+
 	if !networkWithinPrivateRanges(network) {
 		return DirectAllow{}, fmt.Errorf(
-			"--allow %q is not a private address: only RFC1918 / link-local ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16) may be reached directly; a public destination would leak your real IP around the jail",
+			"--allow %q is not a private address: only RFC1918 / link-local ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16) or the host loopback (127.0.0.0/8) may be reached directly; a public destination would leak your real IP around the jail",
 			raw)
 	}
 
@@ -124,6 +195,54 @@ func parseAllowDirect(raw string) (DirectAllow, error) {
 	}
 
 	return DirectAllow{Network: network, Port: port, Raw: raw}, nil
+}
+
+// refuseHostLoopbackProxyPort is the CONFIG-dependent half of the host-loopback
+// port-blocklist (ADR-0019): it refuses any host-loopback --allow entry whose
+// port equals the CONFIGURED proxy port, because allowing it would let the jailed
+// tool dial the proxy's SOCKS surface directly on the host loopback and bypass
+// the forced path. Unlike the well-known ports (host-independent, refused in the
+// context-free parseAllowDirect), the proxy port is known only where the proxy
+// config is (the resolved run wiring), so it is refused HERE, after proxy
+// resolution, applied to the FINAL allowlist (so a config entry is covered too).
+// A LAN entry, or a host-loopback entry on a different port, is untouched. It is
+// a no-op when the proxy is remote for a matching host-loopback port only in the
+// sense that a remote proxy on 127.0.0.x cannot exist (the proxy host is remote),
+// so the comparison is against the proxy PORT and only for the host-loopback
+// class, whose destination is by construction the host loopback.
+func refuseHostLoopbackProxyPort(allows []DirectAllow, proxyHost, proxyPort string) error {
+	// Only a HOST-loopback proxy shares the host loopback with a host-loopback
+	// allow: a REMOTE proxy on the same port number is a DIFFERENT socket (a
+	// different host), so it does not reserve that port on host loopback. Mirror
+	// ProxyOnHostLoopback's host set so the two agree on what "the proxy is on host
+	// loopback" means.
+	if !proxyHostIsLoopback(proxyHost) {
+		return nil
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(proxyPort))
+	if err != nil {
+		return nil // a malformed proxy port is caught by ParseProxy, not here
+	}
+	for _, a := range allows {
+		if a.HostLoopback && a.Port == port {
+			return fmt.Errorf(
+				"--allow %q targets host-loopback port %d, which is the CONFIGURED proxy port: refused because allowing it would let the jailed tool dial the proxy's SOCKS surface directly on host loopback and bypass the forced path",
+				a.Raw, a.Port)
+		}
+	}
+	return nil
+}
+
+// proxyHostIsLoopback reports whether a proxy host string names the host's
+// loopback (mirrors Command.ProxyOnHostLoopback's host set), so the proxy-port
+// blocklist and the reachback wiring agree on "the proxy is on host loopback".
+func proxyHostIsLoopback(host string) bool {
+	switch host {
+	case "127.0.0.1", "::1", "localhost":
+		return true
+	default:
+		return false
+	}
 }
 
 // splitAllowDirectPort separates an optional trailing `:port` from the host

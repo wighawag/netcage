@@ -666,6 +666,17 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 		cmd.AllowDirect = conf.allowDirect
 	}
 
+	// The CONFIG-dependent half of the host-loopback port-blocklist (ADR-0019):
+	// refuse a host-loopback --allow on the CONFIGURED proxy port. This is checked
+	// HERE (not in the context-free parseAllowDirect) because the proxy port is
+	// known only after resolution, and it is applied to the FINAL allowlist so a
+	// config-supplied host-loopback entry is covered too. A refusal here is still
+	// at config time, before any container/firewall mutation, so the host is
+	// untouched. A LAN --allow is unaffected.
+	if err := refuseHostLoopbackProxyPort(cmd.AllowDirect, cmd.Proxy.Host, cmd.Proxy.Port); err != nil {
+		return nil, err
+	}
+
 	switch name {
 	case "run":
 		resolveRunPositionals(cmd, positionals)
