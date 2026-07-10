@@ -319,7 +319,7 @@ These are **read-only query flags**: they only shape the output, so they cannot 
 
 ## Split tunnel: reach one local service directly
 
-`--allow <IP|CIDR>:<port>` (repeatable) opens a **narrow, guardrailed hole** in the forced egress for specific **RFC1918 / link-local** destinations, so a jailed tool can reach a trusted local service (e.g. a local model at `192.168.1.150:8080`) DIRECTLY over the LAN, while ALL other egress stays forced through the proxy, fail-closed. netcage mirrors [anonctl](https://github.com/wighawag/anonctl)'s `--allow` vocabulary so the two tools stay aligned.
+`--allow <IP|CIDR>:<port>` (repeatable) opens a **narrow, guardrailed hole** in the forced egress for one specific local destination, so a jailed tool can reach a trusted local service (e.g. a local model) DIRECTLY, while ALL other egress stays forced through the proxy, fail-closed. It has two classes, dispatched on the address: a **RFC1918 / link-local** destination reached over the **LAN** (below), and the **host's own `127.0.0.1`** reached via loopback reachback ([further below](#reach-a-same-host-service-on-the-hosts-loopback)). netcage mirrors [anonctl](https://github.com/wighawag/anonctl)'s `--allow` vocabulary so the two tools stay aligned.
 
 ```sh
 netcage run --proxy socks5h://127.0.0.1:9050 \
@@ -330,6 +330,18 @@ netcage run --proxy socks5h://127.0.0.1:9050 \
 **A port is REQUIRED** (ADR-0020): a bare IP / CIDR with no `:port` (the old all-ports form) is **rejected loudly** (`add :port`). An exemption that opened *every* TCP port to a private host was a real **deanonymization vector**, not just a wide hole: if that host runs any forwarding proxy on an unspecified port (an `ssh -D` SOCKS, a squid/HTTP proxy, a Tor SOCKS, a socat tunnel), the jailed tool could dial it directly and egress the whole internet from your real IP, around the forced path. "Reach exactly *this* service" is the only defensible granularity for an anonymity jail, so a direct hole is always an exact `IP:port`.
 
 Guardrails (see ADR-0005, ADR-0020): **off by default** (an empty allowlist is byte-identical to the strict jail); **exact port only** (a port-omitted value is rejected loudly at startup); **private ranges only** (public IPs / hostnames / malformed values are rejected loudly, because a public direct would be a real anonymity leak); **TCP only** (UDP stays hard-dropped even to an allowlisted host, ADR-0003); **never a clear-DNS hole** (an explicit `:53`/`:853`/`:5353` is rejected loudly, so a LAN resolver is un-allowable and DNS stays on the proxy-side forwarder, ADR-0018, because a `@LAN-resolver` query could reveal your network's public IP; with the all-ports form gone, only the one named non-DNS port is ever accepted, so clear DNS is structurally un-allowable); and everything outside the allowlist stays leak-proof. `verify` proves the jail is still leak-tight for all non-allowlisted traffic when a split tunnel is active, including that `--allow` carries no direct clear DNS to the LAN.
+
+### Reach a same-host service on the host's loopback
+
+`--allow 127.0.0.1:<port>` is a **second class** of the same `--allow` flag (ADR-0019): it reaches a service on the **host's own `127.0.0.1`** (e.g. a model server bound to loopback only) DIRECTLY, through the sidecar's pasta host-loopback reachback, while all other egress stays forced through the proxy, fail-closed. This is the private-to-the-host alternative to the LAN form above: instead of binding your model to `0.0.0.0` and allowing its LAN IP (which exposes it to the whole LAN and hairpins host-local traffic out the NIC and back), bind it loopback-only and reach it directly:
+
+```sh
+netcage run --proxy socks5h://127.0.0.1:9050 \
+  --allow 127.0.0.1:8080 \
+  -it -v ./work my/agent-image agent
+```
+
+The `127.0.0.1` you type is the **HOST's** loopback, not the jail's own (inside the shared netns the jail's `127.0.0.1` is already reachable and useless for reaching a host service); netcage translates it to the in-jail reachback address at rule-emit time. Because loopback is where the anonymizer's own control surface lives, the host-loopback class carries a **stricter port-blocklist** than the LAN class: `--allow 127.0.0.1:<port>` is **refused loudly** for `53` (clear DNS, ADR-0018), `9050`/`9150` (conventional Tor SOCKS ports, allowing them would let the tool skip the forced path), `9051` (the Tor **control** port, a self-deanonymization vector), `1080` (generic SOCKS), and the **configured proxy port** itself. So a loopback hole can reach your model, never your anonymizer. A LAN `--allow` is never subject to this blocklist (a LAN host's `:9050` is a different socket than your host loopback).
 
 ## Platform
 
