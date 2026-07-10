@@ -441,7 +441,7 @@ func TestVerify_FullReportGreenAndExitsZero(t *testing.T) {
 
 // mappedHostLoopback is the pasta-mapped host-loopback address the jail reaches
 // host services at (jail.mappedHostLoopback, unexported; mirrored here for the
-// external test). It is link-local (169.254.0.0/16), hence a valid --allow-direct
+// external test). It is link-local (169.254.0.0/16), hence a valid --allow
 // entry, and is the ONE host-service address a jail netns can reach
 // deterministically without a real LAN host. The direct-reachability probe uses
 // it to reach the fixture as the stand-in LAN host.
@@ -573,29 +573,34 @@ func TestVerify_SplitTunnelReportGreenOnlyWhenLeakTightAndDirectReachable(t *tes
 }
 
 // TestVerify_AllowDirectIsNotAClearDNSHole is the row-2 (Tails leak catalogue)
-// live assertion: with --allow-direct ACTIVE for an ALL-PORTS allow, a clear DNS
-// query (tcp AND udp 53) aimed DIRECTLY at the allowed LAN resolver does NOT get
-// a clear answer from the LAN (it is dropped by the 53-exclusion), while the
-// jail's loopback DNS-over-SOCKS forwarder STILL resolves. This proves
-// --allow-direct cannot be used as a clear-DNS hole to a LAN resolver (which
-// could reveal the local network's public IP).
+// live assertion, re-expressed for the EXACT-PORT exemption (ADR-0020: the
+// all-ports form was dropped). With --allow ACTIVE for an EXACT non-53 port, a
+// clear DNS query (tcp AND udp 53) aimed DIRECTLY at the allowed LAN resolver
+// does NOT get a clear answer from the LAN (it is dropped: :53 is not the allowed
+// port, so it falls to the link-local range DROP), while the jail's loopback
+// DNS-over-SOCKS forwarder STILL resolves. This proves --allow cannot be used as
+// a clear-DNS hole to a LAN resolver (which could reveal the local network's
+// public IP). The exact-port shape makes clear DNS un-allowable by construction:
+// only the one named port is ever accepted, and it is never 53 (an explicit :53
+// is refused at the CLI).
 //
 // It is the black-hole/counter probe mandated by ADR-0003 and
 // dns-through-socks-is-tcp-not-udp.md, NOT the naive "a direct dig must time
-// out": the CONTROL leg proves the direct host/route is genuinely UP (a non-53
-// TCP connect to the allowed host SUCCEEDS over the split-tunnel), so the SILENCE
-// on port 53 is the firewall DROP, not an unreachable host. The stand-in allowed
-// LAN host is the pasta-mapped host loopback (mappedHostLoopback), the one
-// host-service address a jail netns reaches deterministically without a real LAN
-// peer (the same stand-in the other split-tunnel verify cases use). The allow is
-// PORT-OMITTED (all ports), so the all-ports 53-exclusion rule is what is under
-// test.
+// out": the CONTROL leg proves the direct host/route is genuinely UP (a TCP
+// connect to the ALLOWED exact port SUCCEEDS over the split-tunnel), so the
+// SILENCE on port 53 is the firewall DROP, not an unreachable host. The stand-in
+// allowed LAN host is the pasta-mapped host loopback (mappedHostLoopback), the
+// one host-service address a jail netns reaches deterministically without a real
+// LAN peer (the same stand-in the other split-tunnel verify cases use). The allow
+// names the control service's EXACT port, so the run is split-tunnel active AND
+// the exact-port shape is what is under test.
 func TestVerify_AllowDirectIsNotAClearDNSHole(t *testing.T) {
 	requirePodman(t)
 
 	// A reachable non-53 TCP service at the allowed LAN host (the pasta map -> host
 	// loopback): the CONTROL leg connects to it to prove the direct host is UP, so
-	// silence on :53 is a DROP not an unreachable host.
+	// silence on :53 is a DROP not an unreachable host. Its EXACT port is what the
+	// allow names, so the control connect exercises the exact-port hole itself.
 	controlPort, stopControl := startHTTPExitEcho(t)
 	defer stopControl()
 
@@ -613,12 +618,15 @@ func TestVerify_AllowDirectIsNotAClearDNSHole(t *testing.T) {
 	defer fx.Close()
 	_, proxyPort, _ := net.SplitHostPort(fx.Addr())
 
-	// The allow is PORT-OMITTED (all TCP ports) for the pasta map, so the run is
-	// split-tunnel active AND the all-ports 53-exclusion rule is exercised.
-	allowAllPorts := []cli.DirectAllow{{
+	// The allow names the control service's EXACT port on the pasta map, so the run
+	// is split-tunnel active. :53 is NOT allowed (only this one port), so a direct
+	// clear-DNS query has no accept and is dropped by the range DROP. This is the
+	// exact-port replacement for the removed all-ports 53-exclusion.
+	controlPortNum, _ := strconv.Atoi(controlPort)
+	allowExactPort := []cli.DirectAllow{{
 		Network: &net.IPNet{IP: net.ParseIP(mappedHostLoopback), Mask: net.CIDRMask(32, 32)},
-		Port:    0, // all ports
-		Raw:     mappedHostLoopback,
+		Port:    controlPortNum,
+		Raw:     mappedHostLoopback + ":" + controlPort,
 	}}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -629,7 +637,7 @@ func TestVerify_AllowDirectIsNotAClearDNSHole(t *testing.T) {
 		directDNSMarker = "DIRECT-DNS-ANSWERED"
 	)
 
-	check := verify.Check{Name: "allow-direct-not-a-dns-hole", Run: func(ctx context.Context) verify.Assertion {
+	check := verify.Check{Name: "allow-not-a-dns-hole", Run: func(ctx context.Context) verify.Assertion {
 		// Three legs in one jailed probe:
 		//   CONTROL: a non-53 TCP connect to the allowed host succeeds (host is UP).
 		//   DIRECT-DNS: clear DNS (nslookup names the LAN resolver as the server) on
@@ -652,7 +660,7 @@ func TestVerify_AllowDirectIsNotAClearDNSHole(t *testing.T) {
 			ProxyOnHostLoopback: true,
 			Image:               "docker.io/library/alpine:latest",
 			DNSUpstream:         upstreamName + ":" + resolverPort,
-			AllowDirect:         allowAllPorts,
+			AllowDirect:         allowExactPort,
 			ToolArgv:            []string{"sh", "-c", script},
 			RunID:               runID("vdnshole"),
 		}
@@ -675,7 +683,7 @@ func TestVerify_AllowDirectIsNotAClearDNSHole(t *testing.T) {
 	rep := verify.Run(ctx, []verify.Check{check})
 	t.Logf("no-clear-LAN-DNS report:\n%s", rep.String())
 	if !rep.Ok() {
-		t.Fatalf("--allow-direct must NOT be a clear-DNS hole (row 2): direct clear DNS to the LAN resolver must be dropped while the forwarder still resolves:\n%s", rep.String())
+		t.Fatalf("--allow must NOT be a clear-DNS hole (row 2): direct clear DNS to the LAN resolver must be dropped while the forwarder still resolves:\n%s", rep.String())
 	}
 }
 

@@ -47,7 +47,7 @@ const configFileName = "config.json"
 
 // fileConfig is the on-disk shape of ~/.config/netcage/config.json. It is a
 // NEW proxy SOURCE for the same strict proxy, never a bypass: the proxy string
-// still round-trips the socks5h-enforcing ParseProxy and each allowDirect entry
+// still round-trips the socks5h-enforcing ParseProxy and each allow entry
 // still round-trips parseAllowDirect on load (see ADR-0012). Fields are pointers
 // / slices so "absent" is distinguishable from "present but empty" and an empty
 // file is a clean no-op.
@@ -55,12 +55,12 @@ type fileConfig struct {
 	// Proxy is the full socks5h URL STRING (socks5h://host:port), handed to the
 	// SAME ParseProxy the flag/env paths use (one validator, no laxer path).
 	Proxy string `json:"proxy"`
-	// AllowDirect is a JSON array of raw --allow-direct strings (RFC1918 /
-	// link-local only), each validated by the SAME parseAllowDirect on load.
-	// omitempty so the SINGLE writer emits no `"allowDirect": null` for the common
+	// AllowDirect is a JSON array of raw --allow strings (RFC1918 / link-local
+	// WITH an exact :port), each validated by the SAME parseAllowDirect on load.
+	// omitempty so the SINGLE writer emits no `"allow": null` for the common
 	// case (a bare default proxy with no split-tunnel list); a present array still
 	// round-trips the loader unchanged.
-	AllowDirect []string `json:"allowDirect,omitempty"`
+	AllowDirect []string `json:"allow,omitempty"`
 }
 
 // netcageConfigDir returns the netcage config directory
@@ -81,25 +81,25 @@ func netcageConfigDir(lookupEnv func(string) (string, bool)) (dir string, ok boo
 
 // loadedConfig is the parsed, VALIDATED config a run consumes: a resolved proxy
 // URL string (still to be handed to ParseProxy at the resolution point) and the
-// already-validated allowDirect entries. present=false means no config file
+// already-validated allow entries. present=false means no config file
 // (missing file OR no resolvable config dir): a clean no-op, not an error.
 type loadedConfig struct {
 	present     bool
 	proxyURL    string        // the config proxy URL string, "" if the file set no proxy
-	allowDirect []DirectAllow // validated config allowDirect entries (may be empty)
+	allowDirect []DirectAllow // validated config allow entries (may be empty)
 }
 
 // loadConfig reads and VALIDATES the netcage config file resolved from the given
 // env lookup. A MISSING file (or no resolvable config dir) is a clean no-op
 // (present=false, nil error): a user with no config still hits today's
 // fail-closed refusal. A PRESENT-but-broken file (corrupt JSON, a non-socks5h /
-// malformed proxy, a public/malformed allowDirect entry) is a LOUD error, never
+// malformed proxy, a public/malformed allow entry) is a LOUD error, never
 // silently ignored: the config path is not laxer than the flag/env path.
 //
 // The proxy is NOT parsed here into ProxyConfig (the resolution point decides
-// whether config even wins before validating), but the allowDirect entries ARE
+// whether config even wins before validating), but the allow entries ARE
 // validated here through the SAME parseAllowDirect the flag uses, so a bad config
-// direct is rejected on load exactly like a bad --allow-direct.
+// direct is rejected on load exactly like a bad --allow.
 func loadConfig(lookupEnv func(string) (string, bool)) (loadedConfig, error) {
 	dir, ok := netcageConfigDir(lookupEnv)
 	if !ok {
@@ -119,14 +119,14 @@ func loadConfig(lookupEnv func(string) (string, bool)) (loadedConfig, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&fc); err != nil {
-		return loadedConfig{}, fmt.Errorf("parsing netcage config %s: %w (expected {\"proxy\":\"socks5h://host:port\",\"allowDirect\":[...]})", path, err)
+		return loadedConfig{}, fmt.Errorf("parsing netcage config %s: %w (expected {\"proxy\":\"socks5h://host:port\",\"allow\":[\"192.168.1.150:8080\"]})", path, err)
 	}
 
 	out := loadedConfig{present: true, proxyURL: fc.Proxy}
 
-	// Validate each allowDirect entry through the SAME parseAllowDirect as the
-	// flag, so a public/hostname/malformed config direct is rejected on load and
-	// the config hole can never be wider than a flag hole.
+	// Validate each allow entry through the SAME parseAllowDirect as the
+	// flag, so a port-omitted/public/hostname/malformed config direct is rejected on
+	// load and the config hole can never be wider than a flag hole.
 	for _, raw := range fc.AllowDirect {
 		entry, aerr := parseAllowDirect(raw)
 		if aerr != nil {
@@ -139,7 +139,7 @@ func loadConfig(lookupEnv func(string) (string, bool)) (loadedConfig, error) {
 }
 
 // ConfigView is the current persisted config, surfaced for the setup-default
-// reconfigure PRE-FILL: the raw proxy URL string and the raw allowDirect strings
+// reconfigure PRE-FILL: the raw proxy URL string and the raw allow strings
 // exactly as they sit on disk (so the interactive flow can show "current: ...").
 // Present=false means no config file yet (a first-time setup). It is the READ
 // side of the single-writer seam; setup-default reads it to pre-fill and writes
@@ -206,8 +206,8 @@ func ConfigPath(lookupEnv func(string) (string, bool)) (path string, ok bool) {
 //     authed proxy in NETCAGE_PROXY / --proxy instead.
 //   - Same strict validation as every other path: the proxy round-trips the SAME
 //     socks5h-enforcing ParseProxy (a socks5:// or malformed proxy is rejected
-//     exactly as on the flag), and each allowDirect entry round-trips the SAME
-//     parseAllowDirect (RFC1918 / link-local only). The config path is never
+//     exactly as on the flag), and each allow entry round-trips the SAME
+//     parseAllowDirect (RFC1918 / link-local WITH an exact port). The config path is never
 //     laxer than the flag.
 //
 // The file is written 0600 (owner-only) regardless. The parent directory is
@@ -228,11 +228,11 @@ func WriteConfig(lookupEnv func(string) (string, bool), proxyURL string, allowDi
 	if proxy.Username != "" || proxy.Password != "" {
 		return ErrCredentialedProxyNotPersisted
 	}
-	// Validate each allowDirect entry through the SAME parseAllowDirect the flag
+	// Validate each allow entry through the SAME parseAllowDirect the flag
 	// uses, so a persisted direct can never be wider than a flag direct.
 	for _, raw := range allowDirectRaw {
 		if _, aerr := parseAllowDirect(raw); aerr != nil {
-			return fmt.Errorf("refusing to persist allowDirect entry %q: %w", raw, aerr)
+			return fmt.Errorf("refusing to persist allow entry %q: %w", raw, aerr)
 		}
 	}
 

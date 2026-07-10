@@ -56,7 +56,7 @@ Download a prebuilt Linux archive (amd64 / arm64 / armv7 / armv6) from the [Rele
 
 ```
 netcage run          [flags] [<image>] [<cmd> <args...>]
-netcage start        [--proxy ...] [--allow-direct ...] [-it] [--rm] <container>
+netcage start        [--proxy ...] [--allow ...] [-it] [--rm] <container>
 netcage verify       [--proxy socks5h://[user:pass@]host:port]
 netcage detect-proxy [--json]
 netcage setup-default
@@ -96,7 +96,7 @@ netcage run --proxy socks5h://127.0.0.1:9050 -it alpine sh
 
 ### Allowed run flags
 
-`-i`, `-t`, `-it`/`-ti`, `--rm`, `-v`/`--volume host:container[:opts]`, `-w`/`--workdir <dir>`, `-e`/`--env KEY=VALUE`, `-u`/`--user <user>`, `--entrypoint <path>`, the vetted network-irrelevant pass-throughs `--memory`, `--cpus`, `--memory-swap`, `-l`/`--label`, `--tmpfs`, `--read-only`, `--hostname`, `--pull`, `--platform`, `--env-file`, `--ulimit`, `--shm-size`, and `--allow-direct` (see below).
+`-i`, `-t`, `-it`/`-ti`, `--rm`, `-v`/`--volume host:container[:opts]`, `-w`/`--workdir <dir>`, `-e`/`--env KEY=VALUE`, `-u`/`--user <user>`, `--entrypoint <path>`, the vetted network-irrelevant pass-throughs `--memory`, `--cpus`, `--memory-swap`, `-l`/`--label`, `--tmpfs`, `--read-only`, `--hostname`, `--pull`, `--platform`, `--env-file`, `--ulimit`, `--shm-size`, and `--allow` (see below).
 
 The allow-list is **curated and fail-closed**: a flag is allowed only if it cannot alter the container network/netns, add capabilities/devices/privilege, publish/bind ports, affect DNS/resolv, or collide with a netcage-owned name/lifecycle field (`--name`/`--rm`/`--network`). See [ADR-0010](docs/adr/0010-widened-run-flag-allowlist-is-vetted-network-irrelevant.md).
 
@@ -132,18 +132,18 @@ netcage setup-default
 
 It **detects** a local SOCKS proxy (via `detect-proxy`), lets you **choose** a detected candidate or enter one, **verifies** it (shows the exit IP as evidence it differs from your host IP), **warns once** about the silent-default tradeoff (from then on a bare `run` egresses through the persisted proxy without you naming it), and **persists** the choice to `~/.config/netcage/config.json` (`0600`, XDG-aware). It is re-runnable and **confirms before overwriting** an existing config.
 
-The persisted default is **credential-free by construction**: `setup-default` **refuses** to write a proxy carrying embedded `user:pass@` credentials, so the file never accumulates secrets at rest (backups / dotfile repos / screen-shares stay safe). Keep an authed proxy in `NETCAGE_PROXY` / `--proxy` instead (transient). The config is a new proxy **source**, never a bypass: its `proxy` round-trips the same `socks5h://`-enforcing validator, each `allowDirect` entry round-trips the same RFC1918/link-local guardrail, and a config-sourced proxy is still preflighted fail-closed on every run. A missing config is a clean no-op (you still hit the fail-closed refusal); a present-but-broken one is a loud error. See [ADR-0012](docs/adr/0012-config-is-a-new-fail-closed-proxy-source-never-a-bypass.md).
+The persisted default is **credential-free by construction**: `setup-default` **refuses** to write a proxy carrying embedded `user:pass@` credentials, so the file never accumulates secrets at rest (backups / dotfile repos / screen-shares stay safe). Keep an authed proxy in `NETCAGE_PROXY` / `--proxy` instead (transient). The config is a new proxy **source**, never a bypass: its `proxy` round-trips the same `socks5h://`-enforcing validator, each `allow` entry round-trips the same RFC1918/link-local exact-port guardrail, and a config-sourced proxy is still preflighted fail-closed on every run. A missing config is a clean no-op (you still hit the fail-closed refusal); a present-but-broken one is a loud error. See [ADR-0012](docs/adr/0012-config-is-a-new-fail-closed-proxy-source-never-a-bypass.md).
 
 The file is small and hand-editable if you prefer:
 
 ```json
 {
   "proxy": "socks5h://127.0.0.1:9050",
-  "allowDirect": ["192.168.1.150:8080"]
+  "allow": ["192.168.1.150:8080"]
 }
 ```
 
-`allowDirect` is optional (the [split tunnel](#split-tunnel-reach-one-local-service-directly) list). A CLI `--allow-direct` **replaces** the config list for that run (it never rides along additively). A hand-edited credentialed proxy still loads (the credential-free rule constrains what netcage *writes*, not what it reads), matching how env/flag already carry credentials.
+`allow` is optional (the [split tunnel](#split-tunnel-reach-one-local-service-directly) list; each entry is an exact `IP:port` / `CIDR:port`). A CLI `--allow` **replaces** the config list for that run (it never rides along additively). A hand-edited credentialed proxy still loads (the credential-free rule constrains what netcage *writes*, not what it reads), matching how env/flag already carry credentials.
 
 ### detect-proxy: find a local SOCKS proxy
 
@@ -202,7 +202,7 @@ netcage run   --proxy socks5h://127.0.0.1:9050 -it -v ./my-repo   # leaves a kep
 netcage start --proxy socks5h://127.0.0.1:9050 -it netcage-run-<id>-tool   # resume it, state intact
 ```
 
-`start` **revives** the existing sidecar (its baked firewall re-applies on start, then netcage **verifies** it), **re-execs the DNS forwarder**, and re-enters the tool with its filesystem state intact. It is the jail-aware exception to the other verbs: it carries a `--proxy` (and any `--allow-direct`) and **reconciles** it against the config the container was created with. A **different** proxy/allowlist is **refused** (remove the container and `run` again, or start it with the same jail config) rather than silently reviving a stale jail or discarding container state. A non-netcage or unknown container is refused. Without `--rm` the pair is left stopped again (fail-closed via the baked firewall); with `--rm` the resume is ephemeral (both removed on exit). See [ADR-0011](docs/adr/0011-netcage-start-revives-jail-refuses-changed-config.md).
+`start` **revives** the existing sidecar (its baked firewall re-applies on start, then netcage **verifies** it), **re-execs the DNS forwarder**, and re-enters the tool with its filesystem state intact. It is the jail-aware exception to the other verbs: it carries a `--proxy` (and any `--allow`) and **reconciles** it against the config the container was created with. A **different** proxy/allowlist is **refused** (remove the container and `run` again, or start it with the same jail config) rather than silently reviving a stale jail or discarding container state. A non-netcage or unknown container is refused. Without `--rm` the pair is left stopped again (fail-closed via the baked firewall); with `--rm` the resume is ephemeral (both removed on exit). See [ADR-0011](docs/adr/0011-netcage-start-revives-jail-refuses-changed-config.md).
 
 ## Host access: reach an in-jail server from the host
 
@@ -316,15 +316,17 @@ These are **read-only query flags**: they only shape the output, so they cannot 
 
 ## Split tunnel: reach one local service directly
 
-`--allow-direct <IP|CIDR>[:port]` (repeatable) opens a **narrow, guardrailed hole** in the forced egress for specific **RFC1918 / link-local** destinations, so a jailed tool can reach a trusted local service (e.g. a local model at `192.168.1.150:8080`) DIRECTLY over the LAN, while ALL other egress stays forced through the proxy, fail-closed.
+`--allow <IP|CIDR>:<port>` (repeatable) opens a **narrow, guardrailed hole** in the forced egress for specific **RFC1918 / link-local** destinations, so a jailed tool can reach a trusted local service (e.g. a local model at `192.168.1.150:8080`) DIRECTLY over the LAN, while ALL other egress stays forced through the proxy, fail-closed. netcage mirrors [anonctl](https://github.com/wighawag/anonctl)'s `--allow` vocabulary so the two tools stay aligned.
 
 ```sh
 netcage run --proxy socks5h://127.0.0.1:9050 \
-  --allow-direct 192.168.1.150:8080 \
+  --allow 192.168.1.150:8080 \
   -it -v ./work my/agent-image agent
 ```
 
-Guardrails (see ADR-0005): **off by default** (an empty allowlist is byte-identical to the strict jail); **private ranges only** (public IPs / hostnames / malformed values are rejected loudly at startup, because a public direct would be a real anonymity leak); **TCP only** (UDP stays hard-dropped even to an allowlisted host, ADR-0003); **never a clear-DNS hole** (an explicit `:53`/`:853`/`:5353` is rejected loudly, and a port-omitted "all ports" allow excludes those clear-DNS ports, so a LAN resolver is un-allowable and DNS stays on the proxy-side forwarder, ADR-0018, because a `@LAN-resolver` query could reveal your network's public IP); and everything outside the allowlist stays leak-proof. `verify` proves the jail is still leak-tight for all non-allowlisted traffic when a split tunnel is active, including that `--allow-direct` carries no direct clear DNS to the LAN.
+**A port is REQUIRED** (ADR-0020): a bare IP / CIDR with no `:port` (the old all-ports form) is **rejected loudly** (`add :port`). An exemption that opened *every* TCP port to a private host was a real **deanonymization vector**, not just a wide hole: if that host runs any forwarding proxy on an unspecified port (an `ssh -D` SOCKS, a squid/HTTP proxy, a Tor SOCKS, a socat tunnel), the jailed tool could dial it directly and egress the whole internet from your real IP, around the forced path. "Reach exactly *this* service" is the only defensible granularity for an anonymity jail, so a direct hole is always an exact `IP:port`.
+
+Guardrails (see ADR-0005, ADR-0020): **off by default** (an empty allowlist is byte-identical to the strict jail); **exact port only** (a port-omitted value is rejected loudly at startup); **private ranges only** (public IPs / hostnames / malformed values are rejected loudly, because a public direct would be a real anonymity leak); **TCP only** (UDP stays hard-dropped even to an allowlisted host, ADR-0003); **never a clear-DNS hole** (an explicit `:53`/`:853`/`:5353` is rejected loudly, so a LAN resolver is un-allowable and DNS stays on the proxy-side forwarder, ADR-0018, because a `@LAN-resolver` query could reveal your network's public IP; with the all-ports form gone, only the one named non-DNS port is ever accepted, so clear DNS is structurally un-allowable); and everything outside the allowlist stays leak-proof. `verify` proves the jail is still leak-tight for all non-allowlisted traffic when a split tunnel is active, including that `--allow` carries no direct clear DNS to the LAN.
 
 ## Platform
 
@@ -343,13 +345,13 @@ curl -fsSL https://github.com/wighawag/netcage/releases/latest/download/install.
 Two seams are VM-boundary-sensitive, both about addresses:
 
 - **A proxy on your Mac's `127.0.0.1`** (local Tor, `ssh -D`) is the *Mac's* loopback, not the VM's. From inside the VM, reach the Mac via the VM's host gateway address (commonly `192.168.127.254` under gvproxy; check your machine's routes) and make sure the proxy listens on an interface the VM can reach (e.g. bind `ssh -D` to `0.0.0.0` or use an SSH reverse tunnel into the VM). Then pass that address as `--proxy`.
-- **`--allow-direct`** sees the *VM's* network, not your Mac's LAN. A LAN host may still be routable through the VM's NAT, but the address semantics are the VM's.
+- **`--allow`** sees the *VM's* network, not your Mac's LAN. A LAN host may still be routable through the VM's NAT, but the address semantics are the VM's.
 
 `verify` runs inside the VM and proves the same three assertions there; "the host" in its assertions is the VM.
 
 ### Windows (WSL2)
 
-Podman on Windows runs in a WSL2 distribution, which is a full Linux kernel with everything the jail needs. Install and run netcage **inside your WSL2 distro** (the install script works there). The same two address seams apply: a proxy on Windows' `127.0.0.1` is reachable from WSL2 via the Windows host address (see `/etc/resolv.conf`'s nameserver or `ip route show default` in the distro, or enable WSL2's mirrored networking mode, which shares localhost), and `--allow-direct` sees the WSL2 network.
+Podman on Windows runs in a WSL2 distribution, which is a full Linux kernel with everything the jail needs. Install and run netcage **inside your WSL2 distro** (the install script works there). The same two address seams apply: a proxy on Windows' `127.0.0.1` is reachable from WSL2 via the Windows host address (see `/etc/resolv.conf`'s nameserver or `ip route show default` in the distro, or enable WSL2's mirrored networking mode, which shares localhost), and `--allow` sees the WSL2 network.
 
 ### Native ports
 

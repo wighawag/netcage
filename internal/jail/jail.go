@@ -111,7 +111,7 @@ type Config struct {
 	PassThroughFlags []string
 
 	// AllowDirect is the validated split-tunnel LAN allowlist: private-only
-	// destinations (network + optional TCP port) the jailed tool may reach
+	// destinations (network + EXACT TCP port) the jailed tool may reach
 	// DIRECTLY over the real NIC instead of through the proxy, while ALL other
 	// egress stays forced through the proxy, fail-closed. EMPTY (the default) ==
 	// today's byte-identical strict jail: no extra excluded routes, no accept
@@ -484,43 +484,29 @@ var rfc1918DropRanges = []string{
 
 // writeSplitTunnelAccepts appends the split-tunnel ACCEPT rules (the NARROWING
 // half of the spike), and ONLY for a NON-EMPTY allowlist. Each allowlist entry
-// gets an ACCEPT for its net (per-port, or all TCP ports for a port-less entry).
-// It is emitted in the ENABLING-accepts block, BEFORE the broad drops, so an
-// allowed destination is accepted and not shadowed by the RFC1918-range drop for
-// its own LAN. TCP-only throughout: UDP was already hard-dropped (ADR-0003), so
-// even an allowlisted host has no UDP path.
+// gets an ACCEPT for its net at its EXACT TCP port. It is emitted in the
+// ENABLING-accepts block, BEFORE the broad drops, so an allowed destination is
+// accepted and not shadowed by the RFC1918-range drop for its own LAN. TCP-only
+// throughout: UDP was already hard-dropped (ADR-0003), so even an allowlisted
+// host has no UDP path.
+//
+// Every entry carries an exact port (the all-ports / port-omitted form was
+// DROPPED as a deanonymization risk, ADR-0020: the CLI now rejects a port-omitted
+// value, so no exemption can open more than one exact TCP port). Because only the
+// named port is accepted, a direct clear-DNS query on :53 to an allowed host is
+// never accepted (it falls to the RFC1918/link-local range DROP below), so the
+// split-tunnel hole is structurally incapable of carrying clear DNS to a LAN
+// resolver without a separate 53-exclusion (ADR-0018 is now enforced by the
+// exact-port shape alone).
 //
 // For an EMPTY allowlist this writes NOTHING (paired with writeSplitTunnelDrops),
 // keeping firewallScript's default-jail shape unchanged (today's default jail
 // has NO RFC1918 drops at all; its fail-closed comes from the TUN-only route).
 func (c Config) writeSplitTunnelAccepts(b *strings.Builder) {
 	for _, a := range c.AllowDirect {
-		daddr := a.Network.String()
-		if a.Port == 0 {
-			// Port omitted => all TCP ports to that net (TCP-only; UDP stays dropped),
-			// EXCEPT the clear-DNS ports: a DROP for each precedes the all-ports accept
-			// so an all-ports allow never carries direct clear DNS to a LAN resolver
-			// (Tails row 2). iptables is first-match, so the DROP shadows the accept for
-			// those ports; 53 stays on the loopback DNS-over-SOCKS forwarder. An explicit
-			// :53/:853/:5353 is already rejected at the CLI, so this is only the
-			// port-omitted case.
-			for _, p := range clearDNSExcludePorts {
-				b.WriteString(fmt.Sprintf("iptables -A OUTPUT -p tcp -d %s --dport %d -j DROP\n", daddr, p))
-			}
-			b.WriteString(fmt.Sprintf("iptables -A OUTPUT -p tcp -d %s -j ACCEPT\n", daddr))
-		} else {
-			b.WriteString(fmt.Sprintf("iptables -A OUTPUT -p tcp -d %s --dport %d -j ACCEPT\n", daddr, a.Port))
-		}
+		b.WriteString(fmt.Sprintf("iptables -A OUTPUT -p tcp -d %s --dport %d -j ACCEPT\n", a.Network.String(), a.Port))
 	}
 }
-
-// clearDNSExcludePorts are the clear-DNS(-ish) TCP ports an all-ports
-// (port-omitted) --allow-direct DROPS to the allowed net so the split-tunnel
-// hole never carries direct DNS to a LAN resolver (Tails row 2: a @LAN-resolver
-// query can reveal the local network's public IP). They mirror cli.clearDNSPorts
-// (53 clear DNS, 853 DoT, 5353 mDNS); an EXPLICIT one of these is refused at the
-// CLI, so the exclusion here is the defense for the all-ports case only.
-var clearDNSExcludePorts = []int{53, 853, 5353}
 
 // writeSplitTunnelDrops appends the RFC1918 / link-local defense-in-depth DROPs
 // (prd story 7), and ONLY for a NON-EMPTY allowlist. They are emitted in the
@@ -570,16 +556,8 @@ func (c Config) firewallVerifyRules(proxyPort string) (v4, v6 []string) {
 		)
 	}
 	for _, a := range c.AllowDirect {
-		if a.Port == 0 {
-			// The clear-DNS-port DROPs precede the all-ports accept (row 2). `iptables -S`
-			// renders a dport DROP as `-d <net> -p tcp -m tcp --dport N -j DROP`.
-			for _, p := range clearDNSExcludePorts {
-				v4 = append(v4, fmt.Sprintf("-A OUTPUT -d %s -p tcp -m tcp --dport %d -j DROP", a.Network.String(), p))
-			}
-			v4 = append(v4, fmt.Sprintf("-A OUTPUT -d %s -p tcp -j ACCEPT", a.Network.String()))
-		} else {
-			v4 = append(v4, fmt.Sprintf("-A OUTPUT -d %s -p tcp -m tcp --dport %d -j ACCEPT", a.Network.String(), a.Port))
-		}
+		// Every entry is an exact port (the all-ports form was removed, ADR-0020).
+		v4 = append(v4, fmt.Sprintf("-A OUTPUT -d %s -p tcp -m tcp --dport %d -j ACCEPT", a.Network.String(), a.Port))
 	}
 	if len(c.AllowDirect) > 0 {
 		for _, r := range rfc1918DropRanges {

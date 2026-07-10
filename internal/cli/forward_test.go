@@ -151,7 +151,7 @@ func TestParse_ForwardRejectsWrongPositionalCounts(t *testing.T) {
 }
 
 // TestParse_ForwardRejectsBadPort asserts a non-numeric or out-of-range port is
-// refused loudly (mirroring the --allow-direct port validation).
+// refused loudly (mirroring the --allow port validation).
 func TestParse_ForwardRejectsBadPort(t *testing.T) {
 	for _, p := range []string{"abc", "0", "70000", "-1", "3.14"} {
 		if _, err := cli.ParseWithEnv([]string{"forward", "c", p}, noEnv); err == nil {

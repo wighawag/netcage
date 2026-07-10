@@ -451,19 +451,16 @@ func dnsHelperPath() (string, error) {
 // not stop the jailed tool's proxy egress.
 var ErrDirectUnreachable = errors.New("a split-tunnel allowlisted direct did not answer on the LAN")
 
-// warnUnreachableDirects probes each PORT-carrying allowlist entry from the jail
-// netns and prints a story-10 diagnostic to stderr for any that do not answer.
-// It skips port-less entries (a bare IP or CIDR with no :port has no single
-// probe target). Probe failures are advisory only: the message distinguishes
-// "on the allowlist but unreachable on the LAN" from a jail-policy block, so the
-// operator is not left guessing why a direct destination is silent. Any probe
-// infrastructure error (e.g. no alpine image) is swallowed: the diagnostic is a
-// convenience, never a gate.
+// warnUnreachableDirects probes each allowlist entry from the jail netns and
+// prints a story-10 diagnostic to stderr for any that do not answer. Every entry
+// now carries an exact port (the all-ports form was dropped, ADR-0020), so each
+// has a single host:port to probe. Probe failures are advisory only: the message
+// distinguishes "on the allowlist but unreachable on the LAN" from a jail-policy
+// block, so the operator is not left guessing why a direct destination is silent.
+// Any probe infrastructure error (e.g. no alpine image) is swallowed: the
+// diagnostic is a convenience, never a gate.
 func warnUnreachableDirects(ctx context.Context, r Runner, cfg Config) {
 	for _, a := range cfg.AllowDirect {
-		if a.Port == 0 {
-			continue // no single host:port to probe (all-ports / CIDR entry)
-		}
 		host := a.Network.IP.String()
 		if err := probeDirect(ctx, r, cfg, host, a.Port); err != nil {
 			fmt.Fprintln(os.Stderr, directUnreachableDiagnostic(host, a.Port, a.Raw))
@@ -479,7 +476,7 @@ func warnUnreachableDirects(ctx context.Context, r Runner, cfg Config) {
 // tell an unreachable-on-LAN allowed direct apart from a jail-policy block.
 func directUnreachableDiagnostic(host string, port int, raw string) string {
 	return fmt.Sprintf(
-		"netcage: %v: %s:%d (allowlisted --allow-direct %q) did not answer over the LAN; this is a LAN problem (host down / wrong IP / LAN-firewalled), NOT a jail-policy block. Non-allowlisted destinations are dropped by design; this one is allowed but silent.",
+		"netcage: %v: %s:%d (allowlisted --allow %q) did not answer over the LAN; this is a LAN problem (host down / wrong IP / LAN-firewalled), NOT a jail-policy block. Non-allowlisted destinations are dropped by design; this one is allowed but silent.",
 		ErrDirectUnreachable, host, port, raw)
 }
 

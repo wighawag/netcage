@@ -232,7 +232,7 @@ func TestDirectReachableProbe_JailErrorIsNotReached(t *testing.T) {
 // --- split-tunnel: no-clear-LAN-DNS assertion (row 2, pure render) ---
 
 // TestNoClearLANDNSAssertion_PassWhenDirectDroppedAndForwarderResolves is the
-// row-2 pass: with --allow-direct active, a DIRECT clear-DNS query aimed at the
+// row-2 pass: with --allow active, a DIRECT clear-DNS query aimed at the
 // allowed LAN resolver is NOT answered directly (dropped / no clear answer), AND
 // the loopback DNS-over-SOCKS forwarder STILL resolves. The black-hole/counter
 // shape (NOT "direct dig must time out"): the pass is "no direct clear answer
@@ -248,7 +248,7 @@ func TestNoClearLANDNSAssertion_PassWhenDirectDroppedAndForwarderResolves(t *tes
 }
 
 // TestNoClearLANDNSAssertion_FailWhenDirectAnswered is the leak: a DIRECT clear
-// query to the LAN resolver got an answer => --allow-direct opened a clear-DNS
+// query to the LAN resolver got an answer => --allow opened a clear-DNS
 // hole to the LAN (the exact Tails row-2 leak). Must FAIL and name the leak.
 func TestNoClearLANDNSAssertion_FailWhenDirectAnswered(t *testing.T) {
 	a := NoClearLANDNSAssertion(true /*directAnswered*/, true, nil)

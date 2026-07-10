@@ -80,29 +80,40 @@ func TestWriteConfig_RejectsNonSocks5h(t *testing.T) {
 	}
 }
 
-// TestWriteConfig_RejectsPublicAllowDirect checks each persisted allowDirect
-// entry round-trips the SAME private-only validator; a public entry is refused.
+// TestWriteConfig_RejectsPublicAllowDirect checks each persisted allow entry
+// round-trips the SAME private-only validator; a public entry is refused.
 func TestWriteConfig_RejectsPublicAllowDirect(t *testing.T) {
 	xdg := t.TempDir()
-	err := cli.WriteConfig(envConfigHome(xdg, nil), "socks5h://127.0.0.1:9050", []string{"8.8.8.8"})
+	err := cli.WriteConfig(envConfigHome(xdg, nil), "socks5h://127.0.0.1:9050", []string{"8.8.8.8:8080"})
 	if err == nil {
-		t.Fatal("WriteConfig accepted a public allowDirect entry; a persisted direct must be private-only like the flag")
+		t.Fatal("WriteConfig accepted a public allow entry; a persisted direct must be private-only like the flag")
 	}
 }
 
-// TestWriteConfig_WritesAllowDirectList checks a valid private allowDirect list is
+// TestWriteConfig_RejectsPortOmittedAllowDirect checks a port-omitted allow entry
+// is refused at persist time by the SAME parseAllowDirect (ADR-0020: the all-ports
+// form cannot be persisted any more than it can be passed on the flag).
+func TestWriteConfig_RejectsPortOmittedAllowDirect(t *testing.T) {
+	xdg := t.TempDir()
+	err := cli.WriteConfig(envConfigHome(xdg, nil), "socks5h://127.0.0.1:9050", []string{"192.168.1.150"})
+	if err == nil {
+		t.Fatal("WriteConfig accepted a port-omitted allow entry; a persisted direct must name an exact port like the flag")
+	}
+}
+
+// TestWriteConfig_WritesAllowDirectList checks a valid private allow list is
 // persisted and round-trips through the loader as the run's allowlist.
 func TestWriteConfig_WritesAllowDirectList(t *testing.T) {
 	xdg := t.TempDir()
 	env := envConfigHome(xdg, nil)
-	if err := cli.WriteConfig(env, "socks5h://127.0.0.1:9050", []string{"192.168.1.0/24", "10.0.0.5:8080"}); err != nil {
+	if err := cli.WriteConfig(env, "socks5h://127.0.0.1:9050", []string{"192.168.1.0/24:443", "10.0.0.5:8080"}); err != nil {
 		t.Fatalf("WriteConfig: %v", err)
 	}
 	cmd, err := cli.ParseWithEnv([]string{"run", "img"}, env)
 	if err != nil {
 		t.Fatalf("Parse after WriteConfig: %v", err)
 	}
-	if len(cmd.AllowDirect) != 2 || cmd.AllowDirect[0].Raw != "192.168.1.0/24" || cmd.AllowDirect[1].Raw != "10.0.0.5:8080" {
+	if len(cmd.AllowDirect) != 2 || cmd.AllowDirect[0].Raw != "192.168.1.0/24:443" || cmd.AllowDirect[1].Raw != "10.0.0.5:8080" {
 		t.Fatalf("AllowDirect = %+v, want the two persisted entries in order", cmd.AllowDirect)
 	}
 }
@@ -149,10 +160,10 @@ func TestWriteConfig_ReRunNormalisesLooseModeTo0600(t *testing.T) {
 }
 
 // TestReadConfigView_PrefillFromExisting checks the reconfigure PRE-FILL read
-// surfaces the current proxy + allowDirect exactly as persisted, so setup-default
+// surfaces the current proxy + allow list exactly as persisted, so setup-default
 // can show "current: ...".
 func TestReadConfigView_PrefillFromExisting(t *testing.T) {
-	xdg := writeConfig(t, `{"proxy":"socks5h://127.0.0.1:1080","allowDirect":["10.0.0.0/8"]}`)
+	xdg := writeConfig(t, `{"proxy":"socks5h://127.0.0.1:1080","allow":["10.0.0.0/8:443"]}`)
 	view, err := cli.ReadConfigView(envConfigHome(xdg, nil))
 	if err != nil {
 		t.Fatalf("ReadConfigView: %v", err)
@@ -160,8 +171,8 @@ func TestReadConfigView_PrefillFromExisting(t *testing.T) {
 	if !view.Present || view.ProxyURL != "socks5h://127.0.0.1:1080" {
 		t.Fatalf("view = %+v, want present with the persisted proxy", view)
 	}
-	if len(view.AllowDirect) != 1 || view.AllowDirect[0] != "10.0.0.0/8" {
-		t.Fatalf("view.AllowDirect = %v, want [10.0.0.0/8]", view.AllowDirect)
+	if len(view.AllowDirect) != 1 || view.AllowDirect[0] != "10.0.0.0/8:443" {
+		t.Fatalf("view.AllowDirect = %v, want [10.0.0.0/8:443]", view.AllowDirect)
 	}
 }
 

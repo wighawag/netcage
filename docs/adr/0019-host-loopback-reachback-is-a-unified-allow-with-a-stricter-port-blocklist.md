@@ -12,7 +12,7 @@ Two structural facts make this NOT "just add `127.0.0.1` to the LAN allowlist":
 
 2. **Host reachback is the single most leak-prone seam (ADR-0002), and loopback is where the anonymizer's control surface lives** (the socks5h proxy port, and the conventional Tor/SOCKS/control ports). A loopback hole to the wrong port would let the jailed tool dial the proxy's SOCKS surface directly and bypass the forced path, or hit a Tor control port (a self-deanonymization vector). So the loopback branch needs a STRICTER guardrail than the LAN branch's "must be an RFC1918/link-local range".
 
-The prerequisite `allow-require-explicit-port-and-rename` (ADR to be recorded there) already made the exemption port-mandatory and renamed `--allow-direct` -> `--allow`, so LAN and host-loopback holes are now the SAME shape (exact `host:port`), differing only in the per-class guardrail. This ADR records the second class.
+The prerequisite `allow-require-explicit-port-and-rename` (ADR-0020) already made the exemption port-mandatory and renamed `--allow-direct` -> `--allow`, so LAN and host-loopback holes are now the SAME shape (exact `host:port`), differing only in the per-class guardrail. This ADR records the second class.
 
 ## Decision
 

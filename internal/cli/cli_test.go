@@ -712,10 +712,10 @@ func TestParse_StartIsNotAManagementPassThrough(t *testing.T) {
 // TestParse_StartTakesNameAndProxy: `netcage start <name>` parses the single
 // container name into StartName and, being a JAIL path (it revives a forced-egress
 // jail + re-execs DNS), CARRIES a --proxy that must preflight (unlike the
-// pass-through verbs). --allow-direct + -it + --rm are accepted (the jail config to
+// pass-through verbs). --allow + -it + --rm are accepted (the jail config to
 // reconcile + attach mode + ephemeral).
 func TestParse_StartTakesNameAndProxy(t *testing.T) {
-	cmd, err := cli.ParseWithEnv([]string{"start", "--proxy", "socks5h://127.0.0.1:9050", "-it", "--rm", "--allow-direct", "192.168.1.5:22", "netcage-run-abc-tool"}, noEnv)
+	cmd, err := cli.ParseWithEnv([]string{"start", "--proxy", "socks5h://127.0.0.1:9050", "-it", "--rm", "--allow", "192.168.1.5:22", "netcage-run-abc-tool"}, noEnv)
 	if err != nil {
 		t.Fatalf("start must parse: %v", err)
 	}
@@ -732,7 +732,7 @@ func TestParse_StartTakesNameAndProxy(t *testing.T) {
 		t.Fatal("start --rm must set Rm (ephemeral resume)")
 	}
 	if len(cmd.AllowDirect) != 1 {
-		t.Fatalf("start --allow-direct must parse into AllowDirect; got %+v", cmd.AllowDirect)
+		t.Fatalf("start --allow must parse into AllowDirect; got %+v", cmd.AllowDirect)
 	}
 	// A jail path: it is NOT a management verb and IS preflighted (needs a reachable
 	// proxy), unlike ps/logs/... which no-op preflight.

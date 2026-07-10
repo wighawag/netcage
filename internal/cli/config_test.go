@@ -148,11 +148,11 @@ func TestParse_ConfigProxyMalformedRejected(t *testing.T) {
 	}
 }
 
-// TestParse_ConfigAllowDirectListValidated checks each config allowDirect entry
-// is validated by the SAME parseAllowDirect (private-only), and applies when NO
-// --allow-direct is on the CLI.
-func TestParse_ConfigAllowDirectListValidated(t *testing.T) {
-	xdg := writeConfig(t, `{"proxy":"socks5h://127.0.0.1:9050","allowDirect":["192.168.1.0/24","10.0.0.5:8080"]}`)
+// TestParse_ConfigAllowListValidated checks each config allow entry is validated
+// by the SAME parseAllowDirect (private-only, exact port), and applies when NO
+// --allow is on the CLI.
+func TestParse_ConfigAllowListValidated(t *testing.T) {
+	xdg := writeConfig(t, `{"proxy":"socks5h://127.0.0.1:9050","allow":["192.168.1.0/24:443","10.0.0.5:8080"]}`)
 	cmd, err := cli.ParseWithEnv([]string{"run", "img"}, envConfigHome(xdg, nil))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -160,28 +160,42 @@ func TestParse_ConfigAllowDirectListValidated(t *testing.T) {
 	if len(cmd.AllowDirect) != 2 {
 		t.Fatalf("AllowDirect len = %d, want 2 (from config): %+v", len(cmd.AllowDirect), cmd.AllowDirect)
 	}
-	if cmd.AllowDirect[0].Raw != "192.168.1.0/24" || cmd.AllowDirect[1].Raw != "10.0.0.5:8080" {
+	if cmd.AllowDirect[0].Raw != "192.168.1.0/24:443" || cmd.AllowDirect[1].Raw != "10.0.0.5:8080" {
 		t.Fatalf("AllowDirect = %+v, want the two config entries in order", cmd.AllowDirect)
 	}
 }
 
-// TestParse_ConfigAllowDirectPublicRejected checks a PUBLIC allowDirect entry in
-// config is rejected by the same guardrail as the flag (a config hole cannot be
-// wider than a flag hole).
-func TestParse_ConfigAllowDirectPublicRejected(t *testing.T) {
-	xdg := writeConfig(t, `{"proxy":"socks5h://127.0.0.1:9050","allowDirect":["8.8.8.8"]}`)
+// TestParse_ConfigAllowPublicRejected checks a PUBLIC allow entry in config is
+// rejected by the same guardrail as the flag (a config hole cannot be wider than
+// a flag hole).
+func TestParse_ConfigAllowPublicRejected(t *testing.T) {
+	xdg := writeConfig(t, `{"proxy":"socks5h://127.0.0.1:9050","allow":["8.8.8.8:8080"]}`)
 	if _, err := cli.ParseWithEnv([]string{"run", "img"}, envConfigHome(xdg, nil)); err == nil {
-		t.Fatal("public allowDirect in config accepted; want the same private-only rejection as the flag")
+		t.Fatal("public allow in config accepted; want the same private-only rejection as the flag")
 	}
 }
 
-// TestParse_ExplicitAllowDirectReplacesConfigList is the REPLACE contract: an
-// explicit --allow-direct on the CLI supplies the COMPLETE allowlist and fully
-// overrides the config list (config directs are NOT carried along).
-func TestParse_ExplicitAllowDirectReplacesConfigList(t *testing.T) {
-	xdg := writeConfig(t, `{"proxy":"socks5h://127.0.0.1:9050","allowDirect":["192.168.1.0/24","10.0.0.5:8080"]}`)
+// TestParse_ConfigAllowPortOmittedRejected is the ADR-0020 config half: a
+// port-omitted allow entry in the config file is rejected on load by the SAME
+// parseAllowDirect as the flag, so the all-ports form cannot sneak in via config.
+func TestParse_ConfigAllowPortOmittedRejected(t *testing.T) {
+	xdg := writeConfig(t, `{"proxy":"socks5h://127.0.0.1:9050","allow":["192.168.1.150"]}`)
+	_, err := cli.ParseWithEnv([]string{"run", "img"}, envConfigHome(xdg, nil))
+	if err == nil {
+		t.Fatal("port-omitted allow in config accepted; want the same port-mandatory rejection as the flag")
+	}
+	if !strings.Contains(err.Error(), "192.168.1.150") {
+		t.Fatalf("config rejection %q should name the offending value", err)
+	}
+}
+
+// TestParse_ExplicitAllowReplacesConfigList is the REPLACE contract: an explicit
+// --allow on the CLI supplies the COMPLETE allowlist and fully overrides the
+// config list (config directs are NOT carried along).
+func TestParse_ExplicitAllowReplacesConfigList(t *testing.T) {
+	xdg := writeConfig(t, `{"proxy":"socks5h://127.0.0.1:9050","allow":["192.168.1.0/24:443","10.0.0.5:8080"]}`)
 	cmd, err := cli.ParseWithEnv(
-		[]string{"run", "--allow-direct", "172.16.9.9:22", "img"},
+		[]string{"run", "--allow", "172.16.9.9:22", "img"},
 		envConfigHome(xdg, nil))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
