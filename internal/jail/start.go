@@ -129,6 +129,25 @@ func Start(ctx context.Context, r Runner, cfg Config, resolveName string) (Resul
 		return Result{}, fmt.Errorf("re-materialise tool /etc/hosts for start: %w", err)
 	}
 
+	// Re-materialise the ADR-0021 /etc-identity fixtures at the SAME stable paths the
+	// tool bind-mounts (baked at create as passwd/group/machineIDPathFor(runID)), for
+	// the same reason as the /etc/hosts above: a revive on another host or after a
+	// temp-dir sweep would otherwise fail with crun "cannot stat" when podman
+	// re-mounts the missing source. The passwd/group content is fixed (idempotent
+	// overwrite); the machine-id is re-materialised PRESERVINGLY so a KEPT run's
+	// run-scoped machine-id stays STABLE across the revive (only a MISSING file is
+	// re-minted, still unlinkable to the host). An ephemeral start removes them again
+	// via Teardown.
+	if err := writePasswdAt(passwdPathFor(cfg.RunID)); err != nil {
+		return Result{}, fmt.Errorf("re-materialise tool /etc/passwd for start: %w", err)
+	}
+	if err := writeGroupAt(groupPathFor(cfg.RunID)); err != nil {
+		return Result{}, fmt.Errorf("re-materialise tool /etc/group for start: %w", err)
+	}
+	if err := writeMachineIDPreservingAt(machineIDPathFor(cfg.RunID)); err != nil {
+		return Result{}, fmt.Errorf("re-materialise tool /etc/machine-id for start: %w", err)
+	}
+
 	// 3d. reachback diagnostic for a host-loopback proxy (as the run path), so an
 	// unreachable proxy port is a clear message, not an opaque tool failure.
 	if cfg.ProxyOnHostLoopback {

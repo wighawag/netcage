@@ -3,6 +3,7 @@ package jail
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -178,6 +179,181 @@ func TestWriteHostsAt_IsLocalhostOnly(t *testing.T) {
 	if strings.Contains(got, "127.0.1.1") {
 		t.Fatalf("synthesized hosts must NOT carry a `127.0.1.1 <host>` line (the leak); got:\n%s", got)
 	}
+}
+
+// TestTeardown_SweepsEtcIdentityFixturesOnEphemeralKeepsThemOnKept mirrors the
+// resolv.conf / /etc/hosts sweep tests for the ADR-0021 /etc-identity fixtures
+// (the synthesized /etc/passwd, /etc/group, and /etc/machine-id bind-mount
+// sources): each is swept on the EPHEMERAL path so it does not orphan under
+// $TMPDIR, and LEFT durable on the KEPT path so a later `netcage start` can
+// re-mount it. `netcage rm` performs the same sweep via jail.RemovePasswd /
+// RemoveGroup / RemoveMachineID.
+func TestTeardown_SweepsEtcIdentityFixturesOnEphemeralKeepsThemOnKept(t *testing.T) {
+	fixtures := []struct {
+		name  string
+		path  func(string) string
+		write func(string) error
+	}{
+		{"passwd", passwdPathFor, writePasswdAt},
+		{"group", groupPathFor, writeGroupAt},
+		{"machine-id", machineIDPathFor, writeMachineIDAt},
+	}
+	t.Run("ephemeral sweeps every /etc-identity fixture", func(t *testing.T) {
+		c := teardownCfg(true)
+		for _, f := range fixtures {
+			p := f.path(c.RunID)
+			if err := f.write(p); err != nil {
+				t.Fatalf("seed %s: %v", f.name, err)
+			}
+			t.Cleanup(func() { os.Remove(p) })
+		}
+		if err := Teardown(context.Background(), &recordRunner{}, c); err != nil {
+			t.Fatalf("Teardown (ephemeral): %v", err)
+		}
+		for _, f := range fixtures {
+			p := f.path(c.RunID)
+			if _, err := os.Stat(p); !os.IsNotExist(err) {
+				t.Fatalf("ephemeral teardown must remove the %s fixture %s (got stat err %v); it would otherwise orphan", f.name, p, err)
+			}
+		}
+	})
+	t.Run("kept leaves every /etc-identity fixture durable", func(t *testing.T) {
+		c := teardownCfg(false)
+		for _, f := range fixtures {
+			p := f.path(c.RunID)
+			if err := f.write(p); err != nil {
+				t.Fatalf("seed %s: %v", f.name, err)
+			}
+			t.Cleanup(func() { os.Remove(p) })
+		}
+		if err := Teardown(context.Background(), &recordRunner{}, c); err != nil {
+			t.Fatalf("Teardown (kept): %v", err)
+		}
+		for _, f := range fixtures {
+			p := f.path(c.RunID)
+			if _, err := os.Stat(p); err != nil {
+				t.Fatalf("kept teardown must LEAVE the %s fixture %s durable (so netcage start can re-mount it); got stat err %v", f.name, p, err)
+			}
+		}
+	})
+}
+
+// TestRemoveEtcIdentityFixtures_AreIdempotent pins that the ADR-0021 fixture
+// removers are safe no-ops on a missing file and an empty run id (like
+// RemoveResolvConf / RemoveHosts), so they can be called on every exit path and by
+// `netcage rm` without guarding.
+func TestRemoveEtcIdentityFixtures_AreIdempotent(t *testing.T) {
+	for _, remove := range []func(string){RemovePasswd, RemoveGroup, RemoveMachineID} {
+		remove("")                   // empty run id: no-op, must not panic
+		remove("no-such-run-id-xyz") // missing file: no-op
+	}
+}
+
+// TestWritePasswdAt_HasOnlyGenericAccountsNoRealNames pins the synthesized
+// /etc/passwd carries ONLY a generic non-identifying user set (root + the generic
+// `machine` + the service-account minimum) and NONE of the host's real accounts,
+// login names, or GECOS real names (the sharpest ADR-0021 leak). A coherent
+// matching /etc/group is synthesized alongside it.
+func TestWritePasswdAt_HasOnlyGenericAccountsNoRealNames(t *testing.T) {
+	pwPath := passwdPathFor("idtest")
+	grPath := groupPathFor("idtest")
+	t.Cleanup(func() { os.Remove(pwPath); os.Remove(grPath) })
+	if err := writePasswdAt(pwPath); err != nil {
+		t.Fatalf("writePasswdAt: %v", err)
+	}
+	if err := writeGroupAt(grPath); err != nil {
+		t.Fatalf("writeGroupAt: %v", err)
+	}
+	pw, err := os.ReadFile(pwPath)
+	if err != nil {
+		t.Fatalf("read passwd: %v", err)
+	}
+	got := string(pw)
+	// The generic user must be present, mounted as the jail's own default account.
+	if !strings.Contains(got, "machine:x:1000:1000::/home/machine:/bin/sh") {
+		t.Fatalf("synthesized passwd must carry the generic `machine` user; got:\n%s", got)
+	}
+	if !strings.Contains(got, "root:x:0:0:") {
+		t.Fatalf("synthesized passwd must carry root; got:\n%s", got)
+	}
+	// Every passwd line's gid must resolve in the synthesized group file (a coherent
+	// passwd+group pair). We assert the two gids the passwd uses (1000, 65534) plus
+	// root's (0) all appear as groups.
+	gr := string(mustRead(t, grPath))
+	for _, wantGroup := range []string{"root:x:0:", "machine:x:1000:", "nogroup:x:65534:"} {
+		if !strings.Contains(gr, wantGroup) {
+			t.Fatalf("synthesized group must carry %q so the passwd gids are coherent; got:\n%s", wantGroup, gr)
+		}
+	}
+	// It must NOT synthesize /etc/shadow (its ABSENCE is safer than a fake, ADR-0021).
+	if _, err := os.Stat(filepath.Join(os.TempDir(), "netcage-shadow-idtest")); !os.IsNotExist(err) {
+		t.Fatalf("netcage must NOT synthesize an /etc/shadow fixture (its absence is safer than a fake)")
+	}
+}
+
+// TestWriteMachineIDAt_IsPerRunRandom32Hex pins the synthesized /etc/machine-id is
+// a non-empty 32-hex-char value (ADR-0021's chosen random-id option over an empty
+// first-boot machine-id: non-empty so tools that require a value work) and that two
+// writes mint DIFFERENT ids (per-run, unlinkable to the host correlator).
+func TestWriteMachineIDAt_IsPerRunRandom32Hex(t *testing.T) {
+	p1 := machineIDPathFor("mid1")
+	p2 := machineIDPathFor("mid2")
+	t.Cleanup(func() { os.Remove(p1); os.Remove(p2) })
+	if err := writeMachineIDAt(p1); err != nil {
+		t.Fatalf("writeMachineIDAt p1: %v", err)
+	}
+	if err := writeMachineIDAt(p2); err != nil {
+		t.Fatalf("writeMachineIDAt p2: %v", err)
+	}
+	id1 := strings.TrimSpace(string(mustRead(t, p1)))
+	id2 := strings.TrimSpace(string(mustRead(t, p2)))
+	if len(id1) != 32 {
+		t.Fatalf("machine-id must be 32 hex chars (non-empty); got %q (len %d)", id1, len(id1))
+	}
+	for _, r := range id1 {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			t.Fatalf("machine-id must be lowercase hex; got %q", id1)
+		}
+	}
+	if id1 == id2 {
+		t.Fatalf("machine-id must be per-run random (two writes must differ); both were %q", id1)
+	}
+}
+
+// TestWriteMachineIDPreservingAt_KeepsExistingValue pins the revive-path behaviour:
+// a KEPT run's run-scoped machine-id must stay STABLE across a `netcage start`
+// revive, so writeMachineIDPreservingAt leaves an EXISTING file untouched and only
+// re-mints a MISSING one.
+func TestWriteMachineIDPreservingAt_KeepsExistingValue(t *testing.T) {
+	p := machineIDPathFor("midpreserve")
+	t.Cleanup(func() { os.Remove(p) })
+	if err := writeMachineIDAt(p); err != nil {
+		t.Fatalf("seed machine-id: %v", err)
+	}
+	orig := strings.TrimSpace(string(mustRead(t, p)))
+	if err := writeMachineIDPreservingAt(p); err != nil {
+		t.Fatalf("writeMachineIDPreservingAt (existing): %v", err)
+	}
+	if got := strings.TrimSpace(string(mustRead(t, p))); got != orig {
+		t.Fatalf("preserving write must keep the existing machine-id %q stable; got %q", orig, got)
+	}
+	// A MISSING file is re-minted (so a temp-dir sweep or cross-host revive still works).
+	os.Remove(p)
+	if err := writeMachineIDPreservingAt(p); err != nil {
+		t.Fatalf("writeMachineIDPreservingAt (missing): %v", err)
+	}
+	if got := strings.TrimSpace(string(mustRead(t, p))); len(got) != 32 {
+		t.Fatalf("preserving write must re-mint a MISSING machine-id; got %q", got)
+	}
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return b
 }
 
 func joinAll(calls [][]string) string {

@@ -2,6 +2,8 @@ package jail
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -123,6 +125,40 @@ func Run(ctx context.Context, r Runner, cfg Config) (Result, error) {
 		return Result{}, fmt.Errorf("write tool /etc/hosts: %w", err)
 	}
 	cfg.hostsPath = hostsPath
+
+	// Synthesize + mount the /etc-identity fixtures that close the host-recon leaks
+	// ADR-0021 adds ON TOP of ADR-0013's /etc/hosts fix, each a per-run temp file at
+	// its own STABLE, run-attributable path (like the /etc/hosts + resolv.conf above:
+	// a KEPT container re-mounts the SAME source on restart, so a random name a later
+	// revive cannot reproduce is forbidden), swept ephemeral-only in Teardown:
+	//
+	//   - a minimal /etc/passwd + /etc/group (only a generic non-identifying user +
+	//     root + the service-account minimum), so the world-readable host /etc/passwd
+	//     (every host login name AND its GECOS real name) never reaches the tool; and
+	//   - a per-run random /etc/machine-id, a value unlinkable to the host's stable
+	//     machine-id correlator (non-empty so tools that require a value work).
+	//
+	// They carry NO name resolution and NO hostname->IP pin, so they are inert to
+	// egress (ADR-0021): they are plain :ro binds on the tool container, accepted
+	// under --network container: exactly like the /etc/hosts bind, and reintroduce
+	// nothing --add-host/--dns-like.
+	passwdPath := passwdPathFor(cfg.RunID)
+	if err := writePasswdAt(passwdPath); err != nil {
+		return Result{}, fmt.Errorf("write tool /etc/passwd: %w", err)
+	}
+	cfg.passwdPath = passwdPath
+
+	groupPath := groupPathFor(cfg.RunID)
+	if err := writeGroupAt(groupPath); err != nil {
+		return Result{}, fmt.Errorf("write tool /etc/group: %w", err)
+	}
+	cfg.groupPath = groupPath
+
+	machineIDPath := machineIDPathFor(cfg.RunID)
+	if err := writeMachineIDAt(machineIDPath); err != nil {
+		return Result{}, fmt.Errorf("write tool /etc/machine-id: %w", err)
+	}
+	cfg.machineIDPath = machineIDPath
 
 	// 3. reachback diagnostic for a host-loopback proxy (story 14): a clear
 	// message instead of an opaque tool failure when the sidecar cannot reach the
@@ -404,6 +440,124 @@ func RemoveHosts(runID string) {
 	}
 }
 
+// passwdPathFor / groupPathFor / machineIDPathFor are the STABLE, run-attributable
+// host paths of the synthesized /etc-identity fixtures netcage mounts :ro into the
+// tool (ADR-0021, extending ADR-0013). Like hostsPathFor they are deterministic in
+// the run id so a KEPT container's bind-mount source is the SAME on the original
+// run and on every `netcage start` revive (podman re-mounts these exact paths on
+// restart, so a random temp name a later revive cannot reproduce is forbidden).
+// They live under the OS temp dir (world-safe: the passwd/group carry ONLY a
+// generic non-identifying user set, the machine-id a per-run random value, none of
+// it host identity).
+func passwdPathFor(runID string) string {
+	return filepath.Join(os.TempDir(), "netcage-passwd-"+runID)
+}
+func groupPathFor(runID string) string {
+	return filepath.Join(os.TempDir(), "netcage-group-"+runID)
+}
+func machineIDPathFor(runID string) string {
+	return filepath.Join(os.TempDir(), "netcage-machine-id-"+runID)
+}
+
+// sanitizedPasswd is the fixed minimal /etc/passwd netcage mounts into the tool
+// (ADR-0021). It contains ONLY a generic non-identifying user (`machine`, the
+// jail's own default account), `root`, and the conventional service-account
+// minimum a tool might expect (`nobody`). It contains NONE of the host's real
+// accounts, no real login names, and no GECOS real-name fields (the sharpest leak:
+// the world-readable host /etc/passwd exposes every account's login name AND its
+// GECOS real name). /etc/shadow is DELIBERATELY NOT synthesized: its ABSENCE is
+// safer than a fake (a fabricated shadow is itself a tell, and there is nothing to
+// authenticate against in a jail).
+const sanitizedPasswd = "root:x:0:0:root:/root:/bin/sh\n" +
+	"machine:x:1000:1000::/home/machine:/bin/sh\n" +
+	"nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin\n"
+
+// sanitizedGroup is the fixed minimal /etc/group netcage mounts alongside the
+// synthesized /etc/passwd (ADR-0021). A passwd carrying a gid needs a coherent
+// group file, so this mirrors sanitizedPasswd's gids: `root` (0), the generic
+// `machine` (1000), and `nogroup` (65534, the group `nobody` belongs to). It
+// carries none of the host's real groups.
+const sanitizedGroup = "root:x:0:\n" +
+	"machine:x:1000:\n" +
+	"nogroup:x:65534:\n"
+
+// writePasswdAt / writeGroupAt write the fixed minimal /etc/passwd and /etc/group
+// to the given stable paths, idempotently (overwrite is fine: the content is
+// fixed). Used by both the run path and `netcage start` (which re-materialises the
+// same files before reviving). They mirror writeHostsAt.
+func writePasswdAt(path string) error {
+	return os.WriteFile(path, []byte(sanitizedPasswd), 0o644)
+}
+func writeGroupAt(path string) error {
+	return os.WriteFile(path, []byte(sanitizedGroup), 0o644)
+}
+
+// writeMachineIDAt writes a /etc/machine-id to the given stable path. The value is
+// a per-run RANDOM 32-hex-char id (ADR-0021's chosen option over an empty
+// "first-boot" machine-id): non-empty so tools that require a value work, stable
+// within one run, and unlinkable to the host's real machine-id (a strong stable
+// host correlator, machine-id-grade like `btime`). It is NOT idempotent across
+// calls (each call would mint a NEW id), so `netcage start`'s re-materialisation
+// path preserves an EXISTING file's value (see writeMachineIDPreservingAt) to keep
+// the revive stable; the run path always mints fresh via this function.
+func writeMachineIDAt(path string) error {
+	id, err := randomMachineID()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(id+"\n"), 0o644)
+}
+
+// writeMachineIDPreservingAt re-materialises the /etc/machine-id at path WITHOUT
+// changing an already-present value: a KEPT run's machine-id must stay STABLE
+// across a `netcage start` revive (podman re-mounts the same source, and the tool
+// would notice a machine-id that changed under it). If the file exists it is left
+// untouched; only a MISSING file (a temp-dir sweep, or a revive on another host)
+// is re-created with a fresh random id, which is acceptable (a new run-scoped id,
+// still unlinkable to the host). The run path uses writeMachineIDAt (always
+// fresh); only start.go uses this preserving variant.
+func writeMachineIDPreservingAt(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil // keep the existing run-scoped id stable across the revive
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return writeMachineIDAt(path)
+}
+
+// randomMachineID returns a 32-hex-char (128-bit) random id in the systemd
+// machine-id shape (lowercase hex, no dashes). It is per-run and unlinkable to the
+// host machine-id.
+func randomMachineID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generate random machine-id: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// RemovePasswd / RemoveGroup / RemoveMachineID remove the run-attributable
+// /etc-identity fixture files for runID (the tool's bind-mount sources), the
+// counterparts to the container removal exactly like RemoveHosts / RemoveResolvConf:
+// a KEPT run leaves them durable so a later `netcage start` can re-mount them, so
+// whatever finally removes the kept pair must also sweep them or they orphan under
+// $TMPDIR. A missing file is a no-op (idempotent).
+func RemovePasswd(runID string) { removeFixture(runID, passwdPathFor, "/etc/passwd") }
+func RemoveGroup(runID string) { removeFixture(runID, groupPathFor, "/etc/group") }
+func RemoveMachineID(runID string) { removeFixture(runID, machineIDPathFor, "/etc/machine-id") }
+
+// removeFixture is the shared idempotent sweep for a run-attributable fixture file
+// (empty run id and a missing file are both no-ops), factored so the three
+// ADR-0021 fixtures share one implementation.
+func removeFixture(runID string, pathFor func(string) string, label string) {
+	if runID == "" {
+		return
+	}
+	if err := os.Remove(pathFor(runID)); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "netcage: could not remove %s for run %s: %v\n", label, runID, err)
+	}
+}
+
 // RemoveResolvConf removes the run-attributable resolv.conf file for runID (the
 // tool's bind-mount source, resolvConfPathFor). It is the counterpart to the
 // container removal: because a KEPT run leaves the file durable on the host (so a
@@ -539,10 +693,13 @@ func Teardown(ctx context.Context, r Runner, cfg Config) error {
 		return nil
 	}
 	// Sweep the run-attributable bind-mount sources too: an ephemeral run removes
-	// the pair, so the durable resolv.conf + sanitized /etc/hosts must not orphan
-	// under $TMPDIR.
+	// the pair, so the durable resolv.conf + sanitized /etc/hosts + the ADR-0021
+	// /etc-identity fixtures (passwd/group/machine-id) must not orphan under $TMPDIR.
 	RemoveResolvConf(cfg.RunID)
 	RemoveHosts(cfg.RunID)
+	RemovePasswd(cfg.RunID)
+	RemoveGroup(cfg.RunID)
+	RemoveMachineID(cfg.RunID)
 	var errs []error
 	// Order: tool first (it shares/depends on the sidecar netns), then sidecar
 	// (which takes the netns + firewall + DNS forwarder with it). -i (ignore) makes a missing container

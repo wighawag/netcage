@@ -223,6 +223,80 @@ func TestToolRunArgs_OmitsHostsMountWhenUnsynthesized(t *testing.T) {
 	}
 }
 
+// TestToolRunArgs_BindsEtcIdentityFixturesEgressNeutral is the ADR-0021 wiring +
+// egress-neutral assertion: with the synthesized /etc-identity fixtures set (as
+// Run does), the tool container mounts a minimal /etc/passwd, /etc/group, and
+// /etc/machine-id READ-ONLY, mirroring the /etc/hosts mount. It also asserts these
+// binds are EGRESS-NEUTRAL exactly as the host-identity-hardening work asserted the
+// /etc/hosts mount was: they must introduce NOTHING that alters name resolution or
+// pins a hostname->IP (nothing --add-host / --dns-like), and must not touch the
+// --network container: topology. The three-point leak-test (exit IP is the
+// proxy's, DNS resolves proxy-side, proxy-killed fails closed) is proven unchanged
+// by the integration/verify suite; this unit test proves the binds are present and
+// carry no egress-affecting arg.
+func TestToolRunArgs_BindsEtcIdentityFixturesEgressNeutral(t *testing.T) {
+	c := cfg()
+	c.passwdPath = "/tmp/netcage-passwd-abc123"
+	c.groupPath = "/tmp/netcage-group-abc123"
+	c.machineIDPath = "/tmp/netcage-machine-id-abc123"
+	args := c.ToolRunArgs()
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"-v /tmp/netcage-passwd-abc123:/etc/passwd:ro",
+		"-v /tmp/netcage-group-abc123:/etc/group:ro",
+		"-v /tmp/netcage-machine-id-abc123:/etc/machine-id:ro",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("tool args must mount the ADR-0021 /etc-identity fixture read-only: want %q\ngot: %s", want, joined)
+		}
+	}
+	// Egress-neutral: the new binds must not smuggle any name-resolution / hostname-IP
+	// pin. --add-host and --dns are the flags netcage owns/refuses precisely because
+	// they sidestep proxy-side DNS; the /etc-identity binds must add NEITHER.
+	for _, forbidden := range []string{"--add-host", "--dns"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("the /etc-identity binds must be egress-neutral: they must NOT introduce %q; got: %s", forbidden, joined)
+		}
+	}
+	// The topology stays exactly the shared-netns --network container: edge; the binds
+	// do not change it.
+	if !strings.Contains(joined, "--network container:"+c.sidecarName()) {
+		t.Fatalf("the /etc-identity binds must not alter the --network container: topology; got: %s", joined)
+	}
+	// The machine-id bind is /etc/machine-id ONLY (NOT /var/lib/dbus/machine-id, which
+	// would break on minimal images lacking /var/lib/dbus/, e.g. the alpine the verify
+	// leak-test uses); the residual is documented in ADR-0021.
+	if strings.Contains(joined, "/var/lib/dbus/machine-id") {
+		t.Fatalf("netcage must bind /etc/machine-id only, not /var/lib/dbus/machine-id (breaks minimal images); got: %s", joined)
+	}
+	// Each bind is a run flag, so it must precede the image (else podman reads it as
+	// the tool argv).
+	imgIdx := indexOf(args, c.Image)
+	for _, mount := range []string{
+		"/tmp/netcage-passwd-abc123:/etc/passwd:ro",
+		"/tmp/netcage-group-abc123:/etc/group:ro",
+		"/tmp/netcage-machine-id-abc123:/etc/machine-id:ro",
+	} {
+		if i := indexOf(args, mount); i < 0 || i > imgIdx {
+			t.Fatalf("the %q bind must appear as a run flag BEFORE the image; args: %s", mount, joined)
+		}
+	}
+}
+
+// TestToolRunArgs_OmitsEtcIdentityMountsWhenUnsynthesized checks the ADR-0021
+// binds are conditional on Run having synthesized the fixtures (like /etc/hosts):
+// with no fixture paths set, no /etc/passwd, /etc/group, or /etc/machine-id mount
+// is emitted (the arg-builder alone does not fabricate a source path).
+func TestToolRunArgs_OmitsEtcIdentityMountsWhenUnsynthesized(t *testing.T) {
+	c := cfg()
+	joined := strings.Join(c.ToolRunArgs(), " ")
+	for _, forbidden := range []string{":/etc/passwd:ro", ":/etc/group:ro", ":/etc/machine-id:ro"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("tool args must NOT mount %q when Run has not synthesized the fixture; got: %s", forbidden, joined)
+		}
+	}
+}
+
 // TestToolRunArgs_RmOnlyWhenEphemeral pins the podman-fidelity split: the tool
 // container's --rm follows netcage's Ephemeral flag, NOT a hard-coded default.
 // A KEPT run (Ephemeral=false, a plain `netcage run` with no --rm) must NOT pass

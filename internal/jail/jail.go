@@ -200,6 +200,18 @@ type Config struct {
 	// set by Run. Its presence signals the sanitized-hosts wiring is active; it
 	// mirrors resolvConfPath (a per-run temp fixture, not a shared/global write).
 	hostsPath string
+	// passwdPath / groupPath / machineIDPath are host paths to the synthesized
+	// /etc-identity fixtures mounted read-only into the tool (ADR-0021, extending
+	// ADR-0013): a minimal /etc/passwd + /etc/group carrying only a generic
+	// non-identifying user set (so the world-readable host /etc/passwd's login names
+	// and GECOS real names never leak) and a per-run random /etc/machine-id
+	// (unlinkable to the host's stable machine-id correlator). Each is set by Run,
+	// its presence signalling that fixture's mount is active; they mirror hostsPath
+	// (per-run temp fixtures, not shared/global writes) and carry NO name resolution
+	// or hostname->IP pin, so they are inert to egress.
+	passwdPath    string
+	groupPath     string
+	machineIDPath string
 }
 
 // proxyAuth returns the SOCKS5 auth for the forwarder, or nil.
@@ -853,6 +865,38 @@ func (c Config) ToolRunArgs() []string {
 	args = append(args, "--hostname", fixedHostname)
 	if c.hostsPath != "" {
 		args = append(args, "-v", c.hostsPath+":/etc/hosts:ro")
+	}
+	// /etc-identity host-recon hardening (ADR-0021, extending Leak 1). Mount the
+	// synthesized minimal /etc/passwd + /etc/group and the per-run random
+	// /etc/machine-id read-only, mirroring the /etc/hosts mount above: each source is
+	// a per-run temp fixture Run synthesized, so the mount appears only when its path
+	// is set. These close two more cheap, jail-owned recon leaks a jailed tool can
+	// otherwise read: the world-readable host /etc/passwd (every host account's login
+	// name AND GECOS real name) and the host /etc/machine-id (a stable host
+	// correlator). Like the /etc/hosts bind, they ARE accepted under --network
+	// container: (they are ordinary :ro binds, live-verified topology in ADR-0013),
+	// and they carry NO name resolution and NO hostname->IP pin, so they are inert to
+	// egress and reintroduce nothing --add-host/--dns-like. They have no user-facing
+	// override (unlike --hostname): a jailed tool has no legitimate need to inject the
+	// host's real accounts or machine-id, so netcage's synthesized fixtures are
+	// unconditional when synthesized (no vetted pass-through flag targets them).
+	if c.passwdPath != "" {
+		args = append(args, "-v", c.passwdPath+":/etc/passwd:ro")
+	}
+	if c.groupPath != "" {
+		args = append(args, "-v", c.groupPath+":/etc/group:ro")
+	}
+	if c.machineIDPath != "" {
+		// Only /etc/machine-id is bound, NOT /var/lib/dbus/machine-id. The dbus path is
+		// conventionally a SYMLINK to /etc/machine-id (so on such an image a tool reading
+		// it already resolves to the synthesized value), and binding it unconditionally
+		// would BREAK on minimal images that lack the /var/lib/dbus/ directory (e.g.
+		// alpine, which the verify leak-test itself uses): podman cannot bind a file into
+		// a non-existent parent, which would fail the container create and could weaken
+		// the acceptance floor. So netcage binds only /etc/machine-id, and the residual
+		// (a tool reading a NON-symlinked /var/lib/dbus/machine-id that carries the host
+		// value) is documented as accepted in ADR-0021.
+		args = append(args, "-v", c.machineIDPath+":/etc/machine-id:ro")
 	}
 	for _, m := range c.Mounts {
 		args = append(args, "-v", m)

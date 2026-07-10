@@ -652,11 +652,15 @@ func Run(ctx context.Context, r jail.Runner, verb string, args []string, out IO)
 			return err
 		}
 		// Sweep the run-attributable bind-mount sources too: a KEPT pair leaves the
-		// resolv.conf + sanitized /etc/hosts durable on the host (so `netcage start` can
-		// re-mount them), so removing the pair must also remove those files or they
-		// orphan under $TMPDIR. Idempotent (no-op if absent).
+		// resolv.conf + sanitized /etc/hosts + the ADR-0021 /etc-identity fixtures
+		// (passwd/group/machine-id) durable on the host (so `netcage start` can re-mount
+		// them), so removing the pair must also remove those files or they orphan under
+		// $TMPDIR. Idempotent (no-op if absent).
 		jail.RemoveResolvConf(m.runID)
 		jail.RemoveHosts(m.runID)
+		jail.RemovePasswd(m.runID)
+		jail.RemoveGroup(m.runID)
+		jail.RemoveMachineID(m.runID)
 		return nil
 	default:
 		return fmt.Errorf("unknown management verb %q", verb)

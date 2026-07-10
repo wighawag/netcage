@@ -161,12 +161,15 @@ netcage's one **guarantee** is **network egress confinement**: every TCP and DNS
 **Hidden (in addition to the network guarantee):**
 
 - **Host machine name.** The tool container gets a synthesized localhost-only `/etc/hosts` and a fixed neutral `--hostname`, so a tool reading `/etc/hosts` or `hostname` does not learn your machine's name.
+- **Host account names and real names.** The tool container gets a synthesized minimal `/etc/passwd` (and matching `/etc/group`) mounted read-only, carrying only a generic non-identifying user (`machine`) plus `root` and `nobody`, so a tool reading the world-readable `/etc/passwd` does not learn any of your host's real login names or GECOS real names (ADR-0021). `/etc/shadow` is deliberately left absent (its absence is safer than a fake).
+- **Host machine-id.** The tool container gets a per-run random `/etc/machine-id` mounted read-only, so a tool cannot read your host's stable `machine-id` (a strong machine correlator); the value is stable within one run but unlinkable to your host (ADR-0021).
 - **Operator username.** Podman's storage graphroot is relocated to a username-free path under `/var/tmp` (`/var/tmp/netcage-storage-<uid>`, scoped by your numeric user id so multiple users on one host do not collide), so the overlay source paths in the container's `/proc/self/mountinfo` no longer embed `/home/<you>`. The path carries a numeric uid, not your login name.
 - **Host NIC name / MAC.** The in-netns interface is given a fixed name (`netcage0`) instead of being named after your host's default-route NIC (whose systemd `enx<MAC>` name re-exposes the NIC MAC).
 
 **NOT hidden (accepted residual):**
 
 - **Host hardware and kernel version** (`/proc/cpuinfo`, `/proc/meminfo`, `uname`, and the boot-time / uptime clock signals in `/proc`). The kernel is **shared**: a container is not a VM, `/proc/cpuinfo` reports the physical CPUs regardless of cgroup limits, and faking these breaks tools. Hiding them needs a different isolation model (gVisor/Kata), which is out of scope.
+- **LAN topology** (the host LAN addresses/routes the pasta interface copies, whether readable via `/sys`) and a non-symlinked `/var/lib/dbus/machine-id` on images that carry a host value there. Seen and deferred as separate follow-ups (ADR-0021); the route out is still the TUN, so a tool reading its default route sees the TUN, not your LAN.
 - **Environment baked into the tool / wrapper image** (e.g. `ANON_PI_STAGE`, `SEARXNG_HOME`). This env comes from the image's own Dockerfile, not from netcage, so stripping it is that image's concern. netcage's own `netcage-run-<id>-*` container names and `netcage.managed` labels are deliberate and low-sensitivity (ADR-0009).
 
 ### Keep your username out of `-v` mount paths
@@ -376,6 +379,7 @@ The security rationale lives in the ADRs under [`docs/adr/`](docs/adr/):
 - **0015** `ports` lists jail listeners via the sidecar's `/proc`, with a JSON reuse contract.
 - **0016** the pass-through query verbs forward podman's read-only output flags.
 - **0017** the graphroot default is uid-scoped (`/var/tmp/netcage-storage-<uid>`) for multi-user hosts; `NETCAGE_GRAPHROOT` is a supported override.
+- **0021** `/etc`-identity host-recon binds: a synthesized minimal `/etc/passwd`/`/etc/group` and a per-run random `/etc/machine-id`, mounted read-only, extend ADR-0013 to close two more cheap host-recon leaks; still an egress jail, no machine concept.
 
 ## Development
 
