@@ -63,7 +63,7 @@ type Verifier interface {
 }
 
 // Writer is the impure PERSIST seam: it writes the chosen credential-free proxy
-// (+ optional allowDirect list) to the config file 0600. In production it is
+// (+ optional allow list) to the config file 0600. In production it is
 // cli.WriteConfig bound to the process env; a test injects a fake to assert what
 // would be persisted without touching disk. It returns
 // cli.ErrCredentialedProxyNotPersisted when asked to persist a credentialed
@@ -275,7 +275,7 @@ func Run(o Options) error {
 	}
 }
 
-// existingAllowDirect carries the current persisted allowDirect list through a
+// existingAllowDirect carries the current persisted allow list through a
 // reconfigure unchanged (setup-default reconfigures the PROXY; it does not
 // silently drop the user's existing split-tunnel list). It is empty for a
 // first-time setup. Each entry is re-validated by the writer, so a stale/invalid

@@ -9,7 +9,7 @@ import (
 
 // bakedFor builds the bakedSidecarConfig a sidecar CREATED with cfg c would
 // carry: the three create-time env values (PROXY / TUN_EXCLUDED_ROUTES /
-// EXTRA_COMMANDS) that fully encode the jail's --proxy + --allow-direct config.
+// EXTRA_COMMANDS) that fully encode the jail's --proxy + --allow config.
 // Used by the reconcile tests to synthesise "what the container was created
 // with" without running podman.
 func bakedFor(c Config) bakedSidecarConfig {
@@ -55,7 +55,7 @@ func TestReconcileJailConfig_DifferentProxyRefuses(t *testing.T) {
 }
 
 // TestReconcileJailConfig_DifferentAllowlistRefuses: a start invoked with a
-// DIFFERENT --allow-direct than the container was created with is REFUSED (the
+// DIFFERENT --allow than the container was created with is REFUSED (the
 // firewall/excluded-routes it would run differ), so a stale allowlist can never
 // be silently revived.
 func TestReconcileJailConfig_DifferentAllowlistRefuses(t *testing.T) {
@@ -68,7 +68,7 @@ func TestReconcileJailConfig_DifferentAllowlistRefuses(t *testing.T) {
 
 	err := reconcileJailConfig(requested, bakedFor(created))
 	if err == nil {
-		t.Fatalf("a DIFFERENT --allow-direct must be REFUSED, never silently revived")
+		t.Fatalf("a DIFFERENT --allow must be REFUSED, never silently revived")
 	}
 	if !isJailConfigChanged(err) {
 		t.Fatalf("a changed allowlist must be an ErrJailConfigChanged refusal; got %v", err)

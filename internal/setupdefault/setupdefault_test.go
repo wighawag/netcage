@@ -263,7 +263,7 @@ func TestRun_ReconfigurePrefillsCurrentAndConfirmsOverwrite(t *testing.T) {
 		Writer:     w,
 		Console:    con,
 		ConfigPath: "/tmp/x/netcage/config.json",
-		Existing:   cli.ConfigView{Present: true, ProxyURL: "socks5h://127.0.0.1:1080", AllowDirect: []string{"10.0.0.0/8"}},
+		Existing:   cli.ConfigView{Present: true, ProxyURL: "socks5h://127.0.0.1:1080", AllowDirect: []string{"10.0.0.0/8:443"}},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -271,9 +271,9 @@ func TestRun_ReconfigurePrefillsCurrentAndConfirmsOverwrite(t *testing.T) {
 	if len(w.writes) != 1 || w.writes[0].proxyURL != "socks5h://127.0.0.1:1080" {
 		t.Fatalf("writes = %+v, want the pre-filled current proxy persisted", w.writes)
 	}
-	// The existing allowDirect list is carried through a proxy reconfigure.
-	if len(w.writes[0].allowDirect) != 1 || w.writes[0].allowDirect[0] != "10.0.0.0/8" {
-		t.Fatalf("allowDirect = %v, want the existing list carried through", w.writes[0].allowDirect)
+	// The existing allow list is carried through a proxy reconfigure.
+	if len(w.writes[0].allowDirect) != 1 || w.writes[0].allowDirect[0] != "10.0.0.0/8:443" {
+		t.Fatalf("allow list = %v, want the existing list carried through", w.writes[0].allowDirect)
 	}
 	// The overwrite confirm prompt must have fired (never clobber silently).
 	joined := strings.ToLower(strings.Join(pr.confLog, " | "))

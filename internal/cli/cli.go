@@ -200,13 +200,14 @@ type Command struct {
 	// that consumes PortsContainer + JSON.
 	PortsContainer string // ports: the netcage-managed container name to enumerate
 
-	// AllowDirect is the validated split-tunnel LAN allowlist: --allow-direct
+	// AllowDirect is the validated split-tunnel LAN allowlist: --allow
 	// values (repeatable) parsed into private-only DirectAllow entries (network +
-	// optional port). EMPTY by default (no flag) == today's strict jail. This
+	// EXACT port). EMPTY by default (no flag) == today's strict jail. This
 	// package only PARSES + VALIDATES the allowlist (accepting only RFC1918 /
-	// link-local, rejecting public/hostname/malformed loudly at startup); the
-	// split-tunnel-jail-wiring task consumes it to open the narrow direct path.
-	AllowDirect []DirectAllow // --allow-direct entries, repeatable (run)
+	// link-local WITH an exact port, rejecting port-omitted/public/hostname/malformed
+	// loudly at startup); the split-tunnel-jail-wiring task consumes it to open the
+	// narrow direct path.
+	AllowDirect []DirectAllow // --allow entries, repeatable (run)
 }
 
 // managementVerbs is the set of pass-through management verbs (inspection /
@@ -459,7 +460,7 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 
 	var proxyRaw string
 	var proxyFromFlag bool
-	var allowDirectFromFlag bool // any explicit --allow-direct on the CLI (drives REPLACE vs config)
+	var allowDirectFromFlag bool // any explicit --allow on the CLI (drives REPLACE vs config)
 	var positionals []string
 	endOfFlags := false
 
@@ -594,10 +595,10 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 			name, v := splitFlagEquals(a)
 			cmd.PassThroughFlags = append(cmd.PassThroughFlags, name, v)
 
-		case a == "--allow-direct":
+		case a == "--allow":
 			v, ok := next(rest, &i)
 			if !ok {
-				return nil, errors.New("--allow-direct requires a value (an RFC1918/link-local IP or CIDR, optionally with :port)")
+				return nil, errors.New("--allow requires a value (an RFC1918/link-local IP or CIDR WITH a :port, e.g. 192.168.1.150:8080)")
 			}
 			entry, aerr := parseAllowDirect(v)
 			if aerr != nil {
@@ -605,8 +606,8 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 			}
 			cmd.AllowDirect = append(cmd.AllowDirect, entry)
 			allowDirectFromFlag = true
-		case strings.HasPrefix(a, "--allow-direct="):
-			entry, aerr := parseAllowDirect(strings.TrimPrefix(a, "--allow-direct="))
+		case strings.HasPrefix(a, "--allow="):
+			entry, aerr := parseAllowDirect(strings.TrimPrefix(a, "--allow="))
 			if aerr != nil {
 				return nil, aerr
 			}
@@ -617,7 +618,7 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 			// An unlisted/unaudited flag: reject by default (fail-closed on the CLI)
 			// so it cannot silently ride through into the tool container. "-" alone
 			// (stdin) is treated as a positional, not a flag.
-			return nil, fmt.Errorf("unknown flag %q: netcage accepts only a curated allow-list of podman flags (-i, -t, -it, --rm, -v/--volume, -w/--workdir, -e/--env, -u/--user, --entrypoint, --memory, --cpus, --memory-swap, -l/--label, --tmpfs, --read-only, --hostname, --pull, --platform, --env-file, --ulimit, --shm-size) plus --proxy and --allow-direct; a network/isolation-relevant or unknown flag is refused (fail-closed on the unknown)", a)
+			return nil, fmt.Errorf("unknown flag %q: netcage accepts only a curated allow-list of podman flags (-i, -t, -it, --rm, -v/--volume, -w/--workdir, -e/--env, -u/--user, --entrypoint, --memory, --cpus, --memory-swap, -l/--label, --tmpfs, --read-only, --hostname, --pull, --platform, --env-file, --ulimit, --shm-size) plus --proxy and --allow; a network/isolation-relevant or unknown flag is refused (fail-closed on the unknown)", a)
 
 		default:
 			// The first non-flag positional ends the flags: it is the image, and
@@ -628,7 +629,7 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 	}
 
 	// Config is a NEW, lowest-priority proxy SOURCE, never a bypass: it is loaded
-	// (and its allowDirect list validated) HERE, then fed into the SAME strict
+	// (and its allow list validated) HERE, then fed into the SAME strict
 	// resolution below. A missing file is a clean no-op; a present-but-broken file
 	// is a loud error (config is not laxer than flag/env). See ADR-0012.
 	conf, err := loadConfig(lookupEnv)
@@ -657,10 +658,10 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 	cmd.Proxy = proxy
 	cmd.ProxySource = source
 
-	// --allow-direct precedence is REPLACE, not additive: an explicit CLI
-	// --allow-direct supplies the COMPLETE allowlist and fully overrides the
+	// --allow precedence is REPLACE, not additive: an explicit CLI
+	// --allow supplies the COMPLETE allowlist and fully overrides the
 	// config list (nothing implicitly rides along). Only when NO CLI
-	// --allow-direct is given does the config allowDirect apply.
+	// --allow is given does the config allow list apply.
 	if !allowDirectFromFlag && conf.present && len(conf.allowDirect) > 0 {
 		cmd.AllowDirect = conf.allowDirect
 	}
@@ -683,7 +684,7 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 		// `start` REVIVES an EXISTING container; the create-time flags (-v/-w/-e/-u/
 		// --entrypoint + the widened pass-throughs) cannot apply to a `podman start` and
 		// would be silently ignored, so refuse them loudly rather than pretend they took
-		// effect. --proxy/--allow-direct (the jail config to RECONCILE) and -i/-t/--rm
+		// effect. --proxy/--allow (the jail config to RECONCILE) and -i/-t/--rm
 		// (attach mode + ephemeral) ARE accepted.
 		if err := rejectStartCreateFlags(cmd); err != nil {
 			return nil, err
@@ -813,7 +814,7 @@ func resolveForwardBind(v string) (string, error) {
 }
 
 // parseForwardPort parses and validates the forward's single TCP port, mirroring
-// the --allow-direct port validation (1..65535). It returns the port as an int so
+// the --allow port validation (1..65535). It returns the port as an int so
 // the wiring task consumes an already-checked value.
 func parseForwardPort(s string) (int, error) {
 	p, err := strconv.Atoi(s)
@@ -983,7 +984,7 @@ func mountContainerTarget(m string) string {
 // revive of an EXISTING container cannot honour -v/-w/-e/-u/--entrypoint or the
 // widened pass-throughs (they are baked at create time and a `podman start` takes
 // none of them), so accepting-and-ignoring them would silently mislead. --proxy /
-// --allow-direct (the jail config reconciled against the container's baked one)
+// --allow (the jail config reconciled against the container's baked one)
 // and -i/-t/--rm are the flags start DOES take, so they are not rejected here.
 func rejectStartCreateFlags(cmd *Command) error {
 	switch {

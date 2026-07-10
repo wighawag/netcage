@@ -206,7 +206,7 @@ func runRun(ctx context.Context, cmd *cli.Command) int {
 // runStart resumes a kept, netcage-managed jailed container: it REVIVES the
 // sidecar (the baked firewall re-applies), re-execs the DNS forwarder, and
 // re-enters the kept tool with its state intact, refusing loudly if the requested
-// jail config (--proxy/--allow-direct) differs from the one the container was
+// jail config (--proxy/--allow) differs from the one the container was
 // created with (jail.ErrJailConfigChanged) or if the named container is not
 // netcage-managed. It is the jail-aware exception to the pass-through verbs.
 //
@@ -486,7 +486,7 @@ func runningProcessNames() []string {
 
 const usage = `usage:
   netcage run    [flags] [<image>] [<cmd> <args...>]
-  netcage start  [--proxy ...] [--allow-direct ...] [-it] [--rm] <container>
+  netcage start  [--proxy ...] [--allow ...] [-it] [--rm] <container>
   netcage verify [--proxy socks5h://[user:pass@]host:port]
   netcage detect-proxy [--json]
   netcage setup-default
@@ -531,7 +531,7 @@ start is the jail-aware resume verb (NOT a thin pass-through): ` + "`netcage sta
 REVIVES a kept netcage container's sidecar (the baked firewall re-applies),
 re-execs the DNS forwarder, and re-enters the tool with its state intact, so a
 named reusable jailed container is a durable environment. It CARRIES a --proxy
-(and any --allow-direct) and RECONCILES it against the config the container was
+(and any --allow) and RECONCILES it against the config the container was
 created with: a DIFFERENT proxy/allowlist is REFUSED (remove it and run again, or
 start it with the same jail config) rather than silently reviving a stale jail.
 

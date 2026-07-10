@@ -11,31 +11,35 @@ import (
 // destination the jailed tool may reach DIRECTLY (over the real NIC) instead of
 // through the socks5h proxy. It is the parse+validate output this CLI produces;
 // the split-tunnel-jail-wiring task consumes it (adds the network to the
-// sidecar's TUN_EXCLUDED_ROUTES and an `ip daddr <net> tcp dport <port> accept`
-// nft rule). See prd split-tunnel-lan-allowlist + the spike finding.
+// sidecar's TUN_EXCLUDED_ROUTES and an `-p tcp -d <net> --dport <port> -j ACCEPT`
+// iptables rule). See prd split-tunnel-lan-allowlist + the spike finding.
 //
 // Network is always non-nil. A bare IP is normalised to a host route (/32 for
-// IPv4). Port is the TCP destination port, or 0 meaning "all ports on this
-// network" (a bare IP or CIDR with no `:port`). Port is never a clear-DNS port:
-// an explicit :53/:853/:5353 is REJECTED at parse time, and the all-ports case
-// (Port==0) EXCLUDES the clear-DNS ports at rule emission, so --allow-direct can
-// never carry direct clear DNS to a LAN resolver (the Tails row-2 rule). The entry is TCP-only by
-// construction (ADR-0003 hard-blocks UDP even to allowlisted hosts); TCP is
-// implicit here and is enforced at the jail-wiring layer, not encoded per entry.
+// IPv4). Port is the EXACT TCP destination port and is MANDATORY: a port-omitted
+// value is REJECTED at parse time, so Port is always in 1..65535 (never 0). The
+// all-ports / bare-IP form was DROPPED as a deanonymization risk (ADR-0020): a
+// forwarding proxy on an unspecified port on the exempted host would let the
+// jailed tool egress the whole internet from the real IP around the forced path,
+// so "reach exactly this service" is the only defensible granularity. Port is
+// never a clear-DNS port: an explicit :53/:853/:5353 is REJECTED at parse time,
+// so --allow can never carry direct clear DNS to a LAN resolver (the Tails row-2
+// rule). The entry is TCP-only by construction (ADR-0003 hard-blocks UDP even to
+// allowlisted hosts); TCP is implicit here and is enforced at the jail-wiring
+// layer, not encoded per entry.
 type DirectAllow struct {
 	Network *net.IPNet // the allowed destination network (a /32 for a bare IP)
-	Port    int        // TCP port, or 0 for all ports on the network
+	Port    int        // exact TCP port, always 1..65535 (a port-omitted value is rejected)
 	Raw     string     // the original flag value, preserved for diagnostics
 }
 
-// privateRanges is the ONLY set of destination ranges --allow-direct accepts:
+// privateRanges is the ONLY set of destination ranges --allow accepts:
 // RFC1918 private space plus link-local. Restricting directs to these ranges is
 // the security gate (prd guardrail / story 3): a user cannot accidentally allow
 // a PUBLIC address that would become a real anonymity leak. A public-IP direct,
 // if ever wanted, is a separate louder opt-in, NOT part of this feature. An
 // allowlisted network must be FULLY contained in one of these (a prefix that
 // straddles public space is refused).
-// clearDNSPorts are the ports --allow-direct REFUSES as an explicit destination:
+// clearDNSPorts are the ports --allow REFUSES as an explicit destination:
 // opening a direct clear-DNS hole to a LAN resolver is exactly the Tails-forbidden
 // leak (row 2 of learning-from-anonctl-tails-leak-catalogue.md) because a
 // `@192.168.x.x` DNS query can reveal the local network's public IP (a
@@ -68,24 +72,38 @@ var privateRanges = func() []*net.IPNet {
 	return nets
 }()
 
-// parseAllowDirect parses one --allow-direct value into a validated DirectAllow.
-// It accepts an IP or a CIDR, each optionally suffixed with `:port`, and REJECTS
-// (loudly, naming the value + reason): a hostname or otherwise non-IP/CIDR
-// literal; a malformed value; an out-of-range or non-numeric port; an explicit
-// clear-DNS port (53/853/5353), which would open a direct DNS hole to a LAN
-// resolver that can reveal the local network's public IP (row 2 of the Tails
-// leak catalogue); and any address/network NOT fully within the
-// private/link-local ranges (a public destination that would leak). This is the
-// fail-loud-at-startup security gate.
+// parseAllowDirect parses one --allow value into a validated DirectAllow. It
+// accepts an IP or a CIDR, each of which MUST carry an explicit `:port`, and
+// REJECTS (loudly, naming the value + reason): a port-omitted value (the
+// all-ports / bare-IP form is dropped as a deanonymization risk, ADR-0020); a
+// hostname or otherwise non-IP/CIDR literal; a malformed value; an out-of-range
+// or non-numeric port; an explicit clear-DNS port (53/853/5353), which would open
+// a direct DNS hole to a LAN resolver that can reveal the local network's public
+// IP (row 2 of the Tails leak catalogue); and any address/network NOT fully
+// within the private/link-local ranges (a public destination that would leak).
+// This is the fail-loud-at-startup security gate.
 func parseAllowDirect(raw string) (DirectAllow, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
-		return DirectAllow{}, fmt.Errorf("empty --allow-direct value: expected an RFC1918/link-local IP or CIDR, optionally with :port")
+		return DirectAllow{}, fmt.Errorf("empty --allow value: expected an RFC1918/link-local IP or CIDR WITH a :port (e.g. 192.168.1.150:8080)")
 	}
 
 	hostPart, port, err := splitAllowDirectPort(value)
 	if err != nil {
 		return DirectAllow{}, err
+	}
+
+	// Port is MANDATORY. The all-ports / bare-IP form is DROPPED (ADR-0020): an
+	// exemption that opens EVERY TCP port to a private host is a deanonymization
+	// leak, because if that host runs any forwarding proxy on an unspecified port
+	// (an ssh -D SOCKS, a squid/HTTP proxy, a Tor SOCKS, a socat tunnel) the jailed
+	// tool can dial it directly and egress the whole internet from the real IP,
+	// around the forced path. "Reach exactly this service" is the only defensible
+	// granularity for an anonymity jail, so a direct hole is ALWAYS an exact port.
+	if port == 0 {
+		return DirectAllow{}, fmt.Errorf(
+			"--allow %q omits the port: a direct exemption MUST name an exact TCP port (add :port, e.g. %s:8080). The all-ports form is refused because a forwarding proxy on an unspecified port on that host would let the jailed tool egress the whole internet from your real IP around the forced path (deanonymization); allow exactly the one service you need",
+			raw, value)
 	}
 
 	network, err := parseHostToNetwork(hostPart, value)
@@ -95,13 +113,13 @@ func parseAllowDirect(raw string) (DirectAllow, error) {
 
 	if !networkWithinPrivateRanges(network) {
 		return DirectAllow{}, fmt.Errorf(
-			"--allow-direct %q is not a private address: only RFC1918 / link-local ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16) may be reached directly; a public destination would leak your real IP around the jail",
+			"--allow %q is not a private address: only RFC1918 / link-local ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16) may be reached directly; a public destination would leak your real IP around the jail",
 			raw)
 	}
 
 	if kind, isDNS := clearDNSPorts[port]; isDNS {
 		return DirectAllow{}, fmt.Errorf(
-			"--allow-direct %q targets port %d (%s): a direct DNS hole to a LAN resolver is refused because a @LAN-resolver query can reveal the local network's public IP (deanonymization); DNS stays on the jail's proxy-side socks5h forwarder, never direct to the LAN",
+			"--allow %q targets port %d (%s): a direct DNS hole to a LAN resolver is refused because a @LAN-resolver query can reveal the local network's public IP (deanonymization); DNS stays on the jail's proxy-side socks5h forwarder, never direct to the LAN",
 			raw, port, kind)
 	}
 
@@ -113,31 +131,33 @@ func parseAllowDirect(raw string) (DirectAllow, error) {
 // `:` inside an IPv6 literal by requiring the port to be the segment after the
 // LAST `:` AND the remaining host part to still parse as an IP/CIDR. For the
 // IPv4/CIDR shapes this feature targets, a single trailing `:<digits>` is the
-// port. A present-but-invalid port is rejected here (naming the value).
+// port. A port-omitted value returns port 0 (which parseAllowDirect then rejects,
+// since the port is mandatory); a present-but-invalid port is rejected here
+// (naming the value).
 func splitAllowDirectPort(value string) (host string, port int, err error) {
 	idx := strings.LastIndexByte(value, ':')
 	if idx < 0 {
-		return value, 0, nil // no port
+		return value, 0, nil // no port (parseAllowDirect rejects a port-omitted value)
 	}
 
 	// A bracketed IPv6 literal (e.g. "[fe80::1]:80") is out of scope for v1
 	// (IPv4 RFC1918/link-local), but treat an unbracketed multi-colon token as a
 	// possible IPv6 with no port rather than mis-splitting it.
 	if strings.Count(value, ":") > 1 && !strings.Contains(value, "]") {
-		return value, 0, nil // let network parsing reject it (not IPv4)
+		return value, 0, nil // let network parsing / the port-required check reject it
 	}
 
 	host = value[:idx]
 	portStr := value[idx+1:]
 	if portStr == "" {
-		return "", 0, fmt.Errorf("--allow-direct %q has an empty port after ':': expected :<1-65535>", value)
+		return "", 0, fmt.Errorf("--allow %q has an empty port after ':': expected :<1-65535>", value)
 	}
 	p, perr := strconv.Atoi(portStr)
 	if perr != nil {
-		return "", 0, fmt.Errorf("--allow-direct %q has a non-numeric port %q: expected :<1-65535>", value, portStr)
+		return "", 0, fmt.Errorf("--allow %q has a non-numeric port %q: expected :<1-65535>", value, portStr)
 	}
 	if p < 1 || p > 65535 {
-		return "", 0, fmt.Errorf("--allow-direct %q has an out-of-range port %d: expected :<1-65535>", value, p)
+		return "", 0, fmt.Errorf("--allow %q has an out-of-range port %d: expected :<1-65535>", value, p)
 	}
 	return host, p, nil
 }
@@ -150,14 +170,14 @@ func parseHostToNetwork(host, value string) (*net.IPNet, error) {
 	if strings.Contains(host, "/") {
 		_, network, err := net.ParseCIDR(host)
 		if err != nil {
-			return nil, fmt.Errorf("--allow-direct %q is not a valid CIDR: %v (IP/CIDR literals only; hostnames are unsupported)", value, err)
+			return nil, fmt.Errorf("--allow %q is not a valid CIDR: %v (IP/CIDR literals only; hostnames are unsupported)", value, err)
 		}
 		return network, nil
 	}
 
 	ip := net.ParseIP(host)
 	if ip == nil {
-		return nil, fmt.Errorf("--allow-direct %q is not a valid IP or CIDR literal (hostnames are unsupported: a LAN name cannot resolve through the proxy)", value)
+		return nil, fmt.Errorf("--allow %q is not a valid IP or CIDR literal (hostnames are unsupported: a LAN name cannot resolve through the proxy)", value)
 	}
 	bits := 32
 	if ip.To4() == nil {

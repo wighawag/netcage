@@ -25,7 +25,7 @@ import (
 //     container is REFUSED before anything is touched.
 //  2. RECONCILE the REQUESTED jail config (cfg.Proxy / cfg.AllowDirect) against
 //     the container's BAKED config (read from the sidecar's create-time env). A
-//     SAME config REVIVES; a DIFFERENT --proxy/--allow-direct is REFUSED
+//     SAME config REVIVES; a DIFFERENT --proxy/--allow is REFUSED
 //     (ErrJailConfigChanged), never silently revived stale, never rebuilt-and-
 //     state-lost.
 //  3. Revive the sidecar (`podman start <sidecar>`; the baked EXTRA_COMMANDS
@@ -63,7 +63,7 @@ func Start(ctx context.Context, r Runner, cfg Config, resolveName string) (Resul
 	cfg.dnsHelperPath = dnsBin
 
 	// 2. RECONCILE the requested jail config against the container's baked config.
-	// A changed --proxy/--allow-direct is REFUSED (state-preserving) rather than
+	// A changed --proxy/--allow is REFUSED (state-preserving) rather than
 	// silently reviving a stale jail or rebuilding and losing container state.
 	baked, err := readBakedSidecarConfig(ctx, r, cfg.sidecarName())
 	if err != nil {
@@ -158,7 +158,7 @@ func Start(ctx context.Context, r Runner, cfg Config, resolveName string) (Resul
 }
 
 // ErrJailConfigChanged is the REFUSAL when `netcage start` is invoked with a jail
-// config (--proxy / --allow-direct) that DIFFERS from the one the container was
+// config (--proxy / --allow) that DIFFERS from the one the container was
 // created with. The safe default is to refuse (state-preserving) rather than
 // silently revive a stale jail or rebuild-and-lose the container's state (the
 // finding's decided policy). A future explicit rebuild flag can be a follow-up.
@@ -177,7 +177,7 @@ func isJailConfigChanged(err error) bool { return errors.Is(err, ErrJailConfigCh
 
 // bakedSidecarConfig is the jail config a sidecar was CREATED with, read from its
 // three create-time env values (podman inspect). Together they fully encode the
-// --proxy + --allow-direct config: PROXY is the socks5 upstream, ExcludedRoutes
+// --proxy + --allow config: PROXY is the socks5 upstream, ExcludedRoutes
 // is TUN_EXCLUDED_ROUTES (the proxy reachback + each allowlisted direct), and
 // ExtraCommands is the baked firewall script (the allowlist accepts + RFC1918
 // drops). reconcileJailConfig compares these against what the REQUESTED config
@@ -192,7 +192,7 @@ type bakedSidecarConfig struct {
 // what the REQUESTED config (cfg) would BAKE into a fresh sidecar against what the
 // existing container was ACTUALLY created with (baked). If all three baked-env
 // values match, the jail config is unchanged -> REVIVE (nil). If any differs, the
-// requested --proxy/--allow-direct is not the one the container carries -> REFUSE
+// requested --proxy/--allow is not the one the container carries -> REFUSE
 // (ErrJailConfigChanged), so a stale jail is never silently revived and the
 // container's state is never silently discarded.
 //

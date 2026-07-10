@@ -242,7 +242,7 @@ func DirectReachableProbe(ctx context.Context, run JailRunner, cfg jail.Config, 
 // naive "direct dig must time out": under netcage the tool's ORDINARY DNS is
 // served by the loopback forwarder, so a query CAN answer; the leak is whether a
 // query aimed DIRECTLY at the LAN resolver (bypassing the forwarder) answers
-// from the LAN. answered=true means --allow-direct opened a clear-DNS hole (a
+// from the LAN. answered=true means --allow opened a clear-DNS hole (a
 // FAILURE); answered=false means it was dropped and DNS stays on the proxy path.
 // A jail-run error is propagated (no verdict), never a false pass.
 func NoClearLANDNSProbe(ctx context.Context, run JailRunner, cfg jail.Config, directAnsweredMarker string) (directAnswered bool, err error) {
@@ -262,7 +262,7 @@ func NoClearLANDNSProbe(ctx context.Context, run JailRunner, cfg jail.Config, di
 //     the hole. Surfaced as an Err (a failure), never a false pass or a false
 //     leak claim.
 //   - directAnswered: a clear-DNS query aimed DIRECTLY at the allowed LAN
-//     resolver got an answer from the LAN => --allow-direct opened the exact
+//     resolver got an answer from the LAN => --allow opened the exact
 //     clear-DNS hole Tails forbids (a @LAN-resolver query can reveal the local
 //     network's public IP). FAIL, naming the leak.
 //   - !forwarderResolved: the direct was dropped (good) but the loopback
@@ -277,7 +277,7 @@ func NoClearLANDNSAssertion(directAnswered, forwarderResolved bool, probeErr err
 		return Assertion{Ok: false, Err: fmt.Errorf("the no-clear-LAN-DNS probe could not run (a jail/runtime error, NOT a verdict on the hole): %w", probeErr)}
 	}
 	if directAnswered {
-		return Assertion{Ok: false, Detail: "LEAK: a clear DNS query aimed DIRECTLY at the allowed LAN resolver was answered from the LAN; --allow-direct opened a clear-DNS hole (a @LAN-resolver query can reveal the local network's public IP). DNS must stay on the proxy-side forwarder."}
+		return Assertion{Ok: false, Detail: "LEAK: a clear DNS query aimed DIRECTLY at the allowed LAN resolver was answered from the LAN; --allow opened a clear-DNS hole (a @LAN-resolver query can reveal the local network's public IP). DNS must stay on the proxy-side forwarder."}
 	}
 	if !forwarderResolved {
 		return Assertion{Ok: false, Detail: "the direct clear-DNS query was dropped (good) but the loopback DNS-over-SOCKS forwarder did NOT resolve: DNS is not being served over the proxy path, so the hole is not proven closed the right way"}
