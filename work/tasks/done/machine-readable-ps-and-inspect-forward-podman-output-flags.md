@@ -14,7 +14,7 @@ without weakening any egress / fail-closed / label-scope invariant.
 
 - **`internal/manage/manage.go`:**
   - `PsArgs(userArgs)` builds `podman ps -a --filter label=netcage.managed=true
-    <userArgs...>`: the caller's `--format`/`--format json`/`-q`/`--filter` are
+<userArgs...>`: the caller's `--format`/`--format json`/`-q`/`--filter` are
     forwarded VERBATIM AFTER the managed-scope filter, which is always prepended,
     so a user `--filter` composes ON TOP of the netcage scope (podman ANDs
     repeated `--filter`), never replacing it. A bare `netcage ps` is byte-identical
@@ -57,7 +57,7 @@ without weakening any egress / fail-closed / label-scope invariant.
 
 ## How it was verified
 
-`.dorfl.json` `verify` green: `gofmt -l .` clean, `go vet ./...`, `go build ./...`,
+`dorfl.json` `verify` green: `gofmt -l .` clean, `go vet ./...`, `go build ./...`,
 `go test ./...` all pass. New tests in `internal/manage/manage_test.go`:
 `TestPsArgs_ForwardsUserFlagsAfterTheManagedFilter`,
 `TestRun_PsForwardsOutputFlagsAndKeepsManagedScope`,
@@ -77,6 +77,6 @@ the record-runner seam; no real container is needed.
 > firewall). Read `internal/manage/manage.go` (`PsArgs`/`InspectArgs`/`Run`), the
 > `jail.Runner` record-runner test seam, and `internal/ports/ports.go` /
 > ADR-0015 for the reuse-contract pattern (which stays for netcage-only verbs).
-> Keep `.dorfl.json` verify green; add unit tests asserting the flags change the
+> Keep `dorfl.json` verify green; add unit tests asserting the flags change the
 > forwarded argv and the label guard still holds; update README + verb-help; add
 > an ADR for the query-output pass-through contract.

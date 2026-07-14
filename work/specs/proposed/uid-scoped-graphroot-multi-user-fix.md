@@ -14,7 +14,7 @@ needsAnswers: true
 
 ## Open questions
 
-1. **Does this repo use pnpm changesets, or the Go `.dorfl.json` verify?** The originating request specified a `pnpm changeset` + `pnpm format:check && pnpm changeset status --since=main && pnpm -r build && pnpm -r test` acceptance gate, but this repo's `.dorfl.json` verify is Go-only (`test -z "$(gofmt -l .)" && go vet ./... && go build ./... && go test ./...`) and there is NO `.changeset/` dir and no `package.json`. This PRD ASSUMES the Go verify is the real gate (honour what the repo runs). Confirm before tasking so a task does not add a changeset step that does not exist here. (Flagged as drift, below.)
+1. **Does this repo use pnpm changesets, or the Go `dorfl.json` verify?** The originating request specified a `pnpm changeset` + `pnpm format:check && pnpm changeset status --since=main && pnpm -r build && pnpm -r test` acceptance gate, but this repo's `dorfl.json` verify is Go-only (`test -z "$(gofmt -l .)" && go vet ./... && go build ./... && go test ./...`) and there is NO `.changeset/` dir and no `package.json`. This PRD ASSUMES the Go verify is the real gate (honour what the repo runs). Confirm before tasking so a task does not add a changeset step that does not exist here. (Flagged as drift, below.)
 
 <!-- /open-questions -->
 
@@ -53,7 +53,7 @@ No new plumbing (the ADR-0013 `--root` single seam already routes the one resolv
 ### Autonomy notes (the two gate axes)
 
 - **`humanOnly`: OMITTED.** This is a scoped bug fix with the design decided in ADR-0017 (uid-scoped default + promoted optional override, Leak-2-only motivation). Once the one convention question is answered it is straightforwardly agent-taskable; no human must drive the tasking.
-- **`needsAnswers: true`:** SET, for the single Open question (the changeset/verify convention drift). Clear it once confirmed the Go `.dorfl.json` verify is the gate.
+- **`needsAnswers: true`:** SET, for the single Open question (the changeset/verify convention drift). Clear it once confirmed the Go `dorfl.json` verify is the gate.
 
 ## Implementation Decisions
 
@@ -98,5 +98,5 @@ Good tests assert the resolver + seam behaviour (mostly reshaping the existing g
   - The note assumed the relocation was about store privacy; corrected above (it is multi-user correctness / Leak 2).
   - The note left the naming fork open ("promote the env var or add a clearer name?"). ADR-0017 closes it: promote `NETCAGE_GRAPHROOT` (one resolver, one store invariant); and it is now an OPTIONAL override, because the uid-scoped default handles the multi-user case without it.
   - The note asked whether `--runroot`/transient state spills world-visible: resolved as irrelevant to the actual (Leak-2/multi-user) framing; `--runroot` is already per-user (`$XDG_RUNTIME_DIR`) and stays at podman's default.
-- **Convention drift flagged (see Open question 1):** the request's `pnpm changeset` acceptance gate does not match this repo. `.dorfl.json` verify is Go-only; there is no `.changeset/` or `package.json`. A task must NOT add a pnpm/changeset step that does not exist here.
+- **Convention drift flagged (see Open question 1):** the request's `pnpm changeset` acceptance gate does not match this repo. `dorfl.json` verify is Go-only; there is no `.changeset/` or `package.json`. A task must NOT add a pnpm/changeset step that does not exist here.
 - **This is a DESIGN + DOCS deliverable at drafting time.** No code changes and no tasking were performed; the drafts (this PRD + ADR-0017) stop here for review.
