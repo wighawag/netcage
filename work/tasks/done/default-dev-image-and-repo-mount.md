@@ -1,7 +1,7 @@
 ---
 title: Default pinned dev image and repo-mount ergonomics
 slug: default-dev-image-and-repo-mount
-prd: jailed-interactive-repo-run
+spec: jailed-interactive-repo-run
 blockedBy: [podman-shaped-cli-flag-parsing]
 covers: [3, 4, 5, 10]
 ---

@@ -1,7 +1,7 @@
 ---
 title: `netcage verify` reports the resolved proxy + its source (flag|env|config) - the on-demand "which proxy am I on?" answer
 slug: verify-report-resolved-proxy-and-source
-prd: netcage-config-and-proxy-setup
+spec: netcage-config-and-proxy-setup
 blockedBy: [config-file-and-proxy-precedence]
 covers: [4]
 ---

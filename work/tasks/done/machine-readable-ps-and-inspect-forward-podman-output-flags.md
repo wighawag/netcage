@@ -1,7 +1,7 @@
 ---
 title: ps/inspect forward podman's read-only output/query flags (machine-readable, podman-faithful)
 slug: machine-readable-ps-and-inspect-forward-podman-output-flags
-prd: machine-readable-pass-through-query-verbs
+spec: machine-readable-pass-through-query-verbs
 covers: [1, 2, 3, 4, 5, 6]
 ---
 

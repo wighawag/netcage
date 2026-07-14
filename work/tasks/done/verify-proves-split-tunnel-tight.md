@@ -1,7 +1,7 @@
 ---
 title: Extend verify to prove the split-tunnel stays leak-tight outside the allowlist
 slug: verify-proves-split-tunnel-tight
-prd: split-tunnel-lan-allowlist
+spec: split-tunnel-lan-allowlist
 blockedBy: [split-tunnel-jail-wiring]
 covers: [2, 8]
 ---

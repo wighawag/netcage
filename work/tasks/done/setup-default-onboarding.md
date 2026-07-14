@@ -1,7 +1,7 @@
 ---
 title: `netcage setup-default` - interactive onboarding that detects/confirms/verifies a proxy and persists it (credential-free) as netcage's default
 slug: setup-default-onboarding
-prd: netcage-config-and-proxy-setup
+spec: netcage-config-and-proxy-setup
 blockedBy: [detect-proxy-verb-with-json]
 covers: [1, 2, 7]
 ---

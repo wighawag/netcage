@@ -1,7 +1,7 @@
 ---
 title: Parse and validate --allow-direct (RFC1918/link-local IP/CIDR + optional port)
 slug: allow-direct-cli-parse-and-validate
-prd: split-tunnel-lan-allowlist
+spec: split-tunnel-lan-allowlist
 blockedBy: []
 covers: [3, 4, 9]
 ---

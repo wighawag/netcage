@@ -1,7 +1,7 @@
 ---
 title: Spike a host-side socat forward into the jail netns and prove verify stays green
 slug: spike-socat-forward-into-jail-netns
-prd: host-access-forward-verb
+spec: host-access-forward-verb
 blockedBy: []
 covers: [1, 5, 10]
 ---

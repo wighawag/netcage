@@ -1,7 +1,7 @@
 ---
 title: Vendor + pin the tun2socks redirector by digest (reproducible, no scan-time pull)
 slug: vendor-pin-redirector
-prd: netcage
+spec: netcage
 blockedBy: [spike-rootless-tun-routing]
 covers: [13]
 ---

@@ -8,7 +8,7 @@ import (
 // graphRootBase is the fixed, username-free stem of netcage's podman graphroot
 // (podman's global `--root`): the disk-backed, world-writable-sticky path under
 // /var/tmp where image layers + containers live (Leak 2 of the host-identity
-// hardening prd; ADR-0013). Rootless podman's DEFAULT graphroot is
+// hardening spec; ADR-0013). Rootless podman's DEFAULT graphroot is
 // ~/.local/share/containers/storage, so the overlay lowerdir/upperdir SOURCE
 // paths in the container's /proc/self/mountinfo embed /home/<user>, leaking the
 // operator's account name. Pointing --root under /var/tmp makes those paths

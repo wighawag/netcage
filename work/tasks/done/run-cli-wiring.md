@@ -1,7 +1,7 @@
 ---
 title: Wire `netcage run` to the jail engine (CLI integration)
 slug: run-cli-wiring
-prd: netcage
+spec: netcage
 blockedBy: [jail-run-forced-egress, teardown-invariant]
 covers: [1, 11, 12]
 ---

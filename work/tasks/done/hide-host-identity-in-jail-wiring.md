@@ -1,7 +1,7 @@
 ---
 title: Hide host identity in the tool container's jail wiring (/etc/hosts + fixed hostname + pasta interface rename)
 slug: hide-host-identity-in-jail-wiring
-prd: jail-host-identity-hardening
+spec: jail-host-identity-hardening
 blockedBy: [relocate-graphroot-to-var-tmp-single-store]
 covers: [1, 2, 7, 8]
 ---

@@ -1,7 +1,7 @@
 ---
 title: netcage verify — the three leak assertions (exit IP, DNS-through-proxy, fail-closed)
 slug: verify-leak-test
-prd: netcage
+spec: netcage
 blockedBy: [jail-run-forced-egress]
 covers: [4, 6, 7, 8]
 ---

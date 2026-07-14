@@ -1,7 +1,7 @@
 ---
 title: Add netcage pass-through verbs (ps/logs/inspect/exec/stop/rm/images) scoped to netcage-managed containers (via the netcage.managed label)
 slug: pass-through-verbs-and-labels
-prd: podman-fidelity-and-lifecycle
+spec: podman-fidelity-and-lifecycle
 blockedBy: [teardown-split-honour-rm]
 covers: [6]
 ---

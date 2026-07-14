@@ -5,7 +5,7 @@
 // (credential-free) into ~/.config/netcage/config.json so a bare `netcage run`
 // needs no --proxy. It is the ONLY config writer (it composes cli.WriteConfig).
 //
-// The honesty model (settled in the netcage-config-and-proxy-setup prd) is
+// The honesty model (settled in the netcage-config-and-proxy-setup spec) is
 // load-bearing and lives HERE at write time, once: the verb NAME carries the
 // weight (`setup-default`, not an innocent `setup`), the tradeoff warning fires
 // ONCE here (no per-run chatter), and the persisted default is CREDENTIAL-FREE by

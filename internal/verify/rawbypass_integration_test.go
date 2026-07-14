@@ -17,7 +17,7 @@ import (
 )
 
 // TestVerify_RawPodmanStartBypassIsFailClosed is the raw-bypass leak assertion
-// (prd stories 3 + 8, ADR-0008): a netcage tool container left behind and then
+// (spec stories 3 + 8, ADR-0008): a netcage tool container left behind and then
 // started by a RAW `podman start` OUTSIDE netcage (podman auto-revives its
 // stopped sidecar as a `--network container:` dependency) must be FAIL-CLOSED -
 // a LAN/RFC1918 probe is DROPPED and a DNS lookup does NOT resolve - while

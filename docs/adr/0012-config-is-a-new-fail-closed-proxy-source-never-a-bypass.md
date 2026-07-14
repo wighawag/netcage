@@ -1,6 +1,6 @@
 # The netcage config file is a NEW proxy SOURCE, never a bypass; the persisted default is credential-free; and a netcage-only verb must never shadow a podman verb
 
-**Status:** accepted (builds on ADR-0005, ADR-0009; foundation of the `netcage-config-and-proxy-setup` prd)
+**Status:** accepted (builds on ADR-0005, ADR-0009; foundation of the `netcage-config-and-proxy-setup` spec)
 
 netcage gains a persisted config file (`~/.config/netcage/config.json`,
 XDG-aware) so a configured user runs `netcage run <img>` with no `--proxy` and it

@@ -5,7 +5,7 @@
 `netcage start <name>` is the jail-aware exception to the pass-through management
 verbs (ADR-0009): it RESUMES a KEPT, netcage-managed tool container with its full
 forced-egress jail restored, so a named reusable jailed container is a durable
-environment (prd stories 7 + 9, the primitive a downstream "machine" is built
+environment (spec stories 7 + 9, the primitive a downstream "machine" is built
 from). It is NOT a thin `podman start` pass-through, so it lives in the jail
 package (`jail.Start`), not `internal/manage`, and CARRIES a `--proxy` (and any
 `--allow-direct`) that it RECONCILES against the container's baked jail config.

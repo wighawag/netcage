@@ -1,7 +1,7 @@
 ---
 title: Relocate podman graphroot to a username-free /var/tmp path, injected once at the Runner seam so every netcage podman call shares one store
 slug: relocate-graphroot-to-var-tmp-single-store
-prd: jail-host-identity-hardening
+spec: jail-host-identity-hardening
 blockedBy: []
 covers: [3, 4, 5]
 ---

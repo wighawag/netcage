@@ -1,7 +1,7 @@
 ---
 title: Parse the `netcage ports <container> [--json]` verb surface (proxyless)
 slug: ports-verb-cli-parse
-prd: ports-verb-list-jail-listeners
+spec: ports-verb-list-jail-listeners
 blockedBy: []
 covers: [5, 6]
 ---
@@ -36,7 +36,7 @@ Routing `ports` to its handler (the `internal/ports` package) is the wiring task
 >
 > FIRST check against current reality (launch snapshot): read `internal/cli/cli.go` - the `Command` struct (note the existing `JSON` field used by `detect-proxy`), `Parse`/`ParseWithEnv`, `parseDetectProxy` / `parseSetupDefault` / `parseForward` (the tiny-surface proxyless verb pattern to mirror), and `IsProxyless` (how a verb opts out of the proxy preflight). Confirm these shapes still hold.
 >
-> Domain + the decision: the prd `work/prds/ready/ports-verb-list-jail-listeners.md`. `ports` is proxyless (it only reads `/proc`, sends no traffic), so it carries no `--proxy` and is not preflighted, exactly like `detect-proxy`. Reuse the existing `Command.JSON` field for `--json` (one spelling for the machine contract).
+> Domain + the decision: the prd `work/specs/ready/ports-verb-list-jail-listeners.md`. `ports` is proxyless (it only reads `/proc`, sends no traffic), so it carries no `--proxy` and is not preflighted, exactly like `detect-proxy`. Reuse the existing `Command.JSON` field for `--json` (one spelling for the machine contract).
 >
 > Where to look: `parseDetectProxy` for the `--json`-only proxyless pattern; `parseForward` for a `<container>` positional verb; `IsProxyless` / the proxyless set. Seam to test at: `ParseWithEnv` (parse + validation cases), mirroring the existing cli parse tests.
 >

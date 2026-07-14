@@ -18,7 +18,7 @@ import (
 )
 
 // TestJail_Graphroot_MountinfoHasNoHomePath is the podman-gated proof of Leak 2's
-// core property (prd story 3, ADR-0013): with the graphroot relocated under
+// core property (spec story 3, ADR-0013): with the graphroot relocated under
 // /var/tmp, a jailed tool reading its own /proc/self/mountinfo sees NO /home/<user>
 // path, so it can no longer recover the operator's account name from the podman
 // overlay lowerdir/upperdir SOURCE paths. It also positively asserts the overlay
@@ -78,7 +78,7 @@ func TestJail_Graphroot_MountinfoHasNoHomePath(t *testing.T) {
 }
 
 // TestJail_Graphroot_SingleSharedStore is the podman-gated single-store proof
-// (prd story 5, ADR-0013): a container a `netcage run` CREATES is found by a
+// (spec story 5, ADR-0013): a container a `netcage run` CREATES is found by a
 // SUBSEQUENT netcage-managed listing in the SAME relocated store, and is NOT in
 // the developer's real default store (proving the store is SHARED across
 // invocations AND relocated, not split). A split store would make `netcage

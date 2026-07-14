@@ -1,7 +1,7 @@
 ---
 title: Interactive TTY/stdin run mode through the jail (shell into a jailed repo)
 slug: jailed-interactive-tty
-prd: jailed-interactive-repo-run
+spec: jailed-interactive-repo-run
 blockedBy: [distinguish-podman-failure-from-tool-exit, stream-tool-output-live]
 covers: [1, 2, 11, 12]
 ---

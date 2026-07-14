@@ -1,7 +1,7 @@
 ---
 title: Document what a netcage jail does and does NOT hide, plus -v username hygiene and the working clear-storage command
 slug: docs-what-is-hidden-and-storage-hygiene
-prd: jail-host-identity-hardening
+spec: jail-host-identity-hardening
 blockedBy: [relocate-graphroot-to-var-tmp-single-store]
 covers: [6, 9, 10]
 ---

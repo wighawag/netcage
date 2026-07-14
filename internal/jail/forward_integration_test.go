@@ -21,7 +21,7 @@ import (
 
 // TestJail_Forward_KeepsForcedEgressTight is the podman-gated ACCEPTANCE PROOF
 // that a `netcage forward` active against a real jail does NOT weaken forced
-// egress (prd story 10, ADR-0014): with the forward ATTACHED and reaching the
+// egress (spec story 10, ADR-0014): with the forward ATTACHED and reaching the
 // in-jail server, the forced-egress three-point leak-test still passes. This
 // makes "the forward adds no OUTPUT rule / does not touch forced egress" a TESTED
 // property, not merely a design claim.

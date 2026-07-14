@@ -1,7 +1,7 @@
 ---
 title: Pure /proc/net/tcp* -> TCP LISTEN listener parser (image-independent enumeration core)
 slug: proc-net-tcp-listener-parser
-prd: ports-verb-list-jail-listeners
+spec: ports-verb-list-jail-listeners
 blockedBy: []
 covers: [3, 4, 8]
 ---
@@ -37,7 +37,7 @@ netcage's own in-jail DNS forwarder listens on `127.0.0.1:53`; it is NOT special
 
 > Self-contained. Goal: build the pure parser that turns raw `/proc/net/tcp` + `/proc/net/tcp6` text into the list of TCP LISTENING sockets (address, port, loopbackOnly), so `netcage ports` can enumerate a jail's listeners IMAGE-INDEPENDENTLY (no ss/netstat/nc needed in the tool image).
 >
-> FIRST check against current reality (launch snapshot): confirm the prd `work/prds/ready/ports-verb-list-jail-listeners.md` and the finding `work/notes/findings/forward-connector-must-use-sidecar-nc-not-tool.md` (the same "don't depend on in-image tools" lesson). This task is PURE parsing; no podman, no Runner.
+> FIRST check against current reality (launch snapshot): confirm the prd `work/specs/ready/ports-verb-list-jail-listeners.md` and the finding `work/notes/findings/forward-connector-must-use-sidecar-nc-not-tool.md` (the same "don't depend on in-image tools" lesson). This task is PURE parsing; no podman, no Runner.
 >
 > The `/proc/net/tcp` format (live-verified on this project's jail): each data row has a `local_address` field `HEXIP:HEXPORT` and a state field `st`. IPv4 hex is LITTLE-ENDIAN (`0100007F` = 127.0.0.1), the port hex is BIG-ENDIAN (`0BB9` = 3001), and `st == 0A` means LISTEN. IPv6 (`/proc/net/tcp6`) uses a 32-hex-char address. Real observed rows from a jail: `0100007F:0035 ... 0A` (the netcage DNS forwarder on 127.0.0.1:53, loopback-only) and `00000000:0BB9 ... 0A` (a server on 0.0.0.0:3001, wildcard).
 >

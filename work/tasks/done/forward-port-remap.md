@@ -1,7 +1,7 @@
 ---
 title: forward host-port remap ([hostPort:]jailPort) - parse, wiring, docs
 slug: forward-port-remap
-prd: forward-host-port-remap
+spec: forward-host-port-remap
 blockedBy: []
 covers: [1, 2, 3, 4, 5, 6]
 ---
@@ -48,7 +48,7 @@ The security surface is untouched: still NO OUTPUT/nft rule, TCP-only, exactly O
 >
 > FIRST check against current reality (launch snapshot): read `internal/cli/cli.go` `parseForward` (the current single-`<port>` positional, `parseForwardPort` validation 1..65535, `ForwardPort`/`ForwardBind`/`ForwardContainer` on `Command`, `resolveForwardBind`) and `internal/forward/forward.go` (`Config` with `Port` [the jail/connect port] + `Bind`, `ListenArgs` building `TCP-LISTEN:<port>` and the connect side `podman exec -i <sidecar> nc 127.0.0.1 <port>`, and `Run`'s start line), plus `main.go` `runForward`. Confirm these shapes still hold (the forward connector was recently changed to exec the SIDECAR, not the tool - that is orthogonal to this change; do not touch it).
 >
-> Domain + decision: the prd `work/prds/tasked/forward-host-port-remap.md` and ADR-0014 (the forward verb; loopback default, warned 0.0.0.0 opt-in, no OUTPUT rule, TCP-only, netcage-managed-only, lifetime-bounded - ALL unchanged here). The remap makes ONLY the host bind port independently choosable; the in-jail connect side stays `127.0.0.1:<jailPort>` in the shared netns.
+> Domain + decision: the prd `work/specs/tasked/forward-host-port-remap.md` and ADR-0014 (the forward verb; loopback default, warned 0.0.0.0 opt-in, no OUTPUT rule, TCP-only, netcage-managed-only, lifetime-bounded - ALL unchanged here). The remap makes ONLY the host bind port independently choosable; the in-jail connect side stays `127.0.0.1:<jailPort>` in the shared netns.
 >
 > Where to look: `parseForward` + `parseForwardPort` (split `[hostPort:]jailPort`, add `ForwardHostPort`), `forward.Config`/`ListenArgs`/`Run` (add `HostPort`, bind hostPort, connect jailPort, name both in the start line), `main.go` `runForward` (thread the field), README host-access section + the `-p` deny hint. Seams to test at: `ParseWithEnv` (the parse matrix) and `ListenArgs` (host-bind vs connect-port split), pure, no podman.
 >

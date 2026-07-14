@@ -6,7 +6,7 @@
 // ADR-0006), feeds both bodies to the pure parser, and renders either a human
 // table or the --json reuse contract.
 //
-// Load-bearing guardrails (all from the prd + reused from forward/manage):
+// Load-bearing guardrails (all from the spec + reused from forward/manage):
 //
 //   - Label-scoped. Only a netcage-managed run is enumerated (ResolveManagedRun);
 //     a non-netcage or unknown container is refused loudly, and a STOPPED jail is
@@ -21,7 +21,7 @@
 //     adds NO firewall rule. It must NEVER emit a socat relay / iptables / publish.
 //   - netcage's own 127.0.0.1:53 DNS forwarder is SHOWN, not filtered: the human
 //     table annotates it as netcage-internal, but the data never lies by omission
-//     (prd story 8).
+//     (spec story 8).
 //
 // The orchestration goes through the injectable jail.Runner and the render is a
 // pure function, so the wiring is unit-testable without executing podman or a real
@@ -58,7 +58,7 @@ type IO struct {
 // dnsForwarderNote annotates netcage's own in-jail DNS forwarder in the human
 // table: it listens on 127.0.0.1:53 and is netcage plumbing, not a user server.
 // It is SHOWN (never filtered) so the list cannot hide a real listener that
-// happens to sit on :53 (prd story 8); the annotation is presentation-only and
+// happens to sit on :53 (spec story 8); the annotation is presentation-only and
 // is NOT emitted in the --json contract (the machine array reports raw sockets).
 const dnsForwarderNote = "netcage DNS forwarder"
 

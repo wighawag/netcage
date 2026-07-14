@@ -1,7 +1,7 @@
 ---
 title: Jail-aware `netcage start` - revive the sidecar (firewall self-heals), re-exec the DNS forwarder, re-enter the kept container; refuse on a changed jail config
 slug: jail-aware-netcage-start
-prd: podman-fidelity-and-lifecycle
+spec: podman-fidelity-and-lifecycle
 blockedBy: [fail-closed-restart-firewall-via-extra-commands, teardown-split-honour-rm, pass-through-verbs-and-labels]
 covers: [7, 9]
 ---

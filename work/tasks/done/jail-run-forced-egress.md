@@ -1,7 +1,7 @@
 ---
 title: netcage run — forced-egress jail (tun2socks sidecar, fail-closed, UDP-dropped)
 slug: jail-run-forced-egress
-prd: netcage
+spec: netcage
 blockedBy: [spike-rootless-tun-routing, spike-pasta-loopback-reachback, socks5h-test-fixture, cli-skeleton-and-proxy-parse, vendor-pin-redirector]
 covers: [1, 3, 4, 5, 11, 12, 14]
 ---

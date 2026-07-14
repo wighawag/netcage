@@ -1,7 +1,7 @@
 ---
 title: Wire the forward verb: label-scoped loopback forward with a warned --bind 0.0.0.0
 slug: forward-verb-wiring-and-bind
-prd: host-access-forward-verb
+spec: host-access-forward-verb
 blockedBy: [spike-socat-forward-into-jail-netns, forward-verb-cli-parse]
 covers: [1, 4, 5, 6, 7, 8, 9]
 ---
@@ -42,7 +42,7 @@ Wire `main`'s dispatch to route the parsed `forward` command to this package.
 >
 > FIRST check against current reality (launch snapshot): the two blockers must be in `tasks/done/` — read the spike's finding (`work/notes/findings/`) for the proven forward recipe (or its negative result selecting the ADR-0014 fallback) and confirm the parsed `Command` shape from `forward-verb-cli-parse`. Read `internal/manage` for the label-scoped-podman-through-the-Runner pattern, the `netcage.managed` label constants in `internal/jail/jail.go` (ADR-0009), and the podman exec seam (ADR-0006). If either blocker landed differently than assumed, route to needs-attention rather than building on a stale premise.
 >
-> Domain vocabulary + decisions: ADR-0014 (the verb, loopback default, `--bind 0.0.0.0` guardrailed opt-in, no persistence, `-p` stays refused), ADR-0013 (the anonymity invariant `0.0.0.0` must not breach by default), ADR-0003 (UDP stays hard-dropped; forward is TCP-only), and `work/prds/tasked/host-access-forward-verb.md`. The load-bearing constraint: the forward adds NO OUTPUT rule, so forced egress / fail-closed are exactly as before; it only lets a host-originated connection reach the in-jail server and get its reply on the established inbound socket.
+> Domain vocabulary + decisions: ADR-0014 (the verb, loopback default, `--bind 0.0.0.0` guardrailed opt-in, no persistence, `-p` stays refused), ADR-0013 (the anonymity invariant `0.0.0.0` must not breach by default), ADR-0003 (UDP stays hard-dropped; forward is TCP-only), and `work/specs/tasked/host-access-forward-verb.md`. The load-bearing constraint: the forward adds NO OUTPUT rule, so forced egress / fail-closed are exactly as before; it only lets a host-originated connection reach the in-jail server and get its reply on the established inbound socket.
 >
 > Where to look: `internal/manage` (label-scoping + Runner seam), the spike finding (the forward recipe), `main.go` dispatch (route the verb). Seams to test at: the label-scoping refusal, the bind-default-vs-warned-`0.0.0.0` decision, and the lifetime/teardown — mirror `internal/manage`'s test style; isolate any real-jail test with a unique run-id + cleanup.
 >

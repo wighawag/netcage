@@ -1,7 +1,7 @@
 ---
 title: Split-tunnel jail wiring - TUN_EXCLUDED_ROUTES + nft accept for the allowlist (+ ADR)
 slug: split-tunnel-jail-wiring
-prd: split-tunnel-lan-allowlist
+spec: split-tunnel-lan-allowlist
 blockedBy: [allow-direct-cli-parse-and-validate]
 covers: [1, 2, 5, 6, 7, 10]
 ---

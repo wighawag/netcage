@@ -125,7 +125,7 @@ func TestParse_ForwardBindLoopbackAndAllInterfaces(t *testing.T) {
 }
 
 // TestParse_ForwardRejectsOtherBind asserts any bind other than 127.0.0.1 /
-// 0.0.0.0 is refused loudly: a specific-interface bind is Out of Scope (prd), so
+// 0.0.0.0 is refused loudly: a specific-interface bind is Out of Scope (spec), so
 // the parse layer refuses it now rather than silently accepting a value the
 // mechanism will not honour.
 func TestParse_ForwardRejectsOtherBind(t *testing.T) {
@@ -195,7 +195,7 @@ func TestPreflight_ForwardSkipsProxyPreflight(t *testing.T) {
 
 // TestParse_PublishFlagPointsAtForward asserts the refused -p / --publish message
 // now points the operator at the safe path (`netcage forward`), so they discover
-// the verb instead of hitting a dead end (prd story 11).
+// the verb instead of hitting a dead end (spec story 11).
 func TestParse_PublishFlagPointsAtForward(t *testing.T) {
 	for _, flag := range []string{"-p", "--publish"} {
 		_, err := cli.ParseWithEnv([]string{"run", "--proxy", "socks5h://h:1", flag, "8080:8080", "img", "cmd"}, noEnv)

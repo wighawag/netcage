@@ -1,7 +1,7 @@
 ---
 title: Add `netcage build`/`pull`/`load` - the WRITE side of the netcage image store, so `netcage run <locally-built-image>` works again after the graphroot move
 slug: image-store-write-verbs
-prd: netcage-image-store-write-verbs
+spec: netcage-image-store-write-verbs
 blockedBy: []
 covers: [1, 2, 3, 4, 5, 6]
 ---

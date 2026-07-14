@@ -1,7 +1,7 @@
 ---
 title: podman-shaped CLI flag parsing, gated network flags, and NETCAGE_PROXY env
 slug: podman-shaped-cli-flag-parsing
-prd: jailed-interactive-repo-run
+spec: jailed-interactive-repo-run
 blockedBy: []
 covers: [6, 7, 8, 9]
 ---

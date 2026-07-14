@@ -106,7 +106,7 @@ Rationale, in one line each:
   user's own systemd unit, never a netcage default, for the same reason `0.0.0.0`
   is not the default: a standing inbound exposure must be a deliberate, visible
   act, not something netcage leaves running on your behalf.
-- This is a PROPOSED design, not a committed build: it needs its own prd/task
+- This is a PROPOSED design, not a committed build: it needs its own spec/task
   (verb parse in `internal/cli`, an `internal/forward` package mirroring
   `internal/manage`, and a spike confirming the socat-into-netns forward is
   loopback-tight and leaves egress green under `verify`). No code ships from this

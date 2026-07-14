@@ -1,7 +1,7 @@
 ---
 title: Wire the ports verb: label-scoped sidecar /proc/net/tcp enumeration + human table + --json contract
 slug: ports-verb-wiring-and-json
-prd: ports-verb-list-jail-listeners
+spec: ports-verb-list-jail-listeners
 blockedBy: [proc-net-tcp-listener-parser, ports-verb-cli-parse]
 covers: [1, 2, 5, 7, 8]
 ---
@@ -42,7 +42,7 @@ Wire `main`'s dispatch to route the parsed `ports` command to this package. Upda
 >
 > FIRST check against current reality (launch snapshot): both blockers must be in `tasks/done/`. Read the pure parser from `proc-net-tcp-listener-parser` (the `Listener` type + `parseProcNetTCP`) and the parsed `Command` from `ports-verb-cli-parse`. Read `internal/forward/forward.go` for the label-scoping resolver (`resolveManagedTool` -> run id -> `sidecarNameFor`), the `jail.Runner` seam, and the "exec the SIDECAR, which shares the netns and is the pinned image" insight (finding: forward-connector-must-use-sidecar-nc-not-tool). Read `internal/manage` for the label-scoped-podman-through-the-Runner pattern and `main.go` dispatch. If a blocker landed differently than assumed, route to needs-attention.
 >
-> Domain + decisions: the prd `work/prds/ready/ports-verb-list-jail-listeners.md`; ADR-0006 (podman is the only host dependency, no host nsenter - so read /proc/net/tcp* via podman exec, never host nsenter); ADR-0009 (label scope); ADR-0003 (TCP-only). The `--json` shape mirrors how `detect-proxy --json` is a documented reuse contract. The `/proc/net/tcp*`-via-sidecar mechanism is already live-proven (a jail's :3001 + the DNS :53 were correctly enumerated with loopback-vs-wildcard distinguished).
+> Domain + decisions: the prd `work/specs/ready/ports-verb-list-jail-listeners.md`; ADR-0006 (podman is the only host dependency, no host nsenter - so read /proc/net/tcp* via podman exec, never host nsenter); ADR-0009 (label scope); ADR-0003 (TCP-only). The `--json` shape mirrors how `detect-proxy --json` is a documented reuse contract. The `/proc/net/tcp*`-via-sidecar mechanism is already live-proven (a jail's :3001 + the DNS :53 were correctly enumerated with loopback-vs-wildcard distinguished).
 >
 > Where to look: `internal/forward` (resolver + Runner seam), the pure parser (blocker), `main.go` dispatch, README (add a `ports` section). Seams to test at: the label/stopped refusals, the SIDECAR-exec target, and the human-vs-json rendering - all behind the injectable Runner with fixture `/proc/net/tcp*` bodies; isolate any real-jail test with a unique run-id + cleanup.
 >

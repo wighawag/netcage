@@ -22,12 +22,12 @@ import (
 // DefaultMountTarget is the container path a repo mount defaults to (and the
 // workdir defaults to) when the user does not spell one out, so a repo dropped in
 // with `-v <repo>` (or `-v <repo>:/work`) is worked in without hand-writing -w
-// (prd story 10, repo-mount ergonomics).
+// (spec story 10, repo-mount ergonomics).
 const DefaultMountTarget = "/work"
 
 // ProxyEnvVar is the environment variable an agent can set instead of passing
 // --proxy, so the netcage command line carries nothing netcage-specific and is
-// pure `podman run` vocabulary (prd story 8). Precedence is flag > env > refuse.
+// pure `podman run` vocabulary (spec story 8). Precedence is flag > env > refuse.
 const ProxyEnvVar = "NETCAGE_PROXY"
 
 // ProxyConfig is a parsed, validated socks5h proxy endpoint.
@@ -179,7 +179,7 @@ type Command struct {
 	// to ForwardPort when no remap is given, so downstream wiring is uniform (it
 	// always has a host port). ForwardBind is `127.0.0.1` by DEFAULT (loopback-only,
 	// the bare verb) and is `0.0.0.0` ONLY when the operator passes the guardrailed
-	// `--bind 0.0.0.0` opt-in; a specific-interface bind is Out of Scope (prd) and
+	// `--bind 0.0.0.0` opt-in; a specific-interface bind is Out of Scope (spec) and
 	// refused at parse. All are the ZERO value for every other subcommand. This
 	// package only PARSES + VALIDATES the surface; the forward MECHANISM (the
 	// socat-into-netns forward) is a separate task that consumes these fields.
@@ -722,7 +722,7 @@ func ParseWithEnv(args []string, lookupEnv func(string) (string, bool)) (*Comman
 //     loopback `127.0.0.1`; the ONLY other accepted value is `0.0.0.0` (the
 //     guardrailed LAN opt-in). Any other bind (a specific interface, ::1,
 //     localhost, ...) is refused loudly: a specific-interface bind is Out of
-//     Scope (prd), so it is refused now rather than silently accepted.
+//     Scope (spec), so it is refused now rather than silently accepted.
 //   - NO --proxy (it does not egress; a --proxy is a usage error, not a
 //     silently-ignored flag), and any unknown flag is refused (fail-closed on the
 //     unknown), consistent with the other verbs.
@@ -814,7 +814,7 @@ func parseForwardPortSpec(s string) (hostPort, jailPort int, err error) {
 // returns the resolved address. Loopback (127.0.0.1) is the default the bare verb
 // uses; 0.0.0.0 is the guardrailed LAN opt-in (ADR-0014). Every other value (a
 // specific interface, ::1, localhost, a host:port, a malformed string) is refused
-// loudly: a specific-interface bind is Out of Scope (prd).
+// loudly: a specific-interface bind is Out of Scope (spec).
 func resolveForwardBind(v string) (string, error) {
 	switch v {
 	case "127.0.0.1", "0.0.0.0":
@@ -930,7 +930,7 @@ func parseSetupDefault(rest []string) (*Command, error) {
 //     image.
 //   - NO positionals at all => the pinned DEFAULT dev image with an EMPTY argv,
 //     so `netcage run -it -v <repo>:/work` drops into the default image's own
-//     shell out of the box (prd story 10). This is the ONLY case the default
+//     shell out of the box (spec story 10). This is the ONLY case the default
 //     image applies: a default is used solely when the user supplied no image.
 //
 // The `--` end-of-flags marker is still accepted (a podman nicety) but is no
@@ -945,7 +945,7 @@ func resolveRunPositionals(cmd *Command, positionals []string) {
 	cmd.ToolArgv = positionals[1:]
 }
 
-// resolveRepoMountDefaults applies the repo-mount ergonomics (prd story 10): a
+// resolveRepoMountDefaults applies the repo-mount ergonomics (spec story 10): a
 // bare `-v <repo>` value with no :container part defaults its target to /work,
 // and if the user gave no explicit -w but there is a mount targeting /work, the
 // workdir defaults to /work, so a repo dropped in is worked in without

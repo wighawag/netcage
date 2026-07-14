@@ -1,7 +1,7 @@
 ---
 title: `netcage detect-proxy` - probe common SOCKS ports, confirm SOCKS5, evidence-only (never label the provider), with a `--json` reuse contract
 slug: detect-proxy-verb-with-json
-prd: netcage-config-and-proxy-setup
+spec: netcage-config-and-proxy-setup
 blockedBy: [verify-report-resolved-proxy-and-source]
 covers: [3, 5]
 ---

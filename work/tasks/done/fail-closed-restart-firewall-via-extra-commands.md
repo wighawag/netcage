@@ -1,7 +1,7 @@
 ---
 title: Bake the jail firewall into the sidecar's EXTRA_COMMANDS so it self-heals on every restart (fail-closed on a raw podman start)
 slug: fail-closed-restart-firewall-via-extra-commands
-prd: podman-fidelity-and-lifecycle
+spec: podman-fidelity-and-lifecycle
 blockedBy: []
 covers: [3, 8]
 ---

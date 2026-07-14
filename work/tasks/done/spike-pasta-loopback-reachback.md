@@ -1,7 +1,7 @@
 ---
 title: Spike — pasta host-loopback reachback, scoped to the sidecar
 slug: spike-pasta-loopback-reachback
-prd: netcage
+spec: netcage
 blockedBy: []
 covers: [2]
 ---

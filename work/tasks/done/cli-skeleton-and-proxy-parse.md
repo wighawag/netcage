@@ -1,7 +1,7 @@
 ---
 title: CLI skeleton — run/verify commands, socks5h parse, fail-loud on unreachable proxy
 slug: cli-skeleton-and-proxy-parse
-prd: netcage
+spec: netcage
 blockedBy: []
 covers: [3, 10]
 ---

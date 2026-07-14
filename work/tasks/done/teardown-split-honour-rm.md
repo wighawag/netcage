@@ -1,7 +1,7 @@
 ---
 title: Split jail teardown from tool-container lifecycle - honour --rm, and without it LEAVE the stopped container (+ sidecar) fail-closed
 slug: teardown-split-honour-rm
-prd: podman-fidelity-and-lifecycle
+spec: podman-fidelity-and-lifecycle
 blockedBy: [fail-closed-restart-firewall-via-extra-commands]
 covers: [1, 2, 3]
 ---

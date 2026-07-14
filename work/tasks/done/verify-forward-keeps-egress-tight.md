@@ -1,7 +1,7 @@
 ---
 title: Prove the forced-egress leak-test stays green with a forward active
 slug: verify-forward-keeps-egress-tight
-prd: host-access-forward-verb
+spec: host-access-forward-verb
 blockedBy: [forward-verb-wiring-and-bind]
 covers: [10]
 ---
@@ -36,7 +36,7 @@ And assert the forward's own property in the same run: the host reaches the in-j
 >
 > FIRST check against current reality (launch snapshot): `forward-verb-wiring-and-bind` must be in `tasks/done/`; read it and the `internal/forward` package it produced. Read the existing verify leak-test (the three assertions: exit-IP is the proxy's, DNS proxy-side, fail-closed on proxy-kill) and the socks5h test fixture (`internal/socks5hfixture`) — this task EXTENDS that harness to run with a forward attached, it does not build a new one. If the forward wiring landed differently than assumed, route to needs-attention.
 >
-> Domain vocabulary + decisions: verify/leak-test is the project's acceptance floor (`CONTEXT.md`); ADR-0014 requires the forward to add no OUTPUT rule and to leave the egress model untouched; this task is the empirical guard on exactly that. `work/prds/tasked/host-access-forward-verb.md` story 10.
+> Domain vocabulary + decisions: verify/leak-test is the project's acceptance floor (`CONTEXT.md`); ADR-0014 requires the forward to add no OUTPUT rule and to leave the egress model untouched; this task is the empirical guard on exactly that. `work/specs/tasked/host-access-forward-verb.md` story 10.
 >
 > Where to look: the verify leak-test + `internal/socks5hfixture` for the harness to reuse; `internal/forward` for standing up the forward under test. Seam to test at: the leak-test's three assertions plus the host-reaches-`127.0.0.1:<port>` assertion, run with a forward active, ephemeral + isolated.
 >

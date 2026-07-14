@@ -1,6 +1,6 @@
 # netcage hardens the CHEAP+OWNED host-identity leaks and states the rest as an explicit non-goal; the guarantee stays NETWORK egress
 
-**Status:** accepted (foundation of the `jail-host-identity-hardening` prd; builds on ADR-0001/0002 rootless design, ADR-0006 Runner seam, ADR-0009 kept pair)
+**Status:** accepted (foundation of the `jail-host-identity-hardening` spec; builds on ADR-0001/0002 rootless design, ADR-0006 Runner seam, ADR-0009 kept pair)
 
 ## Context
 

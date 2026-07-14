@@ -1,7 +1,7 @@
 ---
 title: Teardown invariant — no leftover netns, nft, sidecar, or container after run
 slug: teardown-invariant
-prd: netcage
+spec: netcage
 blockedBy: [jail-run-forced-egress]
 covers: [9]
 ---

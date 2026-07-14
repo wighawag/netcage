@@ -1,7 +1,7 @@
 ---
 title: Parse the `netcage forward` verb surface and point the refused -p message at it
 slug: forward-verb-cli-parse
-prd: host-access-forward-verb
+spec: host-access-forward-verb
 blockedBy: []
 covers: [2, 3, 11, 12]
 ---
@@ -39,7 +39,7 @@ Routing `forward` to its handler (the `internal/forward` package) is the NEXT ta
 >
 > FIRST check against current reality (launch snapshot): read `internal/cli/cli.go` — the `Command` struct, `Parse`/`ParseWithEnv`, the `denyReasons` map (the `-p`/`--publish` refusal lives there), `IsProxyless`/`Preflight`, and the dedicated parse functions `parseDetectProxy` / `parseSetupDefault` (the pattern to mirror for a proxyless, non-preflighted, non-allow-list verb). Confirm these shapes still hold before building.
 >
-> Domain vocabulary + the decision: ADR-0014 (host access is a loopback-by-default `forward` verb, not a `-p` flag; `--bind 0.0.0.0` is a guardrailed opt-in) and `work/prds/tasked/host-access-forward-verb.md`. Guardrails this parse layer enforces: loopback default, `0.0.0.0` is the ONLY other accepted bind (a specific-interface bind is out of scope), no `--proxy`, unknown flags refused.
+> Domain vocabulary + the decision: ADR-0014 (host access is a loopback-by-default `forward` verb, not a `-p` flag; `--bind 0.0.0.0` is a guardrailed opt-in) and `work/specs/tasked/host-access-forward-verb.md`. Guardrails this parse layer enforces: loopback default, `0.0.0.0` is the ONLY other accepted bind (a specific-interface bind is out of scope), no `--proxy`, unknown flags refused.
 >
 > Where to look: `parseDetectProxy` / `parseSetupDefault` for the tiny-surface, proxyless verb pattern; `IsProxyless` / the `managementVerbs` set for how a verb opts out of the proxy preflight; `denyReasons` for the `-p` message. Seams to test at: `ParseWithEnv` (the parse + validation cases) and the `-p`-refusal message assertion (mirror the existing deny-flag test).
 >

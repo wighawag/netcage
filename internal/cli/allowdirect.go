@@ -12,7 +12,7 @@ import (
 // through the socks5h proxy. It is the parse+validate output this CLI produces;
 // the split-tunnel-jail-wiring task consumes it (adds the network to the
 // sidecar's TUN_EXCLUDED_ROUTES and an `-p tcp -d <net> --dport <port> -j ACCEPT`
-// iptables rule). See prd split-tunnel-lan-allowlist + the spike finding.
+// iptables rule). See spec split-tunnel-lan-allowlist + the spike finding.
 //
 // Network is always non-nil. A bare IP is normalised to a host route (/32 for
 // IPv4). Port is the EXACT TCP destination port and is MANDATORY: a port-omitted
@@ -48,7 +48,7 @@ type DirectAllow struct {
 
 // privateRanges is the ONLY set of destination ranges --allow accepts:
 // RFC1918 private space plus link-local. Restricting directs to these ranges is
-// the security gate (prd guardrail / story 3): a user cannot accidentally allow
+// the security gate (spec guardrail / story 3): a user cannot accidentally allow
 // a PUBLIC address that would become a real anonymity leak. A public-IP direct,
 // if ever wanted, is a separate louder opt-in, NOT part of this feature. An
 // allowlisted network must be FULLY contained in one of these (a prefix that

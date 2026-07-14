@@ -462,7 +462,7 @@ func allowlist169(port string) []cli.DirectAllow {
 }
 
 // TestVerify_SplitTunnelReportGreenOnlyWhenLeakTightAndDirectReachable is the
-// split-tunnel acceptance seam (prd story 8): with an allowlist ACTIVE, the
+// split-tunnel acceptance seam (spec story 8): with an allowlist ACTIVE, the
 // verify report is green ONLY when (a) the named direct is reachable AND (b) all
 // three core leak assertions STILL hold for non-allowlisted traffic. It composes
 // the three existing probes (ExitIPProbe / DNSProbe / FailClosedProbe) into core

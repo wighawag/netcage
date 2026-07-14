@@ -46,7 +46,7 @@ which is consulted BEFORE the resolver, so it SIDESTEPS netcage's proxy-side DNS
 the tool could reach an attacker-chosen IP for a name without the proxy resolving
 it. It therefore fails the DNS clause and is added to the deny-set with a message
 saying so. (It stays refused for now; it is called out as out-of-scope-to-allow
-in the prd.)
+in the spec.)
 
 ## The env/user/entrypoint drift fix
 

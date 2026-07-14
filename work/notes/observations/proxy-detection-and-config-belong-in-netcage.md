@@ -62,7 +62,7 @@ invariant tells a future author to re-check.
 
 ## Where this goes next
 
-Staged as `work/prds/proposed/netcage-config-and-proxy-setup.md` (review-first;
+Staged as `work/specs/proposed/netcage-config-and-proxy-setup.md` (review-first;
 promote -> ready -> task via the normal flow). An ADR is likely warranted for the
 fail-closed-source-precedence decision and/or the naming invariant (decide at
 tasking).

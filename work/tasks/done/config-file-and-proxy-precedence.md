@@ -1,7 +1,7 @@
 ---
 title: netcage config file - a persisted, credential-free default proxy (+ allowDirect list) as a new lowest-priority proxy source
 slug: config-file-and-proxy-precedence
-prd: netcage-config-and-proxy-setup
+spec: netcage-config-and-proxy-setup
 blockedBy: []
 covers: [1, 6]
 ---

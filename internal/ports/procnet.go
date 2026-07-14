@@ -20,7 +20,7 @@ import (
 )
 
 // Listener is one decoded TCP LISTEN socket, the settled shape the `ports`
-// wiring + `--json` contract consume (prd ports-verb-list-jail-listeners, story
+// wiring + `--json` contract consume (spec ports-verb-list-jail-listeners, story
 // 7). It is deliberately minimal and JSON-tagged so the wiring layer can marshal
 // it directly as the documented reuse array `[{address, port, loopbackOnly}]`
 // (IPv4 and IPv6 in the same slice).

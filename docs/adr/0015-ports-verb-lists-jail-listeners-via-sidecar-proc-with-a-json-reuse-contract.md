@@ -75,7 +75,7 @@ LISTEN socket:
   arbitrary tool image may ship none of them (the forward-connector finding). The
   `/proc/net/tcp*`-via-sidecar read is image-independent by construction.
 - **Filter netcage's own `:53` DNS forwarder (rejected).** Port-based filtering
-  could hide a real user listener on `:53`; annotate-but-show is honest (prd story
+  could hide a real user listener on `:53`; annotate-but-show is honest (spec story
   8).
 - **A dedicated `Command.PortsJSON` flag (rejected).** `ports` reuses the existing
   `Command.JSON` field, so there is ONE spelling for the machine contract across

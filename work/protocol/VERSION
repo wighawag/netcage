@@ -1,1 +1,4 @@
-protocol-v1 2026-06-30T09:57:47Z
+protocol-version: 2026-07-14
+synced-from: skills/setup/protocol/
+synced-at: 2026-07-14T18:19:11.414Z
+source-commit: dorfl prd-to-spec

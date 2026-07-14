@@ -1,7 +1,7 @@
 ---
 title: Widen the fail-closed run-flag allow-list with vetted network-irrelevant flags (and fix the env/user/entrypoint pass-through that is silently dropped)
 slug: widen-run-flag-allowlist
-prd: podman-fidelity-and-lifecycle
+spec: podman-fidelity-and-lifecycle
 blockedBy: [teardown-split-honour-rm]
 covers: [4, 5]
 ---

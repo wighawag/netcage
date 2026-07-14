@@ -1,7 +1,7 @@
 ---
 title: Spike — rootless TUN routing under Podman
 slug: spike-rootless-tun-routing
-prd: netcage
+spec: netcage
 blockedBy: []
 covers: [13]
 ---

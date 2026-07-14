@@ -543,7 +543,7 @@ func allowDest(a cli.DirectAllow) string {
 // them). With the excluded routes in place, a non-allowlisted host on the same
 // LAN as an allowed one is merely unrouted-to-the-proxy; these drops make it a
 // clean DROP instead, so allowing 192.168.1.150 does not silently expose the
-// rest of 192.168.1.0/24 (prd story 7). Emitted ONLY for a non-empty allowlist.
+// rest of 192.168.1.0/24 (spec story 7). Emitted ONLY for a non-empty allowlist.
 var rfc1918DropRanges = []string{
 	"10.0.0.0/8",
 	"172.16.0.0/12",
@@ -582,7 +582,7 @@ func (c Config) writeSplitTunnelAccepts(b *strings.Builder) {
 }
 
 // writeSplitTunnelDrops appends the RFC1918 / link-local defense-in-depth DROPs
-// (prd story 7), and ONLY for a NON-EMPTY allowlist. They are emitted in the
+// (spec story 7), and ONLY for a NON-EMPTY allowlist. They are emitted in the
 // broad-DROP block, AFTER the split-tunnel accepts, so the allowed destination
 // is accepted and every other private-range host is a clean DROP. These ranges
 // are IPv4-only, matching the previous nft `ip daddr` rules.

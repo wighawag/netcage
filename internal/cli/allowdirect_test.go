@@ -8,7 +8,7 @@ import (
 )
 
 // The --allow flag is the CLI half of the split-tunnel LAN allowlist
-// (prd split-tunnel-lan-allowlist, stories 3/4/9). It parses one or more
+// (spec split-tunnel-lan-allowlist, stories 3/4/9). It parses one or more
 // IP/CIDR:port values into a validated typed allowlist on Command, accepting
 // ONLY RFC1918 + link-local ranges WITH an exact port and rejecting
 // port-omitted / public IPs / hostnames / malformed values LOUDLY at startup
