@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="netcage">
+  <title>netcage</title>
+  <!-- Opaque plate: a transparent icon with dark ink vanishes on a dark browser
+       tab, which is the smallest surface this mark has to survive. rx is 18% of
+       the side. Ink is light BECAUSE of the plate, so it is a fixed hex here,
+       not currentColor. -->
+  <rect x="0" y="0" width="256" height="256" rx="46" fill="#0d1117"/>
+  <!-- Mark scaled to leave ~8% margins, positioned by its INK box (224x216 at
+       20,20 in mark units), not by the 256 canvas: the mark is not centred in
+       its own viewBox, so scaling the canvas would push it off-centre. -->
+  <g transform="translate(2.6 6.4) scale(0.95)">
+    <path d="M224 152 V202 A22 22 0 0 1 202 224 H54 A22 22 0 0 1 32 202 V54 A22 22 0 0 1 54 32 H202 A22 22 0 0 1 224 54 V104"
+          fill="none" stroke="#eef1f6" stroke-width="24" stroke-linecap="butt"/>
+    <rect x="62" y="98" width="84" height="26" rx="8" fill="#eef1f6"/>
+    <rect x="62" y="132" width="49" height="26" rx="8" fill="#eef1f6"/>
+    <rect x="160" y="116" width="84" height="24" rx="6" fill="#06b6d4"/>
+  </g>
+</svg>

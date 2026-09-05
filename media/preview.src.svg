@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640">
+  <!-- SOURCE OF RECORD for the card, with LIVE TEXT. Needs the vendored font.
+       preview.svg is this file with both strings converted to outlines; that is
+       what the build renders, so the build itself needs no font installed.
+       Re-derive sizes with ./solve-type.py, regenerate with ./build.sh -outline.
+
+       This card is deliberately built AWAY from sibling project memonaut, which
+       owns amber #ffb020 on a #12141a plate with a bottom-left radial accent
+       glow, rounded-rect outline texture, and an accent rule under the wordmark.
+       Here: cyan accent, cooler plate, no accent glow, LANE texture, no rule. -->
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#111823"/>
+      <stop offset="1" stop-color="#0a0d12"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="640" fill="#0d1117"/>
+  <rect x="0" y="0" width="1280" height="640" fill="url(#plate)"/>
+
+  <!-- Texture: LANES, not boxes. Elongated bars of unequal length read as
+       traffic, and restate the mark's story (some paths run further than
+       others). memonaut's texture is rounded-rect outlines, i.e. this mark's
+       own silhouette, so reusing that idiom here would read as its background. -->
+  <g fill="#eef1f6" opacity="0.05">
+    <rect x="96" y="488" width="420" height="14" rx="7"/>
+    <rect x="96" y="520" width="248" height="14" rx="7"/>
+    <rect x="96" y="552" width="596" height="14" rx="7"/>
+    <rect x="96" y="584" width="172" height="14" rx="7"/>
+    <rect x="988" y="60" width="248" height="14" rx="7"/>
+    <rect x="988" y="92" width="140" height="14" rx="7"/>
+  </g>
+
+  <!-- Mark. Ink box 224x216 at (20,20) in mark units, scaled to 310 tall and
+       placed by that ink box: left edge 128, vertically centred on y=320. -->
+  <g transform="translate(99.296 136.296) scale(1.435185)">
+    <path d="M224 152 V202 A22 22 0 0 1 202 224 H54 A22 22 0 0 1 32 202 V54 A22 22 0 0 1 54 32 H202 A22 22 0 0 1 224 54 V104"
+          fill="none" stroke="#eef1f6" stroke-width="24" stroke-linecap="butt"/>
+    <rect x="62" y="98" width="84" height="26" rx="8" fill="#eef1f6"/>
+    <rect x="62" y="132" width="49" height="26" rx="8" fill="#eef1f6"/>
+    <rect x="160" y="116" width="84" height="24" rx="6" fill="#06b6d4"/>
+  </g>
+
+  <!-- Type block. Wordmark and tagline share ink-left x=502; there is NO accent
+       rule between them, so the mark's channel stays the ONLY accent on the
+       card. x/y are the BASELINE anchor, offset from the ink left edge by the
+       measured dx/dy from solve-type.py (wordmark dx=10 dy=-116, tagline dx=2
+       dy=-23). Block is 209 tall and centred on y=320, like the mark. -->
+  <text x="492" y="331.5" fill="#eef1f6"
+        style="font-family:'JetBrains Mono';font-weight:800;letter-spacing:-0.03em;font-size:164.103px">netcage</text>
+  <text x="500" y="418.5" fill="#94a3b8"
+        style="font-family:'JetBrains Mono';font-weight:500;font-size:28.845px">Forced egress for Podman. Fail-closed.</text>
+</svg>

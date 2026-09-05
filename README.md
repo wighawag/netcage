@@ -1,3 +1,7 @@
+<div align="center">
+<a href="https://github.com/wighawag/netcage"><img alt="netcage: forced egress for Podman, fail-closed" src="https://raw.githubusercontent.com/wighawag/netcage/main/media/preview.png" width="640" /></a>
+</div>
+
 # netcage
 
 Run any containerized tool with **all of its TCP and DNS egress forced through a SOCKS5h proxy, fail-closed**, so a recon/scan/agent tool cannot leak your real IP or DNS. netcage wraps an existing image + command + a socks5h URL, and ships a `verify` leak-test that proves no traffic escapes the proxy.

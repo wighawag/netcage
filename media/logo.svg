@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="20 20 224 216" width="224" height="216" role="img" aria-label="netcage" style="color: #0f172a">
+  <title>netcage</title>
+  <!-- The wall: closed on every side but one. The gap is the ONLY opening, and
+       it is cut exactly as tall as the one channel allowed through it.
+       Corner radius is 22, deliberately tight: at a softer radius this reads as
+       a generic rounded rect, which is the texture motif of sibling project
+       memonaut. Tight corners read as an enclosure. -->
+  <path d="M224 152 V202 A22 22 0 0 1 202 224 H54 A22 22 0 0 1 32 202 V54 A22 22 0 0 1 54 32 H202 A22 22 0 0 1 224 54 V104"
+        fill="none" stroke="currentColor" stroke-width="24" stroke-linecap="butt"/>
+  <!-- The caged Podman container and its contents. Bars are UNEVEN on purpose:
+       two equal bars read as text lines and turn the mark into a document icon. -->
+  <rect x="62" y="98" width="84" height="26" rx="8" fill="currentColor"/>
+  <rect x="62" y="132" width="49" height="26" rx="8" fill="currentColor"/>
+  <!-- The single permitted path. The ONLY thing wearing the accent, anywhere. -->
+  <rect x="160" y="116" width="84" height="24" rx="6" fill="#06b6d4"/>
+</svg>

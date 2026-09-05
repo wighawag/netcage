@@ -4,6 +4,11 @@
 # goreleaser build output
 /dist/
 
+# brand design scratch: contact sheets and rejected variants from the logo work.
+# The shipped assets live in media/; the reasoning is recorded in media/README.md.
+/media/concepts/
+__pycache__/
+
 # spike probe build artifacts (the .go sources are tracked; built binaries + scratch logs are not)
 work/tasks/**/probe/**/tun-probe
 work/tasks/**/probe/**/dialer
